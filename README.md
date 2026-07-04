@@ -247,7 +247,7 @@ argus/
 │   ├── config.py                   # YAML loader (shared by Python scripts)
 │   ├── quadrotor_model.py          # symbolic ODE (CasADi)
 │   ├── generate_mpc.py             # OCP code generation
-│   └── animate_xy.py               # trajectory visualiser
+│   └── animate_xy.py               # 3-D trajectory visualiser (frustum, bearing errors)
 ├── src/
 │   ├── mpc_controller.cpp          # C++ simulation loop
 │   ├── plant_dynamics.hpp          # second-order plant interface

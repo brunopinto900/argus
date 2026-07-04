@@ -8,8 +8,8 @@ model:
 
 # MPC horizon settings
 mpc:
-  N:  20    # prediction horizon steps
-  Ts: 0.05  # sample time [s]  →  look-ahead = N × Ts = 1.0 s
+  N:  10    # prediction horizon steps
+  Ts: 0.05  # sample time [s]  →  look-ahead = N × Ts = 0.5 s
 
 # Input and state constraints
 constraints:
@@ -28,12 +28,17 @@ inner_loop:
   tau_yaw: 0.25   # yaw rate time constant [s]
 
 # Cost weights (NONLINEAR_LS: min Σ ‖h(x,u) − yref‖²_W)
-# W_stage layout:    [x, y, z,  vx, vy, vz,  phi, theta,  cos(psi), sin(psi),  T, p_cmd, q_cmd, r_cmd]
-# W_terminal layout: [x, y, z,  vx, vy, vz,  phi, theta,  cos(psi), sin(psi)]
-# Yaw is encoded as a unit vector [cos(psi), sin(psi)] to avoid angle-wrapping in the cost.
+# W_stage layout:    [x, y, z,  vx, vy, vz,  phi, theta,  r_fov,  T, p_cmd, q_cmd, r_cmd]
+# W_terminal layout: [x, y, z,  vx, vy, vz,  phi, theta,  r_fov_e]
+# r_fov = sqrt( softplus(cos(alpha) - cos(gamma)) ) — zero inside the FOV cone, grows outside.
 cost:
-  W_stage:    [100.0, 100.0, 100.0,  10.0, 10.0, 10.0,  5.0, 5.0,  20.0, 20.0,  0.1, 0.1, 0.1, 0.1]
-  W_terminal: [200.0, 200.0, 200.0,  20.0, 20.0, 20.0,  10.0, 10.0,  40.0, 40.0]
+  W_stage:    [100.0, 100.0, 100.0,  10.0, 10.0, 10.0,  5.0, 5.0,  50.0,  0.1, 0.1, 0.1, 0.1]
+  W_terminal: [200.0, 200.0, 200.0,  20.0, 20.0, 20.0,  10.0, 10.0,  100.0]
+
+# Camera model: forward-facing (body +x axis), circular FOV cone
+camera:
+  fov_half_angle_deg: 40.0  # cone half-angle [deg] — must match FRUSTUM_H_FOV in animate_xy.py
+  softplus_beta:       5.0  # sharpness of softplus transition (higher = closer to hard max)
 
 # Plant simulator: second-order body-rate dynamics (matches PX4 inner loop).
 # Intentionally different from the first-order MPC prediction model —
@@ -48,4 +53,4 @@ plant:
 circle:
   radius: 2.0   # [m]
   z_ref:  1.5   # altitude [m]
-  period: 10.0  # lap time [s]
+  period: 4.19  # lap time [s]  →  v = 2π·R/T ≈ 3 m/s

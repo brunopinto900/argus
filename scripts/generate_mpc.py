@@ -10,8 +10,8 @@ Output: c_generated_code/   (C solver + CMakeLists, ready to link from C++)
 State vector  (nx = 12):  [x, y, z, vx, vy, vz, phi, theta, psi, p, q, r]
 Input vector  (nu =  4):  [T, p_cmd, q_cmd, r_cmd]
 
-Cost output   (ny = 14):  [x, y, z, vx, vy, vz, phi, theta, cos(psi), sin(psi), T, p_cmd, q_cmd, r_cmd]
-  - yaw encoded as unit vector [cos(psi), sin(psi)] — wrapping-safe in NONLINEAR_LS cost
+Cost output   (ny = 13):  [x, y, z, vx, vy, vz, phi, theta, r_fov, T, p_cmd, q_cmd, r_cmd]
+  - r_fov = sqrt(softplus(cos(alpha_fov) - cos(gamma))) — zero inside FOV cone, grows outside
   - phi, theta penalised to keep the drone roughly level
   - rate commands penalised to limit aggressiveness
 
@@ -43,6 +43,7 @@ _con_cfg    = _cfg['constraints']
 _cost_cfg   = _cfg['cost']
 _circ_cfg   = _cfg['circle']
 _plant_cfg  = _cfg['plant']
+_cam_cfg    = _cfg['camera']
 
 N       = _mpc_cfg['N']
 Ts      = _mpc_cfg['Ts']
@@ -60,6 +61,14 @@ ANGLE_MAX    = np.deg2rad(_con_cfg['angle_max_deg'])
 W_STAGE    = np.diag(_cost_cfg['W_stage'])
 W_TERMINAL = np.diag(_cost_cfg['W_terminal'])
 
+FOV_ALPHA = float(np.deg2rad(_cam_cfg['fov_half_angle_deg']))
+FOV_BETA  = float(_cam_cfg['softplus_beta'])
+COS_ALPHA = float(np.cos(FOV_ALPHA))
+
+# Target position — hardcoded at origin; will become a runtime parameter when
+# moving-target tracking is added.
+P_TARGET = ca.DM([0.0, 0.0, 0.0])
+
 
 def generate_mpc():
     ocp   = AcadosOcp()
@@ -73,18 +82,39 @@ def generate_mpc():
     ocp.solver_options.N_horizon = N
     ocp.solver_options.tf        = N * Ts
 
-    # ── Cost function ─────────────────────────────────────────────────────
-    # cost_y_expr selects which states/inputs enter the cost.
-    # Indices in state: x(0) y(1) z(2) vx(3) vy(4) vz(5) phi(6) theta(7) psi(8) p(9) q(10) r(11)
-    # Yaw (psi) is represented as [cos(psi), sin(psi)] so the NONLINEAR_LS residual
-    # is the Euclidean distance between unit vectors — no angle wrapping at ±pi.
+    # ── Cost function ─────────────────────────────────────────────────────────
+    # State indices: x(0) y(1) z(2) vx(3) vy(4) vz(5) phi(6) theta(7) psi(8) p(9) q(10) r(11)
     x_sym = model.x
     u_sym = model.u
-    psi   = x_sym[8]
-    yaw_dir = ca.vertcat(ca.cos(psi), ca.sin(psi))
 
-    cost_y_expr   = ca.vertcat(x_sym[:8], yaw_dir, u_sym)  # ny=14
-    cost_y_expr_e = ca.vertcat(x_sym[:8], yaw_dir)          # ny_e=10
+    # ZYX body-to-world rotation matrix: v_world = R_bw @ v_body.
+    # Column 0 is the body +x axis (camera boresight) in world frame.
+    phi, theta, psi = x_sym[6], x_sym[7], x_sym[8]
+    cp, sp = ca.cos(phi),   ca.sin(phi)
+    ct, st = ca.cos(theta), ca.sin(theta)
+    cy, sy = ca.cos(psi),   ca.sin(psi)
+    R_col0 = ca.vertcat(cy*ct,             sy*ct,             -st   )
+    R_col1 = ca.vertcat(cy*st*sp - sy*cp, sy*st*sp + cy*cp,  ct*sp )
+    R_col2 = ca.vertcat(cy*st*cp + sy*sp, sy*st*cp - cy*sp,  ct*cp )
+    R_bw   = ca.horzcat(R_col0, R_col1, R_col2)
+
+    # Bearing vector to target in body frame.
+    d_world = P_TARGET - x_sym[:3]
+    range_  = ca.norm_2(d_world) + 1e-6    # guard against drone-at-target singularity
+    d_body  = ca.mtimes(R_bw.T, d_world)
+
+    # FOV cone slack s: positive = target outside the cone.
+    #   cos(gamma) = forward component / range  (gamma = angle from boresight)
+    #   s = cos(alpha_FOV) - cos(gamma)
+    s_fov = COS_ALPHA - d_body[0] / range_
+
+    # Softplus residual: r_fov^2 = (1/beta)*log(1 + exp(beta*s)).
+    # Vanishes inside the cone, grows monotonically outside -- smooth everywhere.
+    soft  = (1.0 / FOV_BETA) * ca.log(1.0 + ca.exp(FOV_BETA * s_fov))
+    r_fov = ca.sqrt(soft)
+
+    cost_y_expr   = ca.vertcat(x_sym[:8], r_fov, u_sym)  # ny   = 13
+    cost_y_expr_e = ca.vertcat(x_sym[:8], r_fov)          # ny_e =  9
 
     ocp.cost.cost_type   = 'NONLINEAR_LS'
     ocp.cost.cost_type_e = 'NONLINEAR_LS'
@@ -94,14 +124,14 @@ def generate_mpc():
     ocp.cost.W   = W_STAGE
     ocp.cost.W_e = W_TERMINAL
 
-    # Nominal yref: hovering at origin, zero velocity, level attitude, pointing +x.
-    # In C++ the MPC loop overwrites this every step with the circle reference.
-    yref_hover   = np.array([0.0, 0.0, 1.5,        # x, y, z
-                              0.0, 0.0, 0.0,        # vx, vy, vz
-                              0.0, 0.0,             # phi, theta
-                              1.0, 0.0,             # cos(psi), sin(psi) — pointing +x
-                              T_HOVER, 0.0, 0.0, 0.0])  # T, rate_*
-    yref_hover_e = yref_hover[:10]
+    # Nominal yref: hover at origin, level, target inside FOV (r_fov reference = 0).
+    # C++ overwrites this every step with the circle reference.
+    yref_hover   = np.array([0.0, 0.0, 1.5,           # x, y, z
+                              0.0, 0.0, 0.0,           # vx, vy, vz
+                              0.0, 0.0,                # phi, theta
+                              0.0,                     # r_fov  (target inside cone)
+                              T_HOVER, 0.0, 0.0, 0.0]) # T, rates
+    yref_hover_e = yref_hover[:9]
 
     ocp.cost.yref   = yref_hover
     ocp.cost.yref_e = yref_hover_e

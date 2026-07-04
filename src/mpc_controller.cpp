@@ -40,30 +40,26 @@ using State = std::array<double, QUADROTOR_NX>;
 using Input = std::array<double, QUADROTOR_NU>;
 
 // ── Circle references ──────────────────────────────────────────────────────
-// yref layout:  [x,y,z, vx,vy,vz, phi,theta, cos(psi),sin(psi), T, p_cmd,q_cmd,r_cmd]
+// yref layout:  [x,y,z, vx,vy,vz, phi,theta, r_fov, T, p_cmd,q_cmd,r_cmd]
+// r_fov reference = 0: the FOV cost is one-sided, so yref=0 means "no penalty desired".
 static void circle_yref(double t, double yref[QUADROTOR_NY])
 {
-    const double ct  = std::cos(circle::omega * t);
-    const double st  = std::sin(circle::omega * t);
-    const double xr  = circle::R * ct;
-    const double yr  = circle::R * st;
-    // yaw that points from the reference position toward the origin
-    const double psi_ref = std::atan2(-yr, -xr);
+    const double ct = std::cos(circle::omega * t);
+    const double st = std::sin(circle::omega * t);
 
-    yref[0]  = xr;
-    yref[1]  = yr;
+    yref[0]  = circle::R * ct;             // x_ref
+    yref[1]  = circle::R * st;             // y_ref
     yref[2]  = circle::z_ref;
-    yref[3]  = -circle::R * circle::omega * st;
-    yref[4]  =  circle::R * circle::omega * ct;
+    yref[3]  = -circle::R * circle::omega * st;   // vx_ref
+    yref[4]  =  circle::R * circle::omega * ct;   // vy_ref
     yref[5]  =  0.0;
-    yref[6]  =  0.0;                        // phi: level
-    yref[7]  =  0.0;                        // theta: level
-    yref[8]  =  std::cos(psi_ref);          // yaw unit vector
-    yref[9]  =  std::sin(psi_ref);
-    yref[10] =  mpc::T_hover;
+    yref[6]  =  0.0;                       // phi:   level
+    yref[7]  =  0.0;                       // theta: level
+    yref[8]  =  0.0;                       // r_fov: zero = inside cone
+    yref[9]  =  mpc::T_hover;
+    yref[10] =  0.0;
     yref[11] =  0.0;
     yref[12] =  0.0;
-    yref[13] =  0.0;
 }
 
 // yref_e layout: [x,y,z, vx,vy,vz, phi,theta, cos(psi),sin(psi)]
