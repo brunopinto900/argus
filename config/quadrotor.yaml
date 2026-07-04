@@ -28,12 +28,12 @@ inner_loop:
   tau_yaw: 0.25   # yaw rate time constant [s]
 
 # Cost weights (NONLINEAR_LS: min Σ ‖h(x,u) − yref‖²_W)
-# W_stage layout:    [x, y, z,  vx, vy, vz,  phi, theta,  T, p_cmd, q_cmd, r_cmd]
-# W_terminal layout: [x, y, z,  vx, vy, vz,  phi, theta]
-# If cost_y_expr changes (e.g. yaw pointing added), extend these lists to match.
+# W_stage layout:    [x, y, z,  vx, vy, vz,  phi, theta,  cos(psi), sin(psi),  T, p_cmd, q_cmd, r_cmd]
+# W_terminal layout: [x, y, z,  vx, vy, vz,  phi, theta,  cos(psi), sin(psi)]
+# Yaw is encoded as a unit vector [cos(psi), sin(psi)] to avoid angle-wrapping in the cost.
 cost:
-  W_stage:    [100.0, 100.0, 100.0,  10.0, 10.0, 10.0,  5.0, 5.0,  0.1, 0.1, 0.1, 0.1]
-  W_terminal: [200.0, 200.0, 200.0,  20.0, 20.0, 20.0,  10.0, 10.0]
+  W_stage:    [100.0, 100.0, 100.0,  10.0, 10.0, 10.0,  5.0, 5.0,  20.0, 20.0,  0.1, 0.1, 0.1, 0.1]
+  W_terminal: [200.0, 200.0, 200.0,  20.0, 20.0, 20.0,  10.0, 10.0,  40.0, 40.0]
 
 # Plant simulator: second-order body-rate dynamics (matches PX4 inner loop).
 # Intentionally different from the first-order MPC prediction model —

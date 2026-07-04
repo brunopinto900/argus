@@ -10,8 +10,8 @@ Output: c_generated_code/   (C solver + CMakeLists, ready to link from C++)
 State vector  (nx = 12):  [x, y, z, vx, vy, vz, phi, theta, psi, p, q, r]
 Input vector  (nu =  4):  [T, p_cmd, q_cmd, r_cmd]
 
-Cost output   (ny = 12):  [x, y, z, vx, vy, vz, phi, theta, T, p_cmd, q_cmd, r_cmd]
-  - psi is intentionally excluded from the cost for now (yaw pointing added later)
+Cost output   (ny = 14):  [x, y, z, vx, vy, vz, phi, theta, cos(psi), sin(psi), T, p_cmd, q_cmd, r_cmd]
+  - yaw encoded as unit vector [cos(psi), sin(psi)] — wrapping-safe in NONLINEAR_LS cost
   - phi, theta penalised to keep the drone roughly level
   - rate commands penalised to limit aggressiveness
 
@@ -76,12 +76,15 @@ def generate_mpc():
     # ── Cost function ─────────────────────────────────────────────────────
     # cost_y_expr selects which states/inputs enter the cost.
     # Indices in state: x(0) y(1) z(2) vx(3) vy(4) vz(5) phi(6) theta(7) psi(8) p(9) q(10) r(11)
-    # psi (index 8) and body rates (9-11) are intentionally left out for now.
+    # Yaw (psi) is represented as [cos(psi), sin(psi)] so the NONLINEAR_LS residual
+    # is the Euclidean distance between unit vectors — no angle wrapping at ±pi.
     x_sym = model.x
     u_sym = model.u
+    psi   = x_sym[8]
+    yaw_dir = ca.vertcat(ca.cos(psi), ca.sin(psi))
 
-    cost_y_expr   = ca.vertcat(x_sym[:8], u_sym)   # [pos, vel, phi, theta, inputs]  ny=12
-    cost_y_expr_e = x_sym[:8]                       # terminal: [pos, vel, phi, theta] ny_e=8
+    cost_y_expr   = ca.vertcat(x_sym[:8], yaw_dir, u_sym)  # ny=14
+    cost_y_expr_e = ca.vertcat(x_sym[:8], yaw_dir)          # ny_e=10
 
     ocp.cost.cost_type   = 'NONLINEAR_LS'
     ocp.cost.cost_type_e = 'NONLINEAR_LS'
@@ -91,13 +94,14 @@ def generate_mpc():
     ocp.cost.W   = W_STAGE
     ocp.cost.W_e = W_TERMINAL
 
-    # Nominal yref: hovering at origin, zero velocity, level attitude.
+    # Nominal yref: hovering at origin, zero velocity, level attitude, pointing +x.
     # In C++ the MPC loop overwrites this every step with the circle reference.
     yref_hover   = np.array([0.0, 0.0, 1.5,        # x, y, z
                               0.0, 0.0, 0.0,        # vx, vy, vz
                               0.0, 0.0,             # phi, theta
-                              T_HOVER, 0.0, 0.0, 0.0])  # T, tau_*
-    yref_hover_e = yref_hover[:8]
+                              1.0, 0.0,             # cos(psi), sin(psi) — pointing +x
+                              T_HOVER, 0.0, 0.0, 0.0])  # T, rate_*
+    yref_hover_e = yref_hover[:10]
 
     ocp.cost.yref   = yref_hover
     ocp.cost.yref_e = yref_hover_e

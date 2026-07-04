@@ -89,8 +89,8 @@ aim_line, = ax.plot([], [], "--", color="#e05252", linewidth=0.8,
 ref_dot, = ax.plot([], [], "o", color="#55ee88", markersize=6,
                    alpha=0.7, zorder=4, label="Reference position")
 
-# camera frustum — replaced each frame
-frustum_patch = [None]
+# camera frustums — replaced each frame: [actual yaw, reference yaw]
+frustum_patch = [None, None]
 
 # text overlays
 time_text = ax.text(0.03, 0.96, "", transform=ax.transAxes,
@@ -110,8 +110,10 @@ legend_handles = [
     plt.Line2D([0], [0], marker="*", color="w", markerfacecolor="#e05252",
                markersize=12, label="Target object", linestyle="None"),
     plt.Line2D([0], [0], color="#4488ff", label="Drone trail"),
-    mpatches.Patch(facecolor="#ffcc44", alpha=0.5, edgecolor="#ffaa00",
-                   label="Camera frustum (yaw)"),
+    mpatches.Patch(facecolor="none", edgecolor="#ffaa00", linewidth=1.5,
+                   label="Camera frustum (actual yaw)"),
+    mpatches.Patch(facecolor="none", edgecolor="#55ee88", linewidth=1.2,
+                   linestyle="--", label="Camera frustum (reference yaw)"),
     plt.Line2D([0], [0], marker="o", color="w", markerfacecolor="#55ee88",
                markersize=7, label="Reference position", linestyle="None"),
 ]
@@ -159,14 +161,25 @@ def update(frame):
     # ── Line from drone to target ──────────────────────────────────────
     aim_line.set_data([cx, 0.0], [cy, 0.0])
 
-    # ── Camera frustum ─────────────────────────────────────────────────
+    # ── Camera frustum: actual yaw (edge-only) ─────────────────────────
     if frustum_patch[0] is not None:
         frustum_patch[0].remove()
     verts = make_frustum_vertices(cx, cy, psi)
     frustum_patch[0] = Polygon(verts, closed=True,
-                               facecolor="#ffcc44", alpha=0.35,
+                               facecolor="none",
                                edgecolor="#ffaa00", linewidth=1.5, zorder=5)
     ax.add_patch(frustum_patch[0])
+
+    # ── Camera frustum: reference yaw (dashed, shows the lag) ──────────
+    if frustum_patch[1] is not None:
+        frustum_patch[1].remove()
+    psi_ref = np.arctan2(-cy, -cx)
+    verts_ref = make_frustum_vertices(cx, cy, psi_ref)
+    frustum_patch[1] = Polygon(verts_ref, closed=True,
+                               facecolor="none",
+                               edgecolor="#55ee88", linewidth=1.2,
+                               linestyle="--", zorder=4)
+    ax.add_patch(frustum_patch[1])
 
     # ── Text overlays ──────────────────────────────────────────────────
     t = t_arr[frame]
@@ -174,13 +187,12 @@ def update(frame):
     time_text.set_text(f"t = {t:.2f} s  ({t/10.0:.1f} laps)")
     err_text.set_text(f"XY error: {xy_err:.3f} m")
 
-    # show a note about yaw not yet pointing at target
     psi_target = np.arctan2(-cy, -cx)    # angle that would point at origin
     psi_err = abs(((psi - psi_target) + np.pi) % (2 * np.pi) - np.pi)
-    status_text.set_text(f"Yaw pointing: OFF  |  ψ error to target: {np.rad2deg(psi_err):.0f}°")
+    status_text.set_text(f"ψ error to target: {np.rad2deg(psi_err):.0f}°")
 
     return (trail_line, drone_dot, aim_line, ref_dot,
-            time_text, err_text, status_text, frustum_patch[0])
+            time_text, err_text, status_text, frustum_patch[0], frustum_patch[1])
 
 
 ani = animation.FuncAnimation(

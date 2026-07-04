@@ -1,8 +1,6 @@
 # Argus — Quadrotor Circle-Tracking MPC
 
-Model Predictive Control for a quadrotor tracking a circular trajectory. The controller is formulated as a Nonlinear MPC using [ACADOS](https://docs.acados.org/), which generates a C solver that is called from C++.
-
-**Planned feature:** yaw/heading locked toward an object at the centre of the circle (active gimbal-like pointing). Not yet active — psi is currently excluded from the cost.
+Model Predictive Control for a quadrotor tracking a circular trajectory with yaw locked toward an object at the centre. The controller is formulated as a Nonlinear MPC using [ACADOS](https://docs.acados.org/), which generates a C solver that is called from C++.
 
 ---
 
@@ -96,11 +94,13 @@ min  Σ_{k=0}^{N-1} ‖h(x_k, u_k) − y_ref_k‖²_W  +  ‖h_e(x_N) − y_ref_
 The output map `h` selects which states and inputs are penalised:
 
 ```
-h(x, u)  = [x, y, z, vx, vy, vz, φ, θ, T, p_cmd, q_cmd, r_cmd]   (ny = 12)
-h_e(x)   = [x, y, z, vx, vy, vz, φ, θ]                            (ny_e = 8, terminal)
+h(x, u)  = [x, y, z, vx, vy, vz, φ, θ, cos(ψ), sin(ψ), T, p_cmd, q_cmd, r_cmd]   (ny = 14)
+h_e(x)   = [x, y, z, vx, vy, vz, φ, θ, cos(ψ), sin(ψ)]                            (ny_e = 10)
 ```
 
-ψ (yaw) and body rates (p, q, r) are **excluded** from the cost. The drone tracks position and velocity, stays level, and minimises control effort — it does not try to point in any direction.
+Yaw is encoded as a unit vector `[cos(ψ), sin(ψ)]` rather than a raw angle. The NONLINEAR_LS residual is then the Euclidean distance between unit vectors, which equals `2(1 − cos(ψ − ψ_ref))` — correctly wrapping at ±π without any special handling. Body rates (p, q, r) are excluded; they are internal states driven by the rate commands.
+
+The yaw reference at each horizon step is `ψ_ref = atan2(−y_ref, −x_ref)` — the angle that points the drone's nose toward the origin from its reference position on the circle.
 
 Stage weights `W` (diagonal):
 
@@ -109,6 +109,7 @@ Stage weights `W` (diagonal):
 | x, y, z | 100 | tight position tracking |
 | vx, vy, vz | 10 | smooth velocity profile |
 | φ, θ | 5 | keep drone roughly level |
+| cos(ψ), sin(ψ) | 20 | yaw pointing toward centre |
 | T, p_cmd, q_cmd, r_cmd | 0.1 | regularise inputs |
 
 Terminal weights `W_e` double the position and velocity weights (200 / 20) to encourage stability at the end of the horizon.
