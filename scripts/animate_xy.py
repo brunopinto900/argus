@@ -13,6 +13,7 @@ What is shown:
   - Green dot           : current reference position
   - Amber frustum       : camera frustum (actual yaw + pitch)
   - Dashed green frustum: ideal frustum (yaw + pitch required to see target)
+  - Amber polygon       : camera footprint projected onto the ground plane (z=0)
   - Text                : XY tracking error, yaw bearing error, pitch bearing error
 """
 
@@ -22,6 +23,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 — registers 3-D projection
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 CSV_PATH      = "logs/trajectory.csv"
 CIRCLE_R      = 2.0
@@ -103,6 +105,25 @@ def ref_attitude(drone_pos):
     return psi, theta
 
 
+def frustum_ground_footprint(pos, R):
+    """Ray-cast the 4 frustum corner rays to z=0. Returns (4,3) or None."""
+    lh = np.tan(FRUSTUM_H_FOV) * FRUSTUM_LEN
+    lv = np.tan(FRUSTUM_V_FOV) * FRUSTUM_LEN
+    corners_b = np.array([
+        [FRUSTUM_LEN,  lh,  lv],
+        [FRUSTUM_LEN, -lh,  lv],
+        [FRUSTUM_LEN, -lh, -lv],
+        [FRUSTUM_LEN,  lh, -lv],
+    ])
+    hits = []
+    for cb in corners_b:
+        d = R @ cb
+        if d[2] >= -1e-4:   # corner ray pointing up — footprint off ground
+            return None
+        hits.append(pos + (-pos[2] / d[2]) * d)
+    return np.array(hits)
+
+
 def bearing_errors_deg(drone_pos, phi, theta, psi):
     """Yaw and pitch bearing errors to TARGET_POS in degrees.
 
@@ -175,6 +196,12 @@ boresight_line, = ax.plot([], [], [], color="#00ddff", linewidth=1.8, alpha=0.85
 boresight_dot,  = ax.plot([], [], [], "x", color="#00ddff", markersize=10,
                            markeredgewidth=2.0)
 
+# Ground footprint of the actual camera frustum (filled polygon at z=0)
+ground_poly = Poly3DCollection([[]], alpha=0.20,
+                                facecolor="#ffaa00", edgecolor="#ffcc44",
+                                linewidth=1.2, zorder=2)
+ax.add_collection3d(ground_poly)
+
 # Screen-space text overlays
 time_text   = ax.text2D(0.03, 0.97, "", transform=ax.transAxes,
                         fontsize=10, color="#ddddff",  va="top")
@@ -187,6 +214,7 @@ pitch_text  = ax.text2D(0.97, 0.91, "", transform=ax.transAxes,
 
 # ── Legend (proxy artists) ────────────────────────────────────────────────────
 import matplotlib.lines as mlines
+import matplotlib.patches as mpatches
 legend_handles = [
     mlines.Line2D([0], [0], color="#555577", linestyle="--", label="Reference circle"),
     mlines.Line2D([0], [0], marker="*", color="w", markerfacecolor="#e05252",
@@ -198,6 +226,8 @@ legend_handles = [
                   label="Frustum — ideal (ψ+θ to target)"),
     mlines.Line2D([0], [0], color="#00ddff", linewidth=1.8,
                   label="Boresight ray (ground hit)"),
+    mpatches.Patch(facecolor="#ffaa00", edgecolor="#ffcc44", alpha=0.5,
+                   label="Camera footprint (ground)"),
     mlines.Line2D([0], [0], marker="o", color="w", markerfacecolor="#55ee88",
                   markersize=7, linestyle="None", label="Reference position"),
 ]
@@ -223,11 +253,13 @@ def init():
     ref_dot.set_data_3d([], [], [])
     boresight_line.set_data_3d([], [], [])
     boresight_dot.set_data_3d([], [], [])
+    ground_poly.set_verts([[]])
     for ln in frustum_act + frustum_ref:
         ln.set_data_3d([], [], [])
     for txt in (time_text, xy_err_text, yaw_text, pitch_text):
         txt.set_text("")
-    return ([trail_line, drone_dot, ref_dot, boresight_line, boresight_dot]
+    return ([trail_line, drone_dot, ref_dot, boresight_line, boresight_dot,
+             ground_poly]
             + frustum_act + frustum_ref
             + [time_text, xy_err_text, yaw_text, pitch_text])
 
@@ -248,6 +280,10 @@ def update(frame):
     # Ideal frustum — yaw + pitch to point directly at ground target, zero roll
     psi_r, theta_r = ref_attitude(pos)
     _apply_frustum(frustum_ref, pos, 0.0, theta_r, psi_r)
+
+    # Ground footprint: project the 4 frustum corner rays onto z=0
+    hits = frustum_ground_footprint(pos, R_act)
+    ground_poly.set_verts([hits] if hits is not None else [[]])
 
     # Boresight ray: body +x in world frame, cast to z = 0 ground plane.
     # If pointing upward, fall back to a fixed-length line.
@@ -271,7 +307,8 @@ def update(frame):
     yaw_text.set_text(f"ψ err to target: {yaw_err:+.0f}°")
     pitch_text.set_text(f"θ err to target: {pitch_err:+.0f}°")
 
-    return ([trail_line, drone_dot, ref_dot, boresight_line, boresight_dot]
+    return ([trail_line, drone_dot, ref_dot, boresight_line, boresight_dot,
+             ground_poly]
             + frustum_act + frustum_ref
             + [time_text, xy_err_text, yaw_text, pitch_text])
 
