@@ -147,17 +147,19 @@ At each MPC step the reference `y_ref_k` is computed from the circle trajectory 
 config/quadrotor.yaml        ← single source of truth for all parameters
 
 scripts/quadrotor_model.py   ← symbolic ODE (CasADi), reads yaml
-scripts/generate_mpc.py      ← OCP + sim solver formulation, writes:
+scripts/generate_mpc.py      ← OCP formulation, writes:
         │
-        ├─▶  c_generated_code/acados_solver_quadrotor.c/.h    (OCP solver)
-        ├─▶  c_generated_code/acados_sim_solver_quadrotor.c/.h (plant integrator)
-        └─▶  c_generated_code/argus_params.h                  (C++ constants)
+        ├─▶  c_generated_code/acados_solver_quadrotor.c/.h   (OCP solver)
+        └─▶  c_generated_code/argus_params.h                 (C++ constants)
                  │
                  ▼  compile & link
         src/mpc_controller.cpp   ← C++ simulation loop
+        src/plant_dynamics.cpp   ← second-order plant (intentionally different from MPC model)
 ```
 
-The Python scripts are a **build tool**, not runtime code. Run them once to produce the C solver; the solver is then compiled into your C++ binary. The plant integrator (`acados_sim_solver_quadrotor`) is generated from the same symbolic model as the OCP — if the dynamics change in Python, both the prediction model and the simulation automatically stay in sync.
+The Python scripts are a **build tool**, not runtime code. Run them once to produce the C solver; the solver is then compiled into your C++ binary.
+
+The plant simulator (`src/plant_dynamics.cpp`) is deliberately **not** the same model as the OCP predictor — the MPC uses a first-order lag (τ = 1/wn), while the plant runs the full second-order dynamics. This structural mismatch is the robustness test; it mirrors what will exist on hardware.
 
 ---
 
@@ -191,32 +193,30 @@ Assumed install path: `~/acados`. Adjust `ACADOS_ROOT` in `CMakeLists.txt` if yo
 
 ---
 
-## How to build
-
-### Step 1 — Generate the C solver (run once, or after any change to the model, cost, or config)
+## How to run
 
 ```bash
-LD_LIBRARY_PATH=~/acados/lib:$LD_LIBRARY_PATH python3 scripts/generate_mpc.py
+./run.sh
 ```
 
-This writes `c_generated_code/` with the OCP solver, the plant integrator, and `argus_params.h`. The `LD_LIBRARY_PATH` prefix is required on WSL2 because the ACADOS Python wrapper loads shared libraries at generation time.
+That's it. The script runs the full pipeline in order: generate the C solver → CMake build → simulate → animate.
 
-> **Tip:** Add `export LD_LIBRARY_PATH=~/acados/lib:$LD_LIBRARY_PATH` to your `.bashrc`.
+```
+==> Generating C solver (scripts/generate_mpc.py)...
+==> Configuring and building...
+==> Running simulation...
+==> Visualising (close the window to exit)...
+```
 
-### Step 2 — Build the C++ application
+**Skip steps you don't need:**
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build
+./run.sh --skip-gen          # model unchanged — skip solver regeneration
+./run.sh --skip-build        # binary already up to date
+./run.sh --skip-gen --skip-build   # run + plot only
 ```
 
-### Step 3 — Run
-
-```bash
-./build/argus_mpc
-# produces logs/trajectory.csv
-python3 scripts/animate_xy.py
-```
+> **WSL2 note:** `run.sh` sets `LD_LIBRARY_PATH` to include `~/acados/lib` automatically. You can also add it permanently to your `.bashrc`.
 
 ---
 
@@ -232,7 +232,7 @@ cost:           # W_stage and W_terminal diagonal weight vectors
 circle:         # radius, altitude, lap period
 ```
 
-After any change, re-run `python3 scripts/generate_mpc.py` and rebuild.
+After any change, re-run `./run.sh` (or `./run.sh --skip-gen` if only C++ source changed).
 
 ---
 
@@ -245,11 +245,14 @@ argus/
 ├── scripts/
 │   ├── config.py                   # YAML loader (shared by Python scripts)
 │   ├── quadrotor_model.py          # symbolic ODE (CasADi)
-│   ├── generate_mpc.py             # OCP + sim solver code generation
+│   ├── generate_mpc.py             # OCP code generation
 │   └── animate_xy.py               # trajectory visualiser
 ├── src/
-│   └── mpc_controller.cpp          # C++ simulation loop
+│   ├── mpc_controller.cpp          # C++ simulation loop
+│   ├── plant_dynamics.hpp          # second-order plant interface
+│   └── plant_dynamics.cpp          # second-order plant implementation
 ├── c_generated_code/               # auto-generated C solver — do not edit
 ├── CMakeLists.txt
+├── run.sh                          # one-command pipeline: generate → build → run → plot
 └── README.md
 ```
