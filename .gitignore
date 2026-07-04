@@ -5,6 +5,9 @@ quadrotor_ocp.json
 # CMake build output
 build/
 
+# Simulation output
+logs/
+
 # Python
 __pycache__/
 *.pyc
