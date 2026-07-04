@@ -41,7 +41,7 @@ using State = std::array<double, QUADROTOR_NX>;
 using Input = std::array<double, QUADROTOR_NU>;
 
 // ── Circle references ──────────────────────────────────────────────────────
-// yref layout:  [x,y,z, vx,vy,vz, phi,theta, T, tau_phi,tau_theta,tau_psi]
+// yref layout:  [x,y,z, vx,vy,vz, phi,theta, T, p_cmd,q_cmd,r_cmd]
 static void circle_yref(double t, double yref[QUADROTOR_NY])
 {
     const double ct = std::cos(circle::omega * t);
@@ -118,7 +118,7 @@ int main()
     csv << std::fixed << std::setprecision(6);
     csv << "step,t,"
            "x,y,z,vx,vy,vz,phi,theta,psi,p,q,r,"
-           "T,tau_phi,tau_theta,tau_psi,"
+           "T,p_cmd,q_cmd,r_cmd,"
            "x_ref,y_ref,z_ref,solve_status\n";
 
     // ── Simulation loop ───────────────────────────────────────────────────

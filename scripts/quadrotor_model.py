@@ -12,19 +12,25 @@ def export_quadrotor_ode_model() -> AcadosModel:
     12-state quadrotor model with Euler angles (ZYX convention).
 
     States : [x, y, z, vx, vy, vz, phi, theta, psi, p, q, r]
-    Inputs : [T, tau_phi, tau_theta, tau_psi]
+    Inputs : [T, p_cmd, q_cmd, r_cmd]
+
+    Body rates (p, q, r) are states driven by a first-order lag that models
+    the PX4 attitude-rate controller.  The MPC commands desired rates; the
+    inner loop is not simulated separately.
 
     Euler angle kinematics have a singularity at theta = ±90 deg.
     Keep attitude well away from that limit (constraints in OCP handle this).
     """
 
     # ── Physical parameters (from config/quadrotor.yaml) ──────────────────
-    cfg = load_config()['model']
-    m  = cfg['mass']
-    g  = cfg['gravity']
-    Ix = cfg['Ix']
-    Iy = cfg['Iy']
-    Iz = cfg['Iz']
+    cfg       = load_config()
+    model_cfg = cfg['model']
+    loop_cfg  = cfg['inner_loop']
+
+    m      = model_cfg['mass']
+    g      = model_cfg['gravity']
+    tau_rp  = loop_cfg['tau_rp']    # roll/pitch rate time constant [s]
+    tau_yaw = loop_cfg['tau_yaw']   # yaw rate time constant [s]
 
     # ── State symbols ──────────────────────────────────────────────────────
     x     = ca.SX.sym('x')
@@ -43,12 +49,12 @@ def export_quadrotor_ode_model() -> AcadosModel:
     state = ca.vertcat(x, y, z, vx, vy, vz, phi, theta, psi, p, q, r)
 
     # ── Input symbols ──────────────────────────────────────────────────────
-    T         = ca.SX.sym('T')          # collective thrust  [N]
-    tau_phi   = ca.SX.sym('tau_phi')    # roll  torque       [Nm]
-    tau_theta = ca.SX.sym('tau_theta')  # pitch torque       [Nm]
-    tau_psi   = ca.SX.sym('tau_psi')    # yaw   torque       [Nm]
+    T     = ca.SX.sym('T')       # collective thrust      [N]
+    p_cmd = ca.SX.sym('p_cmd')   # commanded roll  rate   [rad/s]
+    q_cmd = ca.SX.sym('q_cmd')   # commanded pitch rate   [rad/s]
+    r_cmd = ca.SX.sym('r_cmd')   # commanded yaw   rate   [rad/s]
 
-    u = ca.vertcat(T, tau_phi, tau_theta, tau_psi)
+    u = ca.vertcat(T, p_cmd, q_cmd, r_cmd)
 
     # ── xdot symbols (required for implicit form f_impl = xdot - f_expl) ──
     x_dot     = ca.SX.sym('x_dot')
@@ -89,10 +95,10 @@ def export_quadrotor_ode_model() -> AcadosModel:
         p + ca.sin(phi)*ca.tan(theta)*q + ca.cos(phi)*ca.tan(theta)*r,
         ca.cos(phi)*q - ca.sin(phi)*r,
         (ca.sin(phi)*q + ca.cos(phi)*r) / ca.cos(theta),
-        # rotational dynamics – Euler's equations, diagonal inertia
-        (tau_phi   - (Iz - Iy)*q*r) / Ix,
-        (tau_theta - (Ix - Iz)*p*r) / Iy,
-        (tau_psi   - (Iy - Ix)*p*q) / Iz,
+        # First-order lag: inner-loop rate controller tracks commanded rates
+        (p_cmd - p) / tau_rp,
+        (q_cmd - q) / tau_rp,
+        (r_cmd - r) / tau_yaw,
     )
 
     # ── AcadosModel ───────────────────────────────────────────────────────
@@ -108,7 +114,7 @@ def export_quadrotor_ode_model() -> AcadosModel:
                       'vx [m/s]', 'vy [m/s]', 'vz [m/s]',
                       'phi [rad]', 'theta [rad]', 'psi [rad]',
                       'p [rad/s]', 'q [rad/s]', 'r [rad/s]']
-    model.u_labels = ['T [N]', 'tau_phi [Nm]', 'tau_theta [Nm]', 'tau_psi [Nm]']
+    model.u_labels = ['T [N]', 'p_cmd [rad/s]', 'q_cmd [rad/s]', 'r_cmd [rad/s]']
     model.t_label  = 't [s]'
 
     return model

@@ -8,12 +8,12 @@ Output: c_generated_code/   (C solver + CMakeLists, ready to link from C++)
         quadrotor_ocp.json   (OCP spec, used by ACADOS internals)
 
 State vector  (nx = 12):  [x, y, z, vx, vy, vz, phi, theta, psi, p, q, r]
-Input vector  (nu =  4):  [T, tau_phi, tau_theta, tau_psi]
+Input vector  (nu =  4):  [T, p_cmd, q_cmd, r_cmd]
 
-Cost output   (ny = 12):  [x, y, z, vx, vy, vz, phi, theta, T, tau_phi, tau_theta, tau_psi]
+Cost output   (ny = 12):  [x, y, z, vx, vy, vz, phi, theta, T, p_cmd, q_cmd, r_cmd]
   - psi is intentionally excluded from the cost for now (yaw pointing added later)
   - phi, theta penalised to keep the drone roughly level
-  - inputs penalised to limit aggressiveness
+  - rate commands penalised to limit aggressiveness
 
 The yref for each horizon step is updated at runtime in C++ via:
     acados_ocp_solver_set(solver, i, "yref", yref_ptr)
@@ -50,10 +50,11 @@ MASS    = _model_cfg['mass']
 G       = _model_cfg['gravity']
 T_HOVER = MASS * G
 
-T_MIN   = _con_cfg['T_min']
-T_MAX   = _con_cfg['T_max_factor'] * T_HOVER
-TAU_MAX = _con_cfg['tau_max']
-ANGLE_MAX = np.deg2rad(_con_cfg['angle_max_deg'])
+T_MIN        = _con_cfg['T_min']
+T_MAX        = _con_cfg['T_max_factor'] * T_HOVER
+RATE_MAX     = _con_cfg['rate_max']
+YAW_RATE_MAX = _con_cfg['yaw_rate_max']
+ANGLE_MAX    = np.deg2rad(_con_cfg['angle_max_deg'])
 
 W_STAGE    = np.diag(_cost_cfg['W_stage'])
 W_TERMINAL = np.diag(_cost_cfg['W_terminal'])
@@ -102,8 +103,8 @@ def generate_mpc():
 
     # ── Constraints ───────────────────────────────────────────────────────
     # Input box constraints
-    ocp.constraints.lbu    = np.array([T_MIN,    -TAU_MAX, -TAU_MAX, -TAU_MAX])
-    ocp.constraints.ubu    = np.array([T_MAX,     TAU_MAX,  TAU_MAX,  TAU_MAX])
+    ocp.constraints.lbu    = np.array([T_MIN, -RATE_MAX, -RATE_MAX, -YAW_RATE_MAX])
+    ocp.constraints.ubu    = np.array([T_MAX,  RATE_MAX,  RATE_MAX,  YAW_RATE_MAX])
     ocp.constraints.idxbu  = np.array([0, 1, 2, 3])
 
     # State box constraints on phi (idx 6) and theta (idx 7) — running stages

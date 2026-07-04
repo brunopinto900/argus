@@ -26,11 +26,11 @@ The quadrotor is modelled with 12 states and 4 inputs, using ZYX Euler angles.
 | Symbol | Index | Unit | Description |
 |---|---|---|---|
 | T | 0 | N | collective thrust (sum of all rotor forces) |
-| τ_φ | 1 | Nm | roll torque |
-| τ_θ | 2 | Nm | pitch torque |
-| τ_ψ | 3 | Nm | yaw torque |
+| p_cmd | 1 | rad/s | commanded roll rate |
+| q_cmd | 2 | rad/s | commanded pitch rate |
+| r_cmd | 3 | rad/s | commanded yaw rate |
 
-The inputs are thrust and body torques — not individual motor speeds. This is a standard abstraction for MPC: the low-level motor mixing that maps (T, τ) to individual rotor RPMs is assumed to run on a separate, faster inner loop.
+The inputs are thrust and commanded body rates — matching the interface of a real flight controller such as PX4, which exposes a body-rate setpoint API. The dynamics of the inner rate controller are captured by a first-order lag on each body rate (time constants in `config/quadrotor.yaml` under `inner_loop`).
 
 ### Continuous-time ODE
 
@@ -59,14 +59,14 @@ The rotation is the ZYX convention: `R = Rz(ψ) · Ry(θ) · Rx(φ)`. When the d
 
 This transformation has a kinematic singularity at θ = ±90°. The pitch constraint (±60°) in the OCP keeps the trajectory well away from it.
 
-**Rotational dynamics** — Euler's equations with a diagonal inertia matrix (Ix, Iy, Iz):
+**Rotational dynamics** — first-order lag modelling the PX4 attitude-rate controller:
 ```
-ṗ = (τ_φ   − (Iz − Iy)·q·r) / Ix
-q̇ = (τ_θ   − (Ix − Iz)·p·r) / Iy
-ṙ = (τ_ψ   − (Iy − Ix)·p·q) / Iz
+ṗ = (p_cmd − p) / τ_rp
+q̇ = (q_cmd − q) / τ_rp
+ṙ = (r_cmd − r) / τ_yaw
 ```
 
-The cross-product (gyroscopic) terms `(Ij − Ik)·ω·ω` are included, so the model captures the coupling between axes that occurs when the drone spins.
+The actual PX4 rate controller is a second-order system (wn ≈ 25 rad/s for roll/pitch, wn ≈ 4 rad/s for yaw). A first-order lag with τ = 1/wn is a standard approximation that captures the dominant closed-loop pole. Since τ_rp = 0.04 s ≈ Ts, the inner-loop dynamics are not negligible and must be in the prediction model.
 
 ### Physical parameters
 
@@ -76,9 +76,10 @@ All parameters are in [`config/quadrotor.yaml`](config/quadrotor.yaml):
 |---|---|---|
 | mass | 1.0 kg | total vehicle mass |
 | gravity | 9.81 m/s² | gravitational acceleration |
-| Ix | 0.01 kg·m² | roll inertia |
-| Iy | 0.01 kg·m² | pitch inertia |
-| Iz | 0.02 kg·m² | yaw inertia (higher: yaw responds more slowly) |
+| inner_loop.tau_rp | 0.04 s | roll/pitch rate time constant (1/wn, wn ≈ 25 rad/s) |
+| inner_loop.tau_yaw | 0.25 s | yaw rate time constant (1/wn, wn ≈ 4 rad/s) |
+
+Inertia (Ix, Iy, Iz) is no longer in the ODE — with body-rate inputs, inertia is implicitly captured by the inner-loop time constants.
 
 ---
 
@@ -95,8 +96,8 @@ min  Σ_{k=0}^{N-1} ‖h(x_k, u_k) − y_ref_k‖²_W  +  ‖h_e(x_N) − y_ref_
 The output map `h` selects which states and inputs are penalised:
 
 ```
-h(x, u)  = [x, y, z, vx, vy, vz, φ, θ, T, τ_φ, τ_θ, τ_ψ]   (ny = 12)
-h_e(x)   = [x, y, z, vx, vy, vz, φ, θ]                       (ny_e = 8, terminal)
+h(x, u)  = [x, y, z, vx, vy, vz, φ, θ, T, p_cmd, q_cmd, r_cmd]   (ny = 12)
+h_e(x)   = [x, y, z, vx, vy, vz, φ, θ]                            (ny_e = 8, terminal)
 ```
 
 ψ (yaw) and body rates (p, q, r) are **excluded** from the cost. The drone tracks position and velocity, stays level, and minimises control effort — it does not try to point in any direction.
@@ -108,7 +109,7 @@ Stage weights `W` (diagonal):
 | x, y, z | 100 | tight position tracking |
 | vx, vy, vz | 10 | smooth velocity profile |
 | φ, θ | 5 | keep drone roughly level |
-| T, τ_φ, τ_θ, τ_ψ | 0.1 | regularise inputs |
+| T, p_cmd, q_cmd, r_cmd | 0.1 | regularise inputs |
 
 Terminal weights `W_e` double the position and velocity weights (200 / 20) to encourage stability at the end of the horizon.
 
@@ -119,7 +120,8 @@ At each MPC step the reference `y_ref_k` is computed from the circle trajectory 
 | Quantity | Bound | Reason |
 |---|---|---|
 | T | [0, 2·T_hover] | thrust is one-directional; 2× hover as saturation limit |
-| τ_φ, τ_θ, τ_ψ | ±0.5 Nm | actuator limits |
+| p_cmd, q_cmd | ±5.0 rad/s | roll/pitch rate command limits |
+| r_cmd | ±2.0 rad/s | yaw rate command limit |
 | φ, θ | ±60° | keep away from kinematic singularity at ±90° |
 
 ### Horizon

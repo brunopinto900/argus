@@ -15,8 +15,17 @@ mpc:
 constraints:
   T_min:         0.0   # minimum thrust [N]
   T_max_factor:  2.0   # T_max = T_max_factor × T_hover
-  tau_max:       0.5   # torque bound ±tau_max [Nm]
+  rate_max:      5.0   # max roll/pitch rate command ±rate_max [rad/s]
+  yaw_rate_max:  2.0   # max yaw rate command ±yaw_rate_max [rad/s]
   angle_max_deg: 60.0  # max roll / pitch [deg]  (keeps away from gimbal-lock at ±90°)
+
+# Inner-loop (attitude rate controller) time constants — first-order approximation
+# of the PX4 second-order rate controller.  tau = 1/wn:
+#   roll/pitch: wn ≈ 25 rad/s  →  tau_rp  = 0.04 s
+#   yaw:        wn ≈  4 rad/s  →  tau_yaw = 0.25 s
+inner_loop:
+  tau_rp:  0.04   # roll/pitch rate time constant [s]
+  tau_yaw: 0.25   # yaw rate time constant [s]
 
 # Cost weights (NONLINEAR_LS: min Σ ‖h(x,u) − yref‖²_W)
 # W_stage layout:    [x, y, z,  vx, vy, vz,  phi, theta,  T, tau_phi, tau_theta, tau_psi]
