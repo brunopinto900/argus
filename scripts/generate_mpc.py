@@ -42,6 +42,7 @@ _mpc_cfg    = _cfg['mpc']
 _con_cfg    = _cfg['constraints']
 _cost_cfg   = _cfg['cost']
 _circ_cfg   = _cfg['circle']
+_plant_cfg  = _cfg['plant']
 
 N       = _mpc_cfg['N']
 Ts      = _mpc_cfg['Ts']
@@ -185,7 +186,11 @@ def generate_cpp_params_header(out_dir: str):
         f.write(f"static constexpr double ARGUS_MPC_TS   = {Ts};\n\n")
         f.write(f"static constexpr double ARGUS_CIRCLE_R      = {_circ_cfg['radius']};\n")
         f.write(f"static constexpr double ARGUS_CIRCLE_Z_REF  = {_circ_cfg['z_ref']};\n")
-        f.write(f"static constexpr double ARGUS_CIRCLE_PERIOD = {_circ_cfg['period']};\n")
+        f.write(f"static constexpr double ARGUS_CIRCLE_PERIOD = {_circ_cfg['period']};\n\n")
+        f.write(f"static constexpr double ARGUS_PLANT_WN_RP    = {_plant_cfg['wn_rp']};\n")
+        f.write(f"static constexpr double ARGUS_PLANT_ZETA_RP  = {_plant_cfg['zeta_rp']};\n")
+        f.write(f"static constexpr double ARGUS_PLANT_WN_YAW   = {_plant_cfg['wn_yaw']};\n")
+        f.write(f"static constexpr double ARGUS_PLANT_ZETA_YAW = {_plant_cfg['zeta_yaw']};\n")
     print(f"C++ params header written to: {path}")
 
 

@@ -41,7 +41,10 @@ if(NOT EXISTS "${GENERATED_CODE_DIR}/argus_params.h")
 endif()
 
 # ── Main executable ────────────────────────────────────────────────────────
-add_executable(argus_mpc src/mpc_controller.cpp)
+add_executable(argus_mpc
+    src/mpc_controller.cpp
+    src/plant_dynamics.cpp
+)
 
 target_include_directories(argus_mpc PRIVATE
     ${GENERATED_CODE_DIR}

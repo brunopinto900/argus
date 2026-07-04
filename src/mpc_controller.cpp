@@ -7,12 +7,11 @@
 
 extern "C" {
 #include "acados_c/ocp_nlp_interface.h"
-#include "acados_c/sim_interface.h"
 #include "acados_solver_quadrotor.h"
-#include "acados_sim_solver_quadrotor.h"
 }
 // Auto-generated from config/quadrotor.yaml — re-run generate_mpc.py to update
 #include "argus_params.h"
+#include "plant_dynamics.hpp"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -86,24 +85,18 @@ int main()
     ocp_nlp_in*     nlp_in  = quadrotor_acados_get_nlp_in(capsule);
     ocp_nlp_out*    nlp_out = quadrotor_acados_get_nlp_out(capsule);
 
-    // ── Create plant simulator (generated from the same Python model) ─────
-    quadrotor_sim_solver_capsule* sim_capsule = quadrotor_acados_sim_solver_create_capsule();
-    if (quadrotor_acados_sim_create(sim_capsule)) {
-        std::cerr << "quadrotor_acados_sim_create() failed\n";
-        return 1;
-    }
-    sim_config* sim_cfg  = quadrotor_acados_get_sim_config(sim_capsule);
-    void*       sim_dims = quadrotor_acados_get_sim_dims(sim_capsule);
-    sim_in*     s_in     = quadrotor_acados_get_sim_in(sim_capsule);
-    sim_out*    s_out    = quadrotor_acados_get_sim_out(sim_capsule);
-
     // ── Initial state: on the circle at t=0 with tangential velocity ──────
     State x0 = {
-        circle::R, 0.0,        circle::z_ref,    // position
-        0.0,       circle::R * circle::omega, 0.0, // velocity (tangential)
-        0.0,       0.0,        0.0,               // euler angles (level)
-        0.0,       0.0,        0.0                // body rates
+        circle::R, 0.0,        circle::z_ref,      // position
+        0.0,       circle::R * circle::omega, 0.0,  // velocity (tangential)
+        0.0,       0.0,        0.0,                 // euler angles (level)
+        0.0,       0.0,        0.0                  // body rates
     };
+
+    // ── Plant simulator: second-order dynamics, different from MPC model ──
+    PlantDynamics plant(x0, mpc::T_hover, ARGUS_MASS,
+                        ARGUS_PLANT_WN_RP,  ARGUS_PLANT_ZETA_RP,
+                        ARGUS_PLANT_WN_YAW, ARGUS_PLANT_ZETA_YAW);
 
     // Warm-start all stages with x0 and hover thrust
     Input u_init = {mpc::T_hover, 0.0, 0.0, 0.0};
@@ -173,11 +166,9 @@ int main()
                       << (status == 0 ? "OK" : "WARN") << "\n";
         }
 
-        // 6. Simulate plant one step with the generated integrator
-        sim_in_set(sim_cfg, sim_dims, s_in, "x", x.data());
-        sim_in_set(sim_cfg, sim_dims, s_in, "u", u.data());
-        quadrotor_acados_sim_solve(sim_capsule);
-        sim_out_get(sim_cfg, sim_dims, s_out, "x", x.data());
+        // 6. Simulate plant one step (second-order dynamics)
+        plant.update(u, mpc::Ts);
+        x = plant.state();
 
         // 7. Shift warm-start: move stage i+1 → stage i
         State x_s{};
@@ -197,8 +188,6 @@ int main()
     std::cout << "Visualise with: python3 scripts/animate_xy.py\n";
 
     // ── Cleanup ───────────────────────────────────────────────────────────
-    quadrotor_acados_sim_free(sim_capsule);
-    quadrotor_acados_sim_solver_free_capsule(sim_capsule);
     quadrotor_acados_free(capsule);
     quadrotor_acados_free_capsule(capsule);
     return 0;

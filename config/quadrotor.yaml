@@ -28,12 +28,21 @@ inner_loop:
   tau_yaw: 0.25   # yaw rate time constant [s]
 
 # Cost weights (NONLINEAR_LS: min Σ ‖h(x,u) − yref‖²_W)
-# W_stage layout:    [x, y, z,  vx, vy, vz,  phi, theta,  T, tau_phi, tau_theta, tau_psi]
+# W_stage layout:    [x, y, z,  vx, vy, vz,  phi, theta,  T, p_cmd, q_cmd, r_cmd]
 # W_terminal layout: [x, y, z,  vx, vy, vz,  phi, theta]
 # If cost_y_expr changes (e.g. yaw pointing added), extend these lists to match.
 cost:
   W_stage:    [100.0, 100.0, 100.0,  10.0, 10.0, 10.0,  5.0, 5.0,  0.1, 0.1, 0.1, 0.1]
   W_terminal: [200.0, 200.0, 200.0,  20.0, 20.0, 20.0,  10.0, 10.0]
+
+# Plant simulator: second-order body-rate dynamics (matches PX4 inner loop).
+# Intentionally different from the first-order MPC prediction model —
+# the mismatch is the robustness test.  Set wn/zeta to match your hardware.
+plant:
+  wn_rp:    25.0   # roll/pitch rate bandwidth [rad/s]
+  zeta_rp:   0.7   # roll/pitch damping ratio
+  wn_yaw:    4.0   # yaw rate bandwidth [rad/s]
+  zeta_yaw:  0.7   # yaw damping ratio
 
 # Reference circle trajectory
 circle:
