@@ -1,0 +1,11 @@
+# ACADOS generated solver — rebuild with: python3 scripts/generate_mpc.py
+c_generated_code/
+quadrotor_ocp.json
+
+# CMake build output
+build/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
