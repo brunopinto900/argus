@@ -23,7 +23,7 @@ import os
 import sys
 import numpy as np
 import casadi as ca
-from acados_template import AcadosOcp, AcadosOcpSolver
+from acados_template import AcadosOcp, AcadosOcpSolver, AcadosSim, AcadosSimSolver
 
 # Make ACADOS shared libs visible before the solver is loaded
 _acados_lib = os.path.join(os.path.expanduser('~'), 'acados', 'lib')
@@ -148,10 +148,34 @@ def generate_mpc():
 
     # ── Generate ──────────────────────────────────────────────────────────
     solver = AcadosOcpSolver(ocp, json_file='quadrotor_ocp.json')
-    print(f"\nCode generated in: {ocp.code_export_directory}")
+    print(f"\nOCP solver generated in: {ocp.code_gen_options.code_export_directory}")
     print(f"nx={nx}, nu={nu}, N={N}, Ts={Ts}s, Tf={N*Ts}s")
     return solver
 
 
+def generate_sim():
+    """Generate a standalone integrator (plant simulator) from the same model.
+
+    Produces acados_sim_solver_quadrotor.c/.h in c_generated_code/.
+    The C++ application uses this instead of its own RK4, so the ODE
+    only ever lives in quadrotor_model.py.
+    """
+    sim = AcadosSim()
+    model = export_quadrotor_ode_model()
+    sim.model = model
+
+    sim.solver_options.T               = Ts   # integrate exactly one sample period
+    sim.solver_options.integrator_type = 'ERK'
+    sim.solver_options.num_stages      = 4    # RK4
+    sim.solver_options.num_steps       = 1
+
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    sim.code_gen_options.code_export_directory = os.path.join(repo_root, 'c_generated_code')
+
+    AcadosSimSolver(sim, json_file='quadrotor_sim.json')
+    print(f"Sim solver generated in: {sim.code_gen_options.code_export_directory}")
+
+
 if __name__ == '__main__':
     generate_mpc()
+    generate_sim()

@@ -8,20 +8,13 @@
 extern "C" {
 #include "acados_c/ocp_nlp_interface.h"
 #include "acados_solver_quadrotor.h"
+#include "acados_sim_solver_quadrotor.h"
+#include "acados/sim/sim_common.h"
 }
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
-
-// ── Model constants — must match scripts/quadrotor_model.py ───────────────
-namespace model {
-    constexpr double m  = 1.0;
-    constexpr double g  = 9.81;
-    constexpr double Ix = 0.01;
-    constexpr double Iy = 0.01;
-    constexpr double Iz = 0.02;
-}
 
 // ── MPC constants — must match scripts/generate_mpc.py ────────────────────
 namespace mpc {
@@ -31,7 +24,7 @@ namespace mpc {
     constexpr int    NY      = QUADROTOR_NY;   // 12
     constexpr int    NYN     = QUADROTOR_NYN;  //  8
     constexpr double Ts      = 0.05;
-    constexpr double T_hover = model::m * model::g;
+    constexpr double T_hover = 9.81;           // m*g, matches quadrotor_model.py
 }
 
 // ── Circle trajectory parameters ──────────────────────────────────────────
@@ -44,52 +37,6 @@ namespace circle {
 
 using State = std::array<double, QUADROTOR_NX>;
 using Input = std::array<double, QUADROTOR_NU>;
-
-// ── Quadrotor ODE — identical to scripts/quadrotor_model.py ───────────────
-static void quadrotor_ode(const State& x, const Input& u, State& xd)
-{
-    const double phi = x[6], theta = x[7], psi = x[8];
-    const double p   = x[9], q     = x[10], r  = x[11];
-    const double T   = u[0], t_phi = u[1], t_th = u[2], t_psi = u[3];
-
-    const double Twx = T * (std::cos(psi)*std::sin(theta)*std::cos(phi) + std::sin(psi)*std::sin(phi));
-    const double Twy = T * (std::sin(psi)*std::sin(theta)*std::cos(phi) - std::cos(psi)*std::sin(phi));
-    const double Twz = T *  std::cos(theta)*std::cos(phi);
-
-    xd[0]  = x[3];
-    xd[1]  = x[4];
-    xd[2]  = x[5];
-    xd[3]  = Twx / model::m;
-    xd[4]  = Twy / model::m;
-    xd[5]  = Twz / model::m - model::g;
-    xd[6]  = p + std::sin(phi)*std::tan(theta)*q + std::cos(phi)*std::tan(theta)*r;
-    xd[7]  = std::cos(phi)*q - std::sin(phi)*r;
-    xd[8]  = (std::sin(phi)*q + std::cos(phi)*r) / std::cos(theta);
-    xd[9]  = (t_phi - (model::Iz - model::Iy)*q*r) / model::Ix;
-    xd[10] = (t_th  - (model::Ix - model::Iz)*p*r) / model::Iy;
-    xd[11] = (t_psi - (model::Iy - model::Ix)*p*q) / model::Iz;
-}
-
-// ── RK4 integrator ─────────────────────────────────────────────────────────
-static State rk4_step(const State& x, const Input& u, double dt)
-{
-    State k1{}, k2{}, k3{}, k4{}, tmp{}, xnext{};
-
-    quadrotor_ode(x, u, k1);
-    for (int i = 0; i < mpc::NX; ++i) tmp[i] = x[i] + 0.5*dt*k1[i];
-
-    quadrotor_ode(tmp, u, k2);
-    for (int i = 0; i < mpc::NX; ++i) tmp[i] = x[i] + 0.5*dt*k2[i];
-
-    quadrotor_ode(tmp, u, k3);
-    for (int i = 0; i < mpc::NX; ++i) tmp[i] = x[i] + dt*k3[i];
-
-    quadrotor_ode(tmp, u, k4);
-    for (int i = 0; i < mpc::NX; ++i)
-        xnext[i] = x[i] + (dt/6.0)*(k1[i] + 2.0*k2[i] + 2.0*k3[i] + k4[i]);
-
-    return xnext;
-}
 
 // ── Circle references ──────────────────────────────────────────────────────
 // yref layout:  [x,y,z, vx,vy,vz, phi,theta, T, tau_phi,tau_theta,tau_psi]
@@ -136,6 +83,17 @@ int main()
     ocp_nlp_dims*   dims    = quadrotor_acados_get_nlp_dims(capsule);
     ocp_nlp_in*     nlp_in  = quadrotor_acados_get_nlp_in(capsule);
     ocp_nlp_out*    nlp_out = quadrotor_acados_get_nlp_out(capsule);
+
+    // ── Create plant simulator (generated from the same Python model) ─────
+    quadrotor_sim_solver_capsule* sim_capsule = quadrotor_acados_sim_solver_create_capsule();
+    if (quadrotor_acados_sim_create(sim_capsule)) {
+        std::cerr << "quadrotor_acados_sim_create() failed\n";
+        return 1;
+    }
+    sim_config_t* sim_config = quadrotor_acados_sim_get_sim_config(sim_capsule);
+    void*         sim_dims_v = quadrotor_acados_sim_get_sim_dims(sim_capsule);
+    sim_in_t*     sim_in     = quadrotor_acados_sim_get_sim_in(sim_capsule);
+    sim_out_t*    sim_out    = quadrotor_acados_sim_get_sim_out(sim_capsule);
 
     // ── Initial state: on the circle at t=0 with tangential velocity ──────
     State x0 = {
@@ -213,8 +171,11 @@ int main()
                       << (status == 0 ? "OK" : "WARN") << "\n";
         }
 
-        // 6. Simulate plant one step with RK4
-        x = rk4_step(x, u, mpc::Ts);
+        // 6. Simulate plant one step with the generated integrator
+        sim_in_set(sim_config, sim_dims_v, sim_in, "x", x.data());
+        sim_in_set(sim_config, sim_dims_v, sim_in, "u", u.data());
+        quadrotor_acados_sim_solve(sim_capsule);
+        sim_out_get(sim_config, sim_dims_v, sim_out, "x", x.data());
 
         // 7. Shift warm-start: move stage i+1 → stage i
         State x_s{};
@@ -234,6 +195,8 @@ int main()
     std::cout << "Visualise with: python3 scripts/animate_xy.py\n";
 
     // ── Cleanup ───────────────────────────────────────────────────────────
+    quadrotor_acados_sim_free(sim_capsule);
+    quadrotor_acados_sim_solver_free_capsule(sim_capsule);
     quadrotor_acados_free(capsule);
     quadrotor_acados_free_capsule(capsule);
     return 0;
