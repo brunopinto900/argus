@@ -1,0 +1,33 @@
+# Quadrotor physical model parameters
+model:
+  mass:    1.0     # total mass [kg]
+  gravity: 9.81    # gravitational acceleration [m/s²]
+  Ix:      0.01    # roll  inertia [kg·m²]
+  Iy:      0.01    # pitch inertia [kg·m²]
+  Iz:      0.02    # yaw   inertia [kg·m²]
+
+# MPC horizon settings
+mpc:
+  N:  20    # prediction horizon steps
+  Ts: 0.05  # sample time [s]  →  look-ahead = N × Ts = 1.0 s
+
+# Input and state constraints
+constraints:
+  T_min:         0.0   # minimum thrust [N]
+  T_max_factor:  2.0   # T_max = T_max_factor × T_hover
+  tau_max:       0.5   # torque bound ±tau_max [Nm]
+  angle_max_deg: 60.0  # max roll / pitch [deg]  (keeps away from gimbal-lock at ±90°)
+
+# Cost weights (NONLINEAR_LS: min Σ ‖h(x,u) − yref‖²_W)
+# W_stage layout:    [x, y, z,  vx, vy, vz,  phi, theta,  T, tau_phi, tau_theta, tau_psi]
+# W_terminal layout: [x, y, z,  vx, vy, vz,  phi, theta]
+# If cost_y_expr changes (e.g. yaw pointing added), extend these lists to match.
+cost:
+  W_stage:    [100.0, 100.0, 100.0,  10.0, 10.0, 10.0,  5.0, 5.0,  0.1, 0.1, 0.1, 0.1]
+  W_terminal: [200.0, 200.0, 200.0,  20.0, 20.0, 20.0,  10.0, 10.0]
+
+# Reference circle trajectory
+circle:
+  radius: 2.0   # [m]
+  z_ref:  1.5   # altitude [m]
+  period: 10.0  # lap time [s]

@@ -1,6 +1,7 @@
 # ACADOS generated solver — rebuild with: python3 scripts/generate_mpc.py
 c_generated_code/
 quadrotor_ocp.json
+quadrotor_sim.json
 
 # CMake build output
 build/

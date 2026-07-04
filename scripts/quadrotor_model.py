@@ -1,5 +1,10 @@
+import sys
+import os
 import casadi as ca
 from acados_template import AcadosModel
+
+sys.path.insert(0, os.path.dirname(__file__))
+from config import load_config
 
 
 def export_quadrotor_ode_model() -> AcadosModel:
@@ -13,12 +18,13 @@ def export_quadrotor_ode_model() -> AcadosModel:
     Keep attitude well away from that limit (constraints in OCP handle this).
     """
 
-    # ── Physical parameters ────────────────────────────────────────────────
-    m  = 1.0     # total mass            [kg]
-    g  = 9.81    # gravitational accel   [m/s²]
-    Ix = 0.01    # roll  inertia         [kg·m²]
-    Iy = 0.01    # pitch inertia         [kg·m²]
-    Iz = 0.02    # yaw   inertia         [kg·m²]
+    # ── Physical parameters (from config/quadrotor.yaml) ──────────────────
+    cfg = load_config()['model']
+    m  = cfg['mass']
+    g  = cfg['gravity']
+    Ix = cfg['Ix']
+    Iy = cfg['Iy']
+    Iz = cfg['Iz']
 
     # ── State symbols ──────────────────────────────────────────────────────
     x     = ca.SX.sym('x')

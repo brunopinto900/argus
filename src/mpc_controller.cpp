@@ -11,27 +11,29 @@ extern "C" {
 #include "acados_sim_solver_quadrotor.h"
 #include "acados/sim/sim_common.h"
 }
+// Auto-generated from config/quadrotor.yaml — re-run generate_mpc.py to update
+#include "argus_params.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
 
-// ── MPC constants — must match scripts/generate_mpc.py ────────────────────
+// ── MPC constants ─────────────────────────────────────────────────────────
 namespace mpc {
-    constexpr int    N       = QUADROTOR_N;    // 20
-    constexpr int    NX      = QUADROTOR_NX;   // 12
-    constexpr int    NU      = QUADROTOR_NU;   //  4
-    constexpr int    NY      = QUADROTOR_NY;   // 12
-    constexpr int    NYN     = QUADROTOR_NYN;  //  8
-    constexpr double Ts      = 0.05;
-    constexpr double T_hover = 9.81;           // m*g, matches quadrotor_model.py
+    constexpr int    N       = QUADROTOR_N;        // from generated solver header
+    constexpr int    NX      = QUADROTOR_NX;
+    constexpr int    NU      = QUADROTOR_NU;
+    constexpr int    NY      = QUADROTOR_NY;
+    constexpr int    NYN     = QUADROTOR_NYN;
+    constexpr double Ts      = ARGUS_MPC_TS;               // from argus_params.h
+    constexpr double T_hover = ARGUS_T_HOVER;      // from argus_params.h
 }
 
-// ── Circle trajectory parameters ──────────────────────────────────────────
+// ── Circle trajectory parameters (from argus_params.h) ────────────────────
 namespace circle {
-    constexpr double R      = 2.0;
-    constexpr double z_ref  = 1.5;
-    constexpr double period = 10.0;
+    constexpr double R      = ARGUS_CIRCLE_R;
+    constexpr double z_ref  = ARGUS_CIRCLE_Z_REF;
+    constexpr double period = ARGUS_CIRCLE_PERIOD;
     constexpr double omega  = 2.0 * M_PI / period;
 }
 
