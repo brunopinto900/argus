@@ -33,6 +33,13 @@ target_include_directories(quadrotor_solver PUBLIC
 # Suppress warnings in auto-generated code; keep optimisation.
 target_compile_options(quadrotor_solver PRIVATE -O2 -w)
 
+# Fail early with a clear message if generate_mpc.py hasn't been run yet.
+if(NOT EXISTS "${GENERATED_CODE_DIR}/argus_params.h")
+    message(FATAL_ERROR
+        "c_generated_code/argus_params.h not found.\n"
+        "Run: python3 scripts/generate_mpc.py")
+endif()
+
 # ── Main executable ────────────────────────────────────────────────────────
 add_executable(argus_mpc src/mpc_controller.cpp)
 

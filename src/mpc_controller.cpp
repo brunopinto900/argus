@@ -7,9 +7,9 @@
 
 extern "C" {
 #include "acados_c/ocp_nlp_interface.h"
+#include "acados_c/sim_interface.h"
 #include "acados_solver_quadrotor.h"
 #include "acados_sim_solver_quadrotor.h"
-#include "acados/sim/sim_common.h"
 }
 // Auto-generated from config/quadrotor.yaml — re-run generate_mpc.py to update
 #include "argus_params.h"
@@ -92,10 +92,10 @@ int main()
         std::cerr << "quadrotor_acados_sim_create() failed\n";
         return 1;
     }
-    sim_config_t* sim_config = quadrotor_acados_sim_get_sim_config(sim_capsule);
-    void*         sim_dims_v = quadrotor_acados_sim_get_sim_dims(sim_capsule);
-    sim_in_t*     sim_in     = quadrotor_acados_sim_get_sim_in(sim_capsule);
-    sim_out_t*    sim_out    = quadrotor_acados_sim_get_sim_out(sim_capsule);
+    sim_config* sim_cfg  = quadrotor_acados_get_sim_config(sim_capsule);
+    void*       sim_dims = quadrotor_acados_get_sim_dims(sim_capsule);
+    sim_in*     s_in     = quadrotor_acados_get_sim_in(sim_capsule);
+    sim_out*    s_out    = quadrotor_acados_get_sim_out(sim_capsule);
 
     // ── Initial state: on the circle at t=0 with tangential velocity ──────
     State x0 = {
@@ -174,10 +174,10 @@ int main()
         }
 
         // 6. Simulate plant one step with the generated integrator
-        sim_in_set(sim_config, sim_dims_v, sim_in, "x", x.data());
-        sim_in_set(sim_config, sim_dims_v, sim_in, "u", u.data());
+        sim_in_set(sim_cfg, sim_dims, s_in, "x", x.data());
+        sim_in_set(sim_cfg, sim_dims, s_in, "u", u.data());
         quadrotor_acados_sim_solve(sim_capsule);
-        sim_out_get(sim_config, sim_dims_v, sim_out, "x", x.data());
+        sim_out_get(sim_cfg, sim_dims, s_out, "x", x.data());
 
         // 7. Shift warm-start: move stage i+1 → stage i
         State x_s{};
