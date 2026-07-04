@@ -192,6 +192,14 @@ The split exists because the model is shared by two independent consumers — th
 
 Assumed install path: `~/acados`. Adjust `ACADOS_ROOT` in `CMakeLists.txt` if yours differs.
 
+Install ACADOS itself following [its own install docs](https://docs.acados.org/installation/),
+then the Python dependencies:
+
+```bash
+pip install -r requirements.txt
+pip install -e $HOME/acados/interfaces/acados_template   # tied to your acados checkout, not on PyPI
+```
+
 ---
 
 ## How to run

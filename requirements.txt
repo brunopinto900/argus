@@ -1,0 +1,11 @@
+# Python dependencies for scripts/generate_mpc.py (OCP code generation).
+# This is a build-time tool only — the generated C solver has no Python
+# dependency at runtime.
+#
+# acados_template is intentionally NOT listed here: it must be installed as
+# an editable package from your own acados checkout (it's tied to that
+# specific acados version, not published standalone on PyPI):
+#   pip install -e $HOME/acados/interfaces/acados_template
+casadi>=3.6
+numpy>=1.23
+pyyaml>=5.3
