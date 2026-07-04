@@ -1,4 +1,4 @@
-# Argus — Quadrotor Circle-Tracking MPC
+# Argus — Quadrotor Target-Tracking MPC
 
 Model Predictive Control for a quadrotor tracking a circular trajectory with yaw locked toward an object at the centre. The controller is formulated as a Nonlinear MPC using [ACADOS](https://docs.acados.org/), which generates a C solver that is called from C++.
 
