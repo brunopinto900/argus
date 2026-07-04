@@ -6,20 +6,156 @@ Model Predictive Control for a quadrotor tracking a circular trajectory. The con
 
 ---
 
+## Model
+
+### State and inputs
+
+The quadrotor is modelled with 12 states and 4 inputs, using ZYX Euler angles.
+
+**State** `x ∈ ℝ¹²`:
+
+| Symbol | Indices | Unit | Description |
+|---|---|---|---|
+| x, y, z | 0–2 | m | position in world frame |
+| vx, vy, vz | 3–5 | m/s | velocity in world frame |
+| φ, θ, ψ | 6–8 | rad | roll, pitch, yaw (ZYX Euler) |
+| p, q, r | 9–11 | rad/s | body-frame angular rates |
+
+**Input** `u ∈ ℝ⁴`:
+
+| Symbol | Index | Unit | Description |
+|---|---|---|---|
+| T | 0 | N | collective thrust (sum of all rotor forces) |
+| τ_φ | 1 | Nm | roll torque |
+| τ_θ | 2 | Nm | pitch torque |
+| τ_ψ | 3 | Nm | yaw torque |
+
+The inputs are thrust and body torques — not individual motor speeds. This is a standard abstraction for MPC: the low-level motor mixing that maps (T, τ) to individual rotor RPMs is assumed to run on a separate, faster inner loop.
+
+### Continuous-time ODE
+
+**Position kinematics** — velocity integrates into position:
+```
+ẋ  = vx
+ẏ  = vy
+ż  = vz
+```
+
+**Translational dynamics** — thrust T acts along the body z-axis; rotating it to the world frame via R(φ,θ,ψ) gives the acceleration:
+```
+v̇x = T/m · (cos(ψ)·sin(θ)·cos(φ) + sin(ψ)·sin(φ))
+v̇y = T/m · (sin(ψ)·sin(θ)·cos(φ) − cos(ψ)·sin(φ))
+v̇z = T/m · cos(θ)·cos(φ) − g
+```
+
+The rotation is the ZYX convention: `R = Rz(ψ) · Ry(θ) · Rx(φ)`. When the drone is level (φ = θ = 0) this reduces to `v̇z = T/m − g`, so T = mg at hover.
+
+**Euler angle kinematics** — relates body rates (p, q, r) to Euler rates:
+```
+φ̇ = p + sin(φ)·tan(θ)·q + cos(φ)·tan(θ)·r
+θ̇ =     cos(φ)·q         − sin(φ)·r
+ψ̇ =    (sin(φ)·q         + cos(φ)·r) / cos(θ)
+```
+
+This transformation has a kinematic singularity at θ = ±90°. The pitch constraint (±60°) in the OCP keeps the trajectory well away from it.
+
+**Rotational dynamics** — Euler's equations with a diagonal inertia matrix (Ix, Iy, Iz):
+```
+ṗ = (τ_φ   − (Iz − Iy)·q·r) / Ix
+q̇ = (τ_θ   − (Ix − Iz)·p·r) / Iy
+ṙ = (τ_ψ   − (Iy − Ix)·p·q) / Iz
+```
+
+The cross-product (gyroscopic) terms `(Ij − Ik)·ω·ω` are included, so the model captures the coupling between axes that occurs when the drone spins.
+
+### Physical parameters
+
+All parameters are in [`config/quadrotor.yaml`](config/quadrotor.yaml):
+
+| Parameter | Default | Description |
+|---|---|---|
+| mass | 1.0 kg | total vehicle mass |
+| gravity | 9.81 m/s² | gravitational acceleration |
+| Ix | 0.01 kg·m² | roll inertia |
+| Iy | 0.01 kg·m² | pitch inertia |
+| Iz | 0.02 kg·m² | yaw inertia (higher: yaw responds more slowly) |
+
+---
+
+## MPC formulation
+
+### Cost function
+
+ACADOS uses a **Nonlinear Least-Squares** cost:
+
+```
+min  Σ_{k=0}^{N-1} ‖h(x_k, u_k) − y_ref_k‖²_W  +  ‖h_e(x_N) − y_ref_N‖²_{W_e}
+```
+
+The output map `h` selects which states and inputs are penalised:
+
+```
+h(x, u)  = [x, y, z, vx, vy, vz, φ, θ, T, τ_φ, τ_θ, τ_ψ]   (ny = 12)
+h_e(x)   = [x, y, z, vx, vy, vz, φ, θ]                       (ny_e = 8, terminal)
+```
+
+ψ (yaw) and body rates (p, q, r) are **excluded** from the cost. The drone tracks position and velocity, stays level, and minimises control effort — it does not try to point in any direction.
+
+Stage weights `W` (diagonal):
+
+| Output | Weight | Rationale |
+|---|---|---|
+| x, y, z | 100 | tight position tracking |
+| vx, vy, vz | 10 | smooth velocity profile |
+| φ, θ | 5 | keep drone roughly level |
+| T, τ_φ, τ_θ, τ_ψ | 0.1 | regularise inputs |
+
+Terminal weights `W_e` double the position and velocity weights (200 / 20) to encourage stability at the end of the horizon.
+
+At each MPC step the reference `y_ref_k` is computed from the circle trajectory evaluated at `t + k·Ts`.
+
+### Constraints
+
+| Quantity | Bound | Reason |
+|---|---|---|
+| T | [0, 2·T_hover] | thrust is one-directional; 2× hover as saturation limit |
+| τ_φ, τ_θ, τ_ψ | ±0.5 Nm | actuator limits |
+| φ, θ | ±60° | keep away from kinematic singularity at ±90° |
+
+### Horizon
+
+| Setting | Value |
+|---|---|
+| N | 20 steps |
+| Ts | 0.05 s |
+| Look-ahead | 1.0 s |
+
+### Solver
+
+- **NLP solver:** SQP-RTI (one Real-Time Iteration per MPC cycle — suitable for embedded/fast execution)
+- **QP solver:** PARTIAL_CONDENSING_HPIPM
+- **Integrator:** ERK (explicit Runge-Kutta), RK4, 1 step per interval
+- **Hessian:** Gauss-Newton approximation
+
+---
+
 ## Architecture
 
 ```
-scripts/quadrotor_model.py   ← symbolic ODE (CasADi)
-scripts/generate_mpc.py      ← OCP formulation + code generation
+config/quadrotor.yaml        ← single source of truth for all parameters
+
+scripts/quadrotor_model.py   ← symbolic ODE (CasADi), reads yaml
+scripts/generate_mpc.py      ← OCP + sim solver formulation, writes:
         │
-        ▼  run once
-c_generated_code/            ← C solver (auto-generated, do not edit)
-        │
-        ▼  link
-src/mpc_controller.cpp       ← C++ application (to be added)
+        ├─▶  c_generated_code/acados_solver_quadrotor.c/.h    (OCP solver)
+        ├─▶  c_generated_code/acados_sim_solver_quadrotor.c/.h (plant integrator)
+        └─▶  c_generated_code/argus_params.h                  (C++ constants)
+                 │
+                 ▼  compile & link
+        src/mpc_controller.cpp   ← C++ simulation loop
 ```
 
-The Python scripts are a **build tool**, not runtime code. Run them once to produce the C solver; the solver is then compiled into your C++ binary.
+The Python scripts are a **build tool**, not runtime code. Run them once to produce the C solver; the solver is then compiled into your C++ binary. The plant integrator (`acados_sim_solver_quadrotor`) is generated from the same symbolic model as the OCP — if the dynamics change in Python, both the prediction model and the simulation automatically stay in sync.
 
 ---
 
@@ -33,23 +169,23 @@ The Python scripts are a **build tool**, not runtime code. Run them once to prod
 | C++17 compiler | Application build |
 | CMake ≥ 3.16 | Build system |
 
-Assumed install path: `~/acados`. Adjust `_acados_lib` in [scripts/generate_mpc.py](scripts/generate_mpc.py) if yours differs.
+Assumed install path: `~/acados`. Adjust `ACADOS_ROOT` in `CMakeLists.txt` if yours differs.
 
 ---
 
 ## How to build
 
-### Step 1 — Generate the C solver (run once, or after any model/cost change)
+### Step 1 — Generate the C solver (run once, or after any change to the model, cost, or config)
 
 ```bash
 LD_LIBRARY_PATH=~/acados/lib:$LD_LIBRARY_PATH python3 scripts/generate_mpc.py
 ```
 
-This writes `c_generated_code/` with the compiled solver and a `Makefile`. The `LD_LIBRARY_PATH` prefix is required on WSL2 because the ACADOS Python wrapper loads shared libraries at generation time.
+This writes `c_generated_code/` with the OCP solver, the plant integrator, and `argus_params.h`. The `LD_LIBRARY_PATH` prefix is required on WSL2 because the ACADOS Python wrapper loads shared libraries at generation time.
 
-> **Tip:** Add `export LD_LIBRARY_PATH=~/acados/lib:$LD_LIBRARY_PATH` to your `.bashrc` to avoid typing it every time.
+> **Tip:** Add `export LD_LIBRARY_PATH=~/acados/lib:$LD_LIBRARY_PATH` to your `.bashrc`.
 
-### Step 2 — Build the C++ application (once `src/` exists)
+### Step 2 — Build the C++ application
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release
@@ -60,7 +196,25 @@ cmake --build build
 
 ```bash
 ./build/argus_mpc
+# produces logs/trajectory.csv
+python3 scripts/animate_xy.py
 ```
+
+---
+
+## How to tune
+
+All tunable parameters live in **[`config/quadrotor.yaml`](config/quadrotor.yaml)**. Edit that file, then re-run Step 1 to regenerate the solver.
+
+```yaml
+model:          # physical properties (mass, inertia, gravity)
+mpc:            # N (horizon steps) and Ts (sample time)
+constraints:    # thrust limits, torque limits, angle limits
+cost:           # W_stage and W_terminal diagonal weight vectors
+circle:         # radius, altitude, lap period
+```
+
+After any change, re-run `python3 scripts/generate_mpc.py` and rebuild.
 
 ---
 
@@ -68,121 +222,16 @@ cmake --build build
 
 ```
 argus/
+├── config/
+│   └── quadrotor.yaml              # all parameters — edit here
 ├── scripts/
-│   ├── quadrotor_model.py      # quadrotor ODE — edit to change the model
-│   └── generate_mpc.py         # OCP setup (cost, constraints, horizon) — edit to tune
-├── c_generated_code/           # auto-generated C solver — do not edit
-├── src/                        # C++ application (to be added)
-├── CMakeLists.txt              # top-level build (to be added)
-├── quadrotor_ocp.json          # OCP spec snapshot — auto-generated
+│   ├── config.py                   # YAML loader (shared by Python scripts)
+│   ├── quadrotor_model.py          # symbolic ODE (CasADi)
+│   ├── generate_mpc.py             # OCP + sim solver code generation
+│   └── animate_xy.py               # trajectory visualiser
+├── src/
+│   └── mpc_controller.cpp          # C++ simulation loop
+├── c_generated_code/               # auto-generated C solver — do not edit
+├── CMakeLists.txt
 └── README.md
 ```
-
----
-
-## How to change the model
-
-Open [scripts/quadrotor_model.py](scripts/quadrotor_model.py).
-
-**Physical parameters** (top of `export_quadrotor_ode_model`):
-
-```python
-m  = 1.0     # total mass      [kg]
-Ix = 0.01    # roll  inertia   [kg·m²]
-Iy = 0.01    # pitch inertia   [kg·m²]
-Iz = 0.02    # yaw   inertia   [kg·m²]
-```
-
-**Dynamics** — the ODE is written explicitly as `f_expl`, a `ca.vertcat(...)` of 12 expressions in this order:
-
-| Index | State | Governed by |
-|---|---|---|
-| 0–2 | x, y, z | position kinematics (`vx, vy, vz`) |
-| 3–5 | vx, vy, vz | thrust in world frame divided by mass, minus gravity |
-| 6–8 | φ, θ, ψ | Euler kinematics (ZYX convention) |
-| 9–11 | p, q, r | Euler's equations for body rates |
-
-To add aerodynamic drag, modify the `vx/vy/vz` rows. To switch to quaternions, replace rows 6–11 with the quaternion kinematics and update the state vector size.
-
-**After any change here, re-run Step 1.**
-
----
-
-## How to change the cost function and constraints
-
-Open [scripts/generate_mpc.py](scripts/generate_mpc.py).
-
-### Horizon and timing
-
-```python
-N  = 20      # number of prediction steps
-Ts = 0.05    # sampling time [s] → total look-ahead = N × Ts = 1.0 s
-```
-
-### Cost weights
-
-The cost is a weighted nonlinear least-squares:
-`min Σ ‖h(x,u) − y_ref‖²_W`
-
-The output vector `h` is defined near the top of `generate_mpc()`:
-
-```python
-cost_y_expr   = ca.vertcat(x_sym[:8], u_sym)   # [x,y,z, vx,vy,vz, φ,θ, T,τ_φ,τ_θ,τ_ψ]
-cost_y_expr_e = x_sym[:8]                       # terminal: same without inputs
-```
-
-Weight matrices (diagonal, one entry per element of `cost_y_expr`):
-
-```python
-W_STAGE = np.diag([
-    100.0, 100.0, 100.0,   # position  x, y, z
-     10.0,  10.0,  10.0,   # velocity  vx, vy, vz
-      5.0,   5.0,          # attitude  φ, θ  (keeps drone level)
-      0.1,                 # thrust regularisation
-      0.1,   0.1,   0.1,  # torque regularisation
-])
-```
-
-To **add yaw pointing** toward a target at the origin, extend `cost_y_expr` with a yaw-error term:
-
-```python
-yaw_error = x_sym[8] - ca.atan2(-x_sym[1], -x_sym[0])   # psi - atan2(-y, -x)
-cost_y_expr = ca.vertcat(x_sym[:8], yaw_error, u_sym)
-```
-
-Then add a corresponding weight row/column to `W_STAGE` and update `W_TERMINAL`.
-
-### Input constraints
-
-```python
-T_MIN   = 0.0          # thrust lower bound [N]
-T_MAX   = 2.0 * T_HOVER  # thrust upper bound (2× hover)
-TAU_MAX = 0.5          # torque bound ±0.5 Nm
-```
-
-### State constraints (attitude)
-
-```python
-ANGLE_MAX = np.deg2rad(60.0)   # maximum roll / pitch angle
-```
-
-Applied to φ (state index 6) and θ (state index 7). Keeps the Euler-angle kinematics away from the gimbal-lock singularity at θ = ±90°.
-
-**After any change here, re-run Step 1.**
-
----
-
-## State and input reference
-
-| Symbol | Index | Unit | Description |
-|---|---|---|---|
-| x, y, z | 0–2 | m | position in world frame |
-| vx, vy, vz | 3–5 | m/s | velocity in world frame |
-| φ (phi) | 6 | rad | roll (rotation about world X) |
-| θ (theta) | 7 | rad | pitch (rotation about world Y) |
-| ψ (psi) | 8 | rad | yaw (rotation about world Z) |
-| p, q, r | 9–11 | rad/s | body-frame angular rates |
-| T | 0 | N | collective thrust |
-| τ_φ, τ_θ, τ_ψ | 1–3 | Nm | roll / pitch / yaw torques |
-
-Attitude convention: ZYX Euler angles (yaw → pitch → roll). Singularity at θ = ±90°.
