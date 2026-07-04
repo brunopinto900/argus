@@ -5,6 +5,11 @@ Run from the repo root after executing the C++ binary:
     ./build/argus_mpc          # produces logs/trajectory.csv
     python3 scripts/animate_xy.py
 
+Headless export (e.g. for docs/README assets), no display required:
+    python3 scripts/animate_xy.py --save-png docs/circle_tracking.png
+    python3 scripts/animate_xy.py --save-gif docs/circle_tracking.gif \
+        --start-frame 20 --num-frames 160 --stride 2 --fps 15
+
 What is shown:
   - Grey dashed circle  : reference trajectory at z = 1.5 m
   - Red star            : ground target at origin (0, 0, 0)
@@ -17,9 +22,38 @@ What is shown:
   - Text                : XY tracking error, yaw bearing error, pitch bearing error
 """
 
+import argparse
 import sys
+
 import numpy as np
 import pandas as pd
+
+
+def _parse_args():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--save-png", metavar="PATH",
+                   help="Render one frame headlessly to PATH instead of showing a window")
+    p.add_argument("--save-gif", metavar="PATH",
+                   help="Render an animated GIF headlessly to PATH instead of showing a window")
+    p.add_argument("--frame", type=int, default=None,
+                   help="Frame index for --save-png (default: midpoint of the run)")
+    p.add_argument("--start-frame", type=int, default=0, help="First frame for --save-gif")
+    p.add_argument("--num-frames", type=int, default=None,
+                   help="Number of frames for --save-gif, before --stride (default: to the end)")
+    p.add_argument("--stride", type=int, default=1,
+                   help="Take every Nth frame for --save-gif (reduces file size)")
+    p.add_argument("--fps", type=int, default=15, help="Playback fps for --save-gif")
+    return p.parse_args()
+
+
+_args = _parse_args()
+
+# Headless (Agg) backend for --save-png/--save-gif — must be set before
+# importing pyplot. Default interactive use (no flags) is unaffected.
+import matplotlib
+if _args.save_png or _args.save_gif:
+    matplotlib.use("Agg")
+
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 — registers 3-D projection
@@ -335,13 +369,28 @@ def update(frame):
             + [time_text, xy_err_text, z_err_text, yaw_text, pitch_text])
 
 
-ani = animation.FuncAnimation(
-    fig, update,
-    frames=n_frames,
-    init_func=init,
-    interval=int(Ts * 1000),
-    blit=False,
-)
-
 plt.tight_layout()
-plt.show()
+
+if _args.save_png:
+    frame_idx = _args.frame if _args.frame is not None else n_frames // 2
+    init()
+    update(frame_idx)
+    fig.savefig(_args.save_png, dpi=130)
+    print(f"Saved {_args.save_png} (frame {frame_idx}/{n_frames})")
+elif _args.save_gif:
+    end = _args.start_frame + _args.num_frames if _args.num_frames else n_frames
+    frame_indices = list(range(_args.start_frame, min(end, n_frames), _args.stride))
+    ani = animation.FuncAnimation(
+        fig, update, frames=frame_indices, init_func=init, blit=False,
+    )
+    ani.save(_args.save_gif, writer="pillow", fps=_args.fps)
+    print(f"Saved {_args.save_gif} ({len(frame_indices)} frames @ {_args.fps} fps)")
+else:
+    ani = animation.FuncAnimation(
+        fig, update,
+        frames=n_frames,
+        init_func=init,
+        interval=int(Ts * 1000),
+        blit=False,
+    )
+    plt.show()

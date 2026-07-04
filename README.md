@@ -2,6 +2,10 @@
 
 Model Predictive Control for a quadrotor tracking a circular trajectory with yaw locked toward an object at the centre. The controller is formulated as a Nonlinear MPC using [ACADOS](https://docs.acados.org/), which generates a C solver that is called from C++.
 
+![Circle-tracking MPC](docs/circle_tracking.gif)
+
+*Drone (blue trail) holding a 2 m-radius circle at 1.5 m altitude while the camera frustum (amber, dashed-green ideal) stays locked on the static ground target. Generated with `python3 scripts/animate_xy.py --save-gif ...` — see [How to run](#how-to-run).*
+
 ---
 
 ## Model
@@ -226,6 +230,18 @@ That's it. The script runs the full pipeline in order: generate the C solver →
 ```
 
 > **WSL2 note:** `run.sh` sets `LD_LIBRARY_PATH` to include `~/acados/lib` automatically. You can also add it permanently to your `.bashrc`.
+
+**Headless export** (no display needed — used to generate the README preview above):
+
+```bash
+python3 scripts/animate_xy.py --save-png docs/circle_tracking.png
+python3 scripts/animate_xy.py --save-gif docs/circle_tracking.gif \
+    --start-frame 20 --num-frames 160 --stride 2 --fps 15
+```
+
+`--start-frame`/`--num-frames`/`--stride` trim and downsample the run (skip
+the initial transient, keep the GIF file size reasonable); `--frame` picks
+which single frame `--save-png` renders.
 
 ---
 
