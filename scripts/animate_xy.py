@@ -105,8 +105,15 @@ def ref_attitude(drone_pos):
     return psi, theta
 
 
+FOOTPRINT_MAX_RANGE = 8.0   # ground range cap for corners pointing toward horizon [m]
+
 def frustum_ground_footprint(pos, R):
-    """Ray-cast the 4 frustum corner rays to z=0. Returns (4,3) or None."""
+    """Ray-cast the 4 frustum corner rays to z=0.
+
+    Corners pointing upward or horizontal are clamped to FOOTPRINT_MAX_RANGE
+    so the polygon is always visible even when the camera is mostly level.
+    Returns (4,3) array of ground hit points.
+    """
     lh = np.tan(FRUSTUM_H_FOV) * FRUSTUM_LEN
     lv = np.tan(FRUSTUM_V_FOV) * FRUSTUM_LEN
     corners_b = np.array([
@@ -115,12 +122,23 @@ def frustum_ground_footprint(pos, R):
         [FRUSTUM_LEN, -lh, -lv],
         [FRUSTUM_LEN,  lh, -lv],
     ])
+    xlim = CIRCLE_R + PAD
     hits = []
     for cb in corners_b:
         d = R @ cb
-        if d[2] >= -1e-4:   # corner ray pointing up — footprint off ground
-            return None
-        hits.append(pos + (-pos[2] / d[2]) * d)
+        if d[2] < -1e-4:
+            hit = pos + (-pos[2] / d[2]) * d
+        else:
+            xy_len = np.hypot(d[0], d[1])
+            if xy_len > 1e-6:
+                t = FOOTPRINT_MAX_RANGE / xy_len
+                hit = np.array([pos[0] + d[0] * t, pos[1] + d[1] * t, 0.0])
+            else:
+                hit = np.array([pos[0], pos[1], 0.0])
+        hit = np.array([np.clip(hit[0], -xlim, xlim),
+                        np.clip(hit[1], -xlim, xlim),
+                        0.0])
+        hits.append(hit)
     return np.array(hits)
 
 
@@ -196,8 +214,9 @@ boresight_line, = ax.plot([], [], [], color="#00ddff", linewidth=1.8, alpha=0.85
 boresight_dot,  = ax.plot([], [], [], "x", color="#00ddff", markersize=10,
                            markeredgewidth=2.0)
 
-# Ground footprint of the actual camera frustum (filled polygon at z=0)
-ground_poly = Poly3DCollection([[]], alpha=0.20,
+# Ground footprint of the actual camera frustum (filled polygon at z=0).
+_POLY_DUMMY = np.zeros((4, 3))
+ground_poly = Poly3DCollection([_POLY_DUMMY], alpha=0.20,
                                 facecolor="#ffaa00", edgecolor="#ffcc44",
                                 linewidth=1.2, zorder=2)
 ax.add_collection3d(ground_poly)
@@ -207,6 +226,8 @@ time_text   = ax.text2D(0.03, 0.97, "", transform=ax.transAxes,
                         fontsize=10, color="#ddddff",  va="top")
 xy_err_text = ax.text2D(0.03, 0.91, "", transform=ax.transAxes,
                         fontsize=9,  color="#88ffaa",  va="top")
+z_err_text  = ax.text2D(0.03, 0.85, "", transform=ax.transAxes,
+                        fontsize=9,  color="#aaddff",  va="top")
 yaw_text    = ax.text2D(0.97, 0.97, "", transform=ax.transAxes,
                         fontsize=9,  color="#ffaa44",  va="top", ha="right")
 pitch_text  = ax.text2D(0.97, 0.91, "", transform=ax.transAxes,
@@ -253,15 +274,15 @@ def init():
     ref_dot.set_data_3d([], [], [])
     boresight_line.set_data_3d([], [], [])
     boresight_dot.set_data_3d([], [], [])
-    ground_poly.set_verts([[]])
+    ground_poly.set_verts([_POLY_DUMMY])
     for ln in frustum_act + frustum_ref:
         ln.set_data_3d([], [], [])
-    for txt in (time_text, xy_err_text, yaw_text, pitch_text):
+    for txt in (time_text, xy_err_text, z_err_text, yaw_text, pitch_text):
         txt.set_text("")
     return ([trail_line, drone_dot, ref_dot, boresight_line, boresight_dot,
              ground_poly]
             + frustum_act + frustum_ref
-            + [time_text, xy_err_text, yaw_text, pitch_text])
+            + [time_text, xy_err_text, z_err_text, yaw_text, pitch_text])
 
 
 def update(frame):
@@ -282,8 +303,7 @@ def update(frame):
     _apply_frustum(frustum_ref, pos, 0.0, theta_r, psi_r)
 
     # Ground footprint: project the 4 frustum corner rays onto z=0
-    hits = frustum_ground_footprint(pos, R_act)
-    ground_poly.set_verts([hits] if hits is not None else [[]])
+    ground_poly.set_verts([frustum_ground_footprint(pos, R_act)])
 
     # Boresight ray: body +x in world frame, cast to z = 0 ground plane.
     # If pointing upward, fall back to a fixed-length line.
@@ -300,17 +320,19 @@ def update(frame):
     yaw_err, pitch_err = bearing_errors_deg(
         pos, phi_arr[frame], theta_arr[frame], psi_arr[frame])
     xy_err = np.hypot(pos[0] - xr_arr[frame], pos[1] - yr_arr[frame])
+    z_err  = pos[2] - zr_arr[frame]
 
     t = t_arr[frame]
     time_text.set_text(f"t = {t:.2f} s  ({t / CIRCLE_PERIOD:.1f} laps)")
     xy_err_text.set_text(f"XY error: {xy_err:.3f} m")
+    z_err_text.set_text(f"Z  error: {z_err:+.3f} m")
     yaw_text.set_text(f"ψ err to target: {yaw_err:+.0f}°")
     pitch_text.set_text(f"θ err to target: {pitch_err:+.0f}°")
 
     return ([trail_line, drone_dot, ref_dot, boresight_line, boresight_dot,
              ground_poly]
             + frustum_act + frustum_ref
-            + [time_text, xy_err_text, yaw_text, pitch_text])
+            + [time_text, xy_err_text, z_err_text, yaw_text, pitch_text])
 
 
 ani = animation.FuncAnimation(
