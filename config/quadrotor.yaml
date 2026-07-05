@@ -30,10 +30,10 @@ inner_loop:
 # Cost weights (NONLINEAR_LS: min Σ ‖h(x,u) − yref‖²_W)
 # W_stage layout:    [x, y, z,  vx, vy, vz,  phi, theta,  r_fov,  T, p_cmd, q_cmd, r_cmd]
 # W_terminal layout: [x, y, z,  vx, vy, vz,  phi, theta,  r_fov_e]
-# r_fov = sqrt( softplus(cos(alpha) - cos(gamma)) ) — zero inside the FOV cone, grows outside.
+# r_fov = softplus(cos(alpha) - cos(gamma)) — zero inside the FOV cone, grows outside.
 cost:
-  W_stage:    [100.0, 100.0, 100.0,  10.0, 10.0, 10.0,  5.0, 5.0,  50.0,  0.1, 0.1, 0.1, 0.1]
-  W_terminal: [200.0, 200.0, 200.0,  20.0, 20.0, 20.0,  10.0, 10.0,  100.0]
+  W_stage:    [100.0, 100.0, 100.0,  10.0, 10.0, 10.0,  5.0, 5.0,  25.0,  0.1, 0.1, 0.1, 0.1]
+  W_terminal: [200.0, 200.0, 200.0,  20.0, 20.0, 20.0,  10.0, 10.0,  50.0]
 
 # Camera model: forward-facing (body +x axis), circular FOV cone
 camera:

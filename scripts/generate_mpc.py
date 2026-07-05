@@ -100,7 +100,7 @@ def generate_mpc():
 
     # Bearing vector to target in body frame.
     d_world = P_TARGET - x_sym[:3]
-    range_  = ca.norm_2(d_world) + 1e-6    # guard against drone-at-target singularity
+    range_  = ca.sqrt(ca.dot(d_world, d_world) + 1e-12)  # smooth norm: C∞ at δ=0
     d_body  = ca.mtimes(R_bw.T, d_world)
 
     # FOV cone slack s: positive = target outside the cone.
@@ -110,8 +110,10 @@ def generate_mpc():
 
     # Softplus residual: r_fov^2 = (1/beta)*log(1 + exp(beta*s)).
     # Vanishes inside the cone, grows monotonically outside -- smooth everywhere.
-    soft  = (1.0 / FOV_BETA) * ca.log(1.0 + ca.exp(FOV_BETA * s_fov))
-    r_fov = ca.sqrt(soft)
+    # Stable form: log(1+exp(u)) = max(u,0) + log(1+exp(-|u|))  avoids overflow for large β·s.
+    _u    = FOV_BETA * s_fov
+    soft  = (1.0 / FOV_BETA) * (ca.fmax(_u, 0) + ca.log(1.0 + ca.exp(-ca.fabs(_u))))
+    r_fov = soft
 
     cost_y_expr   = ca.vertcat(x_sym[:8], r_fov, u_sym)  # ny   = 13
     cost_y_expr_e = ca.vertcat(x_sym[:8], r_fov)          # ny_e =  9
