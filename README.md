@@ -184,6 +184,14 @@ The split exists because the model is shared by two independent consumers — th
 
 ---
 
+## Related work
+
+This is a small NMPC project built as part of a larger thesis on drone target-tracking — not a research contribution. The idea of folding a camera/target-visibility term into the MPC cost (rather than treating perception and control as separate stages) follows the perception-aware MPC line of work:
+
+> D. Falanga, P. Foehn, P. Lu, D. Scaramuzza, "PAMPC: Perception-Aware Model Predictive Control for Quadrotors," IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS), 2018.
+
+---
+
 ## Dependencies
 
 | Dependency | Purpose |
