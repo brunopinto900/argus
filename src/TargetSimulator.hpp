@@ -163,37 +163,16 @@ private:
     }
 };
 
-// Target that walks a fixed circle at constant angular rate — the
-// "circle tracking" scenario expressed as a moving target rather than a
-// drone-side trajectory, so it drives through the same TargetSource
-// interface as TargetSimulator.
-class CircleTargetSimulator : public TargetSource
+// Stationary target — used by circle-tracking mode, where the drone orbits
+// a fixed ground point rather than the target moving on its own.
+class StaticTarget : public TargetSource
 {
 public:
-    CircleTargetSimulator(double radius, double z, double period)
-        : radius_(radius), z_(z), omega_(2.0 * M_PI / period)
-    {
-        state_.x = radius_;
-        state_.z = z_;
-    }
+    explicit StaticTarget(const argus_mpc::TargetState& state) : state_(state) {}
 
     const argus_mpc::TargetState& state() const override { return state_; }
-
-    argus_mpc::TargetState step(double dt) override
-    {
-        t_ += dt;
-        const double theta = omega_ * t_;
-        state_.x  =  radius_ * std::cos(theta);
-        state_.y  =  radius_ * std::sin(theta);
-        state_.z  =  z_;
-        state_.vx = -radius_ * omega_ * std::sin(theta);
-        state_.vy =  radius_ * omega_ * std::cos(theta);
-        state_.vz =  0.0;
-        return state_;
-    }
+    argus_mpc::TargetState        step(double /*dt*/) override { return state_; }
 
 private:
-    double radius_, z_, omega_;
-    double t_ = 0.0;
     argus_mpc::TargetState state_;
 };

@@ -1,0 +1,31 @@
+# Ground target trajectory definitions.
+#
+# These describe what the camera is tracking — independent of the drone's
+# own physical/controller tuning, which lives in config/quadrotor.yaml.
+# Selected at runtime by argus_mpc's [circle|moving_target] argument.
+
+# Circle mode: target is static at the center; the drone orbits it at a
+# fixed radius and angular rate.
+circle:
+  radius: 2.0   # drone orbit radius [m]
+  z:      0.0   # ground height of the (static) target [m]
+  period: 4.19  # drone orbit lap time [s]  →  v = 2π·R/T ≈ 3 m/s
+
+# Moving-target mode: WaypointFollower with trapezoidal speed profile.
+# max_lateral_accel controls turn tightness: min_radius = v² / max_lateral_accel
+target:
+  max_accel:         1.0   # longitudinal accel / decel [m/s²]
+  max_speed:         1.5   # global speed cap [m/s]  — walking pace
+  max_lateral_accel: 2.0   # centripetal accel limit [m/s²]
+  loop: true
+  waypoints:
+    - pos: [ 3.0,  0.0, 0.0]
+      speed: 1.5
+    - pos: [ 3.0,  3.0, 0.0]
+      speed: 1.5
+    - pos: [-3.0,  3.0, 0.0]
+      speed: 1.5
+    - pos: [-3.0, -3.0, 0.0]
+      speed: 1.5
+    - pos: [ 3.0, -3.0, 0.0]
+      speed: 1.5

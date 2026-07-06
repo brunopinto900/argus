@@ -1,13 +1,15 @@
-"""Loads config/quadrotor.yaml from the repo root."""
+"""Loads yaml files from the repo's config/ directory."""
 
 import os
 import yaml
 
-_CONFIG_PATH = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), '..', 'config', 'quadrotor.yaml')
-)
+_CONFIG_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'config'))
 
 
-def load_config() -> dict:
-    with open(_CONFIG_PATH) as f:
+def load_config(name: str = 'quadrotor.yaml') -> dict:
+    with open(os.path.join(_CONFIG_DIR, name)) as f:
         return yaml.safe_load(f)
+
+
+def load_target_config() -> dict:
+    return load_config('target.yaml')

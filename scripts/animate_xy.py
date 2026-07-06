@@ -60,7 +60,7 @@ from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 — registers 3-D projecti
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 CSV_PATH      = "logs/trajectory.csv"
-DRONE_Z_REF   = 1.5    # drone's z reference [m] — must match config/quadrotor.yaml circle.z_ref
+DRONE_Z_REF   = 1.5    # drone's z reference [m] — must match config/quadrotor.yaml mpc.hover_altitude
 TRAIL_SECONDS = 4.0
 FRUSTUM_LEN   = 0.70   # camera frustum length [m]
 FRUSTUM_H_FOV = np.deg2rad(40.0)  # horizontal half-angle

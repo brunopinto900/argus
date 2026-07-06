@@ -8,8 +8,9 @@ model:
 
 # MPC horizon settings
 mpc:
-  N:  10    # prediction horizon steps
-  Ts: 0.05  # sample time [s]  →  look-ahead = N × Ts = 0.5 s
+  N:              20    # prediction horizon steps
+  Ts:             0.05  # sample time [s]  →  look-ahead = N × Ts = 0.5 s
+  hover_altitude: 1.5   # drone's desired flight altitude [m] (independent of target height)
 
 # Input and state constraints
 constraints:
@@ -48,28 +49,3 @@ plant:
   zeta_rp:   0.7   # roll/pitch damping ratio
   wn_yaw:    4.0   # yaw rate bandwidth [rad/s]
   zeta_yaw:  0.7   # yaw damping ratio
-
-# Reference circle trajectory
-circle:
-  radius: 2.0   # [m]
-  z_ref:  1.5   # altitude [m]
-  period: 4.19  # lap time [s]  →  v = 2π·R/T ≈ 3 m/s
-
-# Moving target (WaypointFollower with trapezoidal speed profile)
-# max_lateral_accel controls turn tightness: min_radius = v² / max_lateral_accel
-target:
-  max_accel:         1.0   # longitudinal accel / decel [m/s²]
-  max_speed:         1.5   # global speed cap [m/s]  — walking pace
-  max_lateral_accel: 2.0   # centripetal accel limit [m/s²]
-  loop: true
-  waypoints:
-    - pos: [ 3.0,  0.0, 0.0]
-      speed: 1.5
-    - pos: [ 3.0,  3.0, 0.0]
-      speed: 1.5
-    - pos: [-3.0,  3.0, 0.0]
-      speed: 1.5
-    - pos: [-3.0, -3.0, 0.0]
-      speed: 1.5
-    - pos: [ 3.0, -3.0, 0.0]
-      speed: 1.5
