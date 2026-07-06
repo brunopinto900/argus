@@ -21,11 +21,17 @@ struct State
     double p = 0.0, q = 0.0, r = 0.0;          // body rates (rad/s)
 };
 
-// One horizon stage's position/velocity target. Attitude, FOV-cone, and
-// thrust/rate references are fixed internally (level attitude, target
-// inside the FOV cone, hover thrust, zero rates) — only position tracking
-// is exposed to callers today.
+// One horizon stage's position target for the drone.
+// vx/vy/vz are unused — velocity reference is taken from TargetState.
 struct Reference
+{
+    double x = 0.0, y = 0.0, z = 0.0;
+};
+
+// Moving target state injected before every solve.
+// Position feeds model.p (FOV cost); velocity sets the drone's velocity yref
+// so the MPC is incentivised to match the target's speed.
+struct TargetState
 {
     double x = 0.0, y = 0.0, z = 0.0;
     double vx = 0.0, vy = 0.0, vz = 0.0;
@@ -56,11 +62,11 @@ public:
     // requires `horizon.size() == horizonLength()`.
     int horizonLength() const;
 
-    // Solve one MPC step (SQP-RTI: one iteration) from measured state x0
-    // against the given per-stage horizon, and return the first-stage
-    // optimal input. Throws std::invalid_argument if horizon.size() !=
-    // horizonLength().
-    Command step(const State& x0, const std::vector<Reference>& horizon);
+    // Solve one MPC step (SQP-RTI: one iteration).
+    // horizon.size() must equal horizonLength(); throws std::invalid_argument otherwise.
+    // target.{x,y,z} → model.p (FOV cost).  target.{vx,vy,vz} → velocity yref.
+    Command step(const State& x0, const std::vector<Reference>& horizon,
+                 const TargetState& target);
 
 private:
     struct Impl;

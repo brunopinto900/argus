@@ -19,6 +19,7 @@ constexpr int kNx  = QUADROTOR_NX;
 constexpr int kNu  = QUADROTOR_NU;
 constexpr int kNy  = QUADROTOR_NY;
 constexpr int kNyN = QUADROTOR_NYN;
+constexpr int kNp  = QUADROTOR_NP;
 
 // If the generated model's dimensions ever change, this fails the build
 // loudly instead of silently mis-packing state/yref arrays below.
@@ -26,6 +27,7 @@ static_assert(kNx == 12, "State/step() packing assumes NX == 12 ([x,y,z,vx,vy,vz
 static_assert(kNu == 4,  "Command/step() packing assumes NU == 4 ([T,p_cmd,q_cmd,r_cmd])");
 static_assert(kNy == 13, "step() yref packing assumes NY == 13 ([x,y,z,vx,vy,vz,phi,theta,r_fov,T,p_cmd,q_cmd,r_cmd])");
 static_assert(kNyN == 9, "step() terminal yref packing assumes NYN == 9 ([x,y,z,vx,vy,vz,phi,theta,r_fov])");
+static_assert(kNp == 3,  "step() parameter packing assumes NP == 3 ([p_target_x, p_target_y, p_target_z]); run generate_mpc.py");
 
 using RawState = std::array<double, kNx>;
 using RawInput = std::array<double, kNu>;
@@ -66,7 +68,8 @@ QuadrotorMpc::~QuadrotorMpc() = default;
 
 int QuadrotorMpc::horizonLength() const { return kN; }
 
-Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizon)
+Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizon,
+                           const TargetState& target)
 {
     if (static_cast<int>(horizon.size()) != kN)
         throw std::invalid_argument(
@@ -94,6 +97,11 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
         impl.warm_started = true;
     }
 
+    // ── Inject target position into model.p for every stage ─────────────────
+    double p_target[kNp] = {target.x, target.y, target.z};
+    for (int i = 0; i <= kN; ++i)
+        quadrotor_acados_update_params(impl.capsule, i, p_target, kNp);
+
     // ── Pin the measured state as the initial-stage equality constraint ─────
     ocp_nlp_constraints_model_set(impl.config, impl.dims, impl.nlp_in, impl.nlp_out, 0, "lbx",
                                    const_cast<double*>(x0_raw.data()));
@@ -102,11 +110,12 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
 
     // ── Per-stage horizon reference ───────────────────────────────────────────
     // yref layout: [x,y,z, vx,vy,vz, phi,theta, r_fov, T, p_cmd,q_cmd,r_cmd]
+    // Velocity yref is the target's velocity — incentivises the drone to match speed.
     for (int j = 0; j < kN; ++j) {
         const Reference& ref = horizon[j];
         double yref[kNy] = {
-            ref.x,  ref.y,  ref.z,
-            ref.vx, ref.vy, ref.vz,
+            ref.x,      ref.y,      ref.z,
+            target.vx,  target.vy,  target.vz,
             0.0, 0.0,             // phi, theta reference: level
             0.0,                  // r_fov reference: target inside the FOV cone
             ARGUS_T_HOVER, 0.0, 0.0, 0.0,
@@ -114,12 +123,10 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
         ocp_nlp_cost_model_set(impl.config, impl.dims, impl.nlp_in, j, "yref", yref);
     }
     {
-        // Terminal stage reuses the last provided stage's reference — one Ts
-        // short of the ideal (t + N*Ts) target, negligible for smooth paths.
         const Reference& ref = horizon[kN - 1];
         double yref_e[kNyN] = {
-            ref.x,  ref.y,  ref.z,
-            ref.vx, ref.vy, ref.vz,
+            ref.x,     ref.y,     ref.z,
+            target.vx, target.vy, target.vz,
             0.0, 0.0,
             0.0,
         };

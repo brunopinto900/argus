@@ -9,9 +9,10 @@ Output: c_generated_code/   (C solver + CMakeLists, ready to link from C++)
 
 State vector  (nx = 12):  [x, y, z, vx, vy, vz, phi, theta, psi, p, q, r]
 Input vector  (nu =  4):  [T, p_cmd, q_cmd, r_cmd]
+Runtime param (np =  3):  [p_target_x, p_target_y, p_target_z]  — injected before every solve
 
 Cost output   (ny = 13):  [x, y, z, vx, vy, vz, phi, theta, r_fov, T, p_cmd, q_cmd, r_cmd]
-  - r_fov = sqrt(softplus(cos(alpha_fov) - cos(gamma))) — zero inside FOV cone, grows outside
+  - r_fov = softplus(cos(alpha_fov) - cos(gamma)) — zero inside FOV cone, grows outside
   - phi, theta penalised to keep the drone roughly level
   - rate commands penalised to limit aggressiveness
 
@@ -65,15 +66,15 @@ FOV_ALPHA = float(np.deg2rad(_cam_cfg['fov_half_angle_deg']))
 FOV_BETA  = float(_cam_cfg['softplus_beta'])
 COS_ALPHA = float(np.cos(FOV_ALPHA))
 
-# Target position — hardcoded at origin; will become a runtime parameter when
-# moving-target tracking is added.
-P_TARGET = ca.DM([0.0, 0.0, 0.0])
+
 
 
 def generate_mpc():
     ocp   = AcadosOcp()
     model = export_quadrotor_ode_model()
+    model.p = ca.SX.sym('p_target', 3)   # runtime: target position [x, y, z]
     ocp.model = model
+    ocp.parameter_values = np.zeros(3)   # nominal; overwritten before every solve
 
     nx = model.x.rows()   # 12
     nu = model.u.rows()   #  4
@@ -99,7 +100,7 @@ def generate_mpc():
     R_bw   = ca.horzcat(R_col0, R_col1, R_col2)
 
     # Bearing vector to target in body frame.
-    d_world = P_TARGET - x_sym[:3]
+    d_world = model.p - x_sym[:3]
     range_  = ca.sqrt(ca.dot(d_world, d_world) + 1e-12)  # smooth norm: C∞ at δ=0
     d_body  = ca.mtimes(R_bw.T, d_world)
 

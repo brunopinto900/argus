@@ -1,25 +1,25 @@
 """
-Animated 3-D view of the quadrotor circle-tracking MPC.
+Animated 3-D view of the quadrotor moving-target tracking MPC.
 
 Run from the repo root after executing the C++ binary:
     ./build/argus_mpc          # produces logs/trajectory.csv
     python3 scripts/animate_xy.py
 
 Headless export (e.g. for docs/README assets), no display required:
-    python3 scripts/animate_xy.py --save-png docs/circle_tracking.png
-    python3 scripts/animate_xy.py --save-gif docs/circle_tracking.gif \
+    python3 scripts/animate_xy.py --save-png docs/tracking.png
+    python3 scripts/animate_xy.py --save-gif docs/tracking.gif \
         --start-frame 20 --num-frames 160 --stride 2 --fps 15
 
 What is shown:
-  - Grey dashed circle  : reference trajectory at z = 1.5 m
-  - Red star            : ground target at origin (0, 0, 0)
+  - Grey dashed path    : complete logged target trajectory (ground plane)
+  - Red star            : current ground target position (moves)
   - Blue trail          : recent drone history (last 4 s)
   - Blue dot            : current drone position
-  - Green dot           : current reference position
+  - Green dot           : current MPC reference position (above target at z_ref)
   - Amber frustum       : camera frustum (actual yaw + pitch)
   - Dashed green frustum: ideal frustum (yaw + pitch required to see target)
   - Amber polygon       : camera footprint projected onto the ground plane (z=0)
-  - Text                : XY tracking error, yaw bearing error, pitch bearing error
+  - Text                : XY tracking error, z error, yaw/pitch bearing errors
 """
 
 import argparse
@@ -60,14 +60,12 @@ from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 — registers 3-D projecti
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 CSV_PATH      = "logs/trajectory.csv"
-CIRCLE_R      = 2.0
-CIRCLE_Z      = 1.5
-CIRCLE_PERIOD = 4.19   # lap time [s] — must match config/quadrotor.yaml circle.period
+DRONE_Z_REF   = 1.5    # drone's z reference [m] — must match config/quadrotor.yaml circle.z_ref
 TRAIL_SECONDS = 4.0
 FRUSTUM_LEN   = 0.70   # camera frustum length [m]
 FRUSTUM_H_FOV = np.deg2rad(40.0)  # horizontal half-angle
 FRUSTUM_V_FOV = np.deg2rad(30.0)  # vertical half-angle
-TARGET_POS    = np.array([0.0, 0.0, 0.0])  # ground target at circle centre
+XY_LIMIT      = 5.0    # axis half-extent [m]
 
 # ── Load data ────────────────────────────────────────────────────────────────
 try:
@@ -83,9 +81,12 @@ z_arr     = df["z"].to_numpy()
 phi_arr   = df["phi"].to_numpy()
 theta_arr = df["theta"].to_numpy()
 psi_arr   = df["psi"].to_numpy()
-xr_arr    = df["x_ref"].to_numpy()
-yr_arr    = df["y_ref"].to_numpy()
-zr_arr    = df["z_ref"].to_numpy()
+xt_arr    = df["xt"].to_numpy()
+yt_arr    = df["yt"].to_numpy()
+zt_arr    = df["zt"].to_numpy()
+fx_arr    = df["fx"].to_numpy()   # FOV target (origin in circle mode)
+fy_arr    = df["fy"].to_numpy()
+fz_arr    = df["fz"].to_numpy()
 
 Ts          = float(t_arr[1] - t_arr[0])
 trail_steps = int(TRAIL_SECONDS / Ts)
@@ -127,12 +128,12 @@ def frustum_edge_segs(pos, R):
     return segs
 
 
-def ref_attitude(drone_pos):
-    """Ideal (psi, theta) to aim body +x at TARGET_POS with zero roll.
+def ref_attitude(drone_pos, target_pos):
+    """Ideal (psi, theta) to aim body +x at target_pos with zero roll.
 
     Positive theta = nose-down in the ZYX/ENU convention used by this model.
     """
-    d = TARGET_POS - drone_pos
+    d = target_pos - drone_pos
     xy = np.hypot(d[0], d[1])
     psi   = np.arctan2(d[1], d[0])
     theta = np.arctan2(-d[2], xy)   # + = nose down toward ground target
@@ -156,7 +157,6 @@ def frustum_ground_footprint(pos, R):
         [FRUSTUM_LEN, -lh, -lv],
         [FRUSTUM_LEN,  lh, -lv],
     ])
-    xlim = CIRCLE_R + PAD
     hits = []
     for cb in corners_b:
         d = R @ cb
@@ -169,21 +169,21 @@ def frustum_ground_footprint(pos, R):
                 hit = np.array([pos[0] + d[0] * t, pos[1] + d[1] * t, 0.0])
             else:
                 hit = np.array([pos[0], pos[1], 0.0])
-        hit = np.array([np.clip(hit[0], -xlim, xlim),
-                        np.clip(hit[1], -xlim, xlim),
+        hit = np.array([np.clip(hit[0], -XY_LIMIT, XY_LIMIT),
+                        np.clip(hit[1], -XY_LIMIT, XY_LIMIT),
                         0.0])
         hits.append(hit)
     return np.array(hits)
 
 
-def bearing_errors_deg(drone_pos, phi, theta, psi):
-    """Yaw and pitch bearing errors to TARGET_POS in degrees.
+def bearing_errors_deg(drone_pos, phi, theta, psi, target_pos):
+    """Yaw and pitch bearing errors to target_pos in degrees.
 
     Uses the bearing vector d_body = R^T * (target - drone) in body frame.
     Yaw error  : atan2(d_body_y, d_body_x)  — target left/right of boresight
     Pitch error: atan2(-d_body_z, d_body_x) — target above/below boresight
     """
-    d = TARGET_POS - drone_pos
+    d = target_pos - drone_pos
     if np.linalg.norm(d) < 1e-6:
         return 0.0, 0.0
     R  = rotation_matrix_zyx(phi, theta, psi)
@@ -206,35 +206,29 @@ for attr in ("xaxis", "yaxis", "zaxis"):
 ax.set_xlabel("x [m]")
 ax.set_ylabel("y [m]")
 ax.set_zlabel("z [m]")
-ax.set_title("Quadrotor Circle-Tracking MPC — 3-D View",
+ax.set_title("Quadrotor Moving-Target Tracking MPC — 3-D View",
              color="#ccccff", fontsize=12, pad=12)
 
 PAD = 1.2
-ax.set_xlim(-CIRCLE_R - PAD, CIRCLE_R + PAD)
-ax.set_ylim(-CIRCLE_R - PAD, CIRCLE_R + PAD)
-ax.set_zlim(0.0, CIRCLE_Z + PAD)
+ax.set_xlim(-XY_LIMIT, XY_LIMIT)
+ax.set_ylim(-XY_LIMIT, XY_LIMIT)
+ax.set_zlim(0.0, DRONE_Z_REF + PAD)
 ax.view_init(elev=25, azim=-60)
 
 # ── Static elements ───────────────────────────────────────────────────────────
-theta_c = np.linspace(0, 2 * np.pi, 300)
-ax.plot(CIRCLE_R * np.cos(theta_c), CIRCLE_R * np.sin(theta_c),
-        np.full(300, CIRCLE_Z),
-        "--", color="#555577", linewidth=1.2, label="Reference circle")
-
-ax.scatter([0], [0], [0], marker="*", s=220, color="#e05252", zorder=5)
-ax.text(0.15, 0.0, 0.05, "Target", color="#e05252", fontsize=8)
-
-# Vertical dashed column from ground to circle — helps read height
-ax.plot([0, 0], [0, 0], [0, CIRCLE_Z], ":", color="#554444",
-        linewidth=0.8, alpha=0.5)
+# Full target trajectory (logged ground path) — shown as a faint dashed line
+ax.plot(xt_arr, yt_arr, zt_arr,
+        "--", color="#555577", linewidth=1.2, label="Reference trajectory")
 
 # ── Animated artists ──────────────────────────────────────────────────────────
 trail_line, = ax.plot([], [], [], color="#4488ff", linewidth=1.4, alpha=0.55,
                       label="Drone trail")
 drone_dot,  = ax.plot([], [], [], "o", color="#66aaff", markersize=9,
                       markeredgecolor="#ffffff", markeredgewidth=0.7)
+target_dot, = ax.plot([], [], [], "*", color="#e05252", markersize=14,
+                      label="Ground target")
 ref_dot,    = ax.plot([], [], [], "o", color="#55ee88", markersize=6, alpha=0.7,
-                      label="Reference position")
+                      label="MPC reference (above target)")
 
 # 8 line objects per frustum (4 apex→corner + 4 base edges)
 frustum_act = [ax.plot([], [], [], color="#ffaa00", linewidth=1.5)[0]
@@ -271,9 +265,9 @@ pitch_text  = ax.text2D(0.97, 0.91, "", transform=ax.transAxes,
 import matplotlib.lines as mlines
 import matplotlib.patches as mpatches
 legend_handles = [
-    mlines.Line2D([0], [0], color="#555577", linestyle="--", label="Reference circle"),
+    mlines.Line2D([0], [0], color="#555577", linestyle="--", label="Target trajectory"),
     mlines.Line2D([0], [0], marker="*", color="w", markerfacecolor="#e05252",
-                  markersize=12, linestyle="None", label="Target (ground)"),
+                  markersize=12, linestyle="None", label="Ground target"),
     mlines.Line2D([0], [0], color="#4488ff", label="Drone trail"),
     mlines.Line2D([0], [0], color="#ffaa00", linewidth=1.5,
                   label="Frustum — actual"),
@@ -284,7 +278,7 @@ legend_handles = [
     mpatches.Patch(facecolor="#ffaa00", edgecolor="#ffcc44", alpha=0.5,
                    label="Camera footprint (ground)"),
     mlines.Line2D([0], [0], marker="o", color="w", markerfacecolor="#55ee88",
-                  markersize=7, linestyle="None", label="Reference position"),
+                  markersize=7, linestyle="None", label="MPC reference"),
 ]
 ax.legend(handles=legend_handles, loc="lower left",
           facecolor="#1a1a2e", edgecolor="#444466",
@@ -305,6 +299,7 @@ def _apply_frustum(lines, pos, phi, theta, psi):
 def init():
     trail_line.set_data_3d([], [], [])
     drone_dot.set_data_3d([], [], [])
+    target_dot.set_data_3d([], [], [])
     ref_dot.set_data_3d([], [], [])
     boresight_line.set_data_3d([], [], [])
     boresight_dot.set_data_3d([], [], [])
@@ -313,8 +308,8 @@ def init():
         ln.set_data_3d([], [], [])
     for txt in (time_text, xy_err_text, z_err_text, yaw_text, pitch_text):
         txt.set_text("")
-    return ([trail_line, drone_dot, ref_dot, boresight_line, boresight_dot,
-             ground_poly]
+    return ([trail_line, drone_dot, target_dot, ref_dot,
+             boresight_line, boresight_dot, ground_poly]
             + frustum_act + frustum_ref
             + [time_text, xy_err_text, z_err_text, yaw_text, pitch_text])
 
@@ -323,17 +318,21 @@ def update(frame):
     s = max(0, frame - trail_steps)
     trail_line.set_data_3d(x_arr[s:frame+1], y_arr[s:frame+1], z_arr[s:frame+1])
 
-    pos = np.array([x_arr[frame], y_arr[frame], z_arr[frame]])
+    pos     = np.array([x_arr[frame],  y_arr[frame],  z_arr[frame]])
+    fov_pos = np.array([fx_arr[frame], fy_arr[frame], fz_arr[frame]])  # FOV target
+    ref_pos = np.array([xt_arr[frame], yt_arr[frame], zt_arr[frame]])  # drone ref
+
     drone_dot.set_data_3d([pos[0]], [pos[1]], [pos[2]])
-    ref_dot.set_data_3d([xr_arr[frame]], [yr_arr[frame]], [zr_arr[frame]])
+    target_dot.set_data_3d([fov_pos[0]], [fov_pos[1]], [fov_pos[2]])
+    ref_dot.set_data_3d([ref_pos[0]], [ref_pos[1]], [ref_pos[2]])
 
     # Actual frustum — from logged attitude
     R_act = rotation_matrix_zyx(phi_arr[frame], theta_arr[frame], psi_arr[frame])
     _apply_frustum(frustum_act, pos,
                    phi_arr[frame], theta_arr[frame], psi_arr[frame])
 
-    # Ideal frustum — yaw + pitch to point directly at ground target, zero roll
-    psi_r, theta_r = ref_attitude(pos)
+    # Ideal frustum — yaw + pitch to point directly at FOV target, zero roll
+    psi_r, theta_r = ref_attitude(pos, fov_pos)
     _apply_frustum(frustum_ref, pos, 0.0, theta_r, psi_r)
 
     # Ground footprint: project the 4 frustum corner rays onto z=0
@@ -352,19 +351,19 @@ def update(frame):
 
     # Errors
     yaw_err, pitch_err = bearing_errors_deg(
-        pos, phi_arr[frame], theta_arr[frame], psi_arr[frame])
-    xy_err = np.hypot(pos[0] - xr_arr[frame], pos[1] - yr_arr[frame])
-    z_err  = pos[2] - zr_arr[frame]
+        pos, phi_arr[frame], theta_arr[frame], psi_arr[frame], fov_pos)
+    xy_err = np.hypot(pos[0] - ref_pos[0], pos[1] - ref_pos[1])
+    z_err  = pos[2] - DRONE_Z_REF
 
     t = t_arr[frame]
-    time_text.set_text(f"t = {t:.2f} s  ({t / CIRCLE_PERIOD:.1f} laps)")
+    time_text.set_text(f"t = {t:.2f} s")
     xy_err_text.set_text(f"XY error: {xy_err:.3f} m")
     z_err_text.set_text(f"Z  error: {z_err:+.3f} m")
     yaw_text.set_text(f"ψ err to target: {yaw_err:+.0f}°")
     pitch_text.set_text(f"θ err to target: {pitch_err:+.0f}°")
 
-    return ([trail_line, drone_dot, ref_dot, boresight_line, boresight_dot,
-             ground_poly]
+    return ([trail_line, drone_dot, target_dot, ref_dot,
+             boresight_line, boresight_dot, ground_poly]
             + frustum_act + frustum_ref
             + [time_text, xy_err_text, z_err_text, yaw_text, pitch_text])
 

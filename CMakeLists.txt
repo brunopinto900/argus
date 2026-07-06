@@ -77,13 +77,19 @@ target_link_options(quadrotor_mpc INTERFACE
     "-Wl,--disable-new-dtags"
 )
 
-# ── Main executable (standalone circle-tracking demo) ───────────────────────
+# ── Main executable (moving-target tracking demo) ────────────────────────────
 add_executable(argus_mpc
     src/mpc_controller.cpp
     src/plant_dynamics.cpp
 )
 
-target_link_libraries(argus_mpc PRIVATE quadrotor_mpc)
+find_package(yaml-cpp REQUIRED)
+
+target_compile_definitions(argus_mpc PRIVATE
+    ARGUS_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config"
+)
+
+target_link_libraries(argus_mpc PRIVATE quadrotor_mpc yaml-cpp)
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 # Only when argus is configured standalone (top-level project) — when pulled
