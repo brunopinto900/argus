@@ -208,6 +208,9 @@ Install ACADOS itself following [its own install docs](https://docs.acados.org/i
 then the Python dependencies:
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
+cd to argus folder
 pip install -r requirements.txt
 pip install -e $HOME/acados/interfaces/acados_template   # tied to your acados checkout, not on PyPI
 ```
