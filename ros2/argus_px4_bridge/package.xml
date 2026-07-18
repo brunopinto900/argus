@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>argus_px4_bridge</name>
+  <version>0.1.0</version>
+  <description>Bridges argus's QuadrotorMpc (circle-tracking body-rate MPC) to PX4 over the uXRCE-DDS ROS2 interface.</description>
+  <maintainer email="bruno_pinto90@hotmail.com">bruno</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>px4_msgs</depend>
+  <depend>px4_ros_com</depend>
+  <depend>eigen3_cmake_module</depend>
+  <depend>Eigen3</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
