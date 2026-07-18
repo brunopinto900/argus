@@ -193,6 +193,13 @@ int main(int argc, char** argv)
     }
 
     csv.close();
+
+    const argus_mpc::SolverTiming timing = mpc.solverTiming();
+    std::cout << "\nSolver timing (acados_solve only, " << timing.count << " calls):\n"
+              << "  min  = " << timing.min_ms  << " ms\n"
+              << "  mean = " << timing.mean_ms << " ms\n"
+              << "  max  = " << timing.max_ms  << " ms\n";
+
     std::cout << "\nDone. Trajectory saved to logs/trajectory.csv\n";
     std::cout << "Visualise with: python3 scripts/animate_xy.py\n";
 

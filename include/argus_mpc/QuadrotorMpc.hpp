@@ -49,6 +49,18 @@ struct Command
     int    solve_status = 0;  // acados status; 0 == success
 };
 
+// Wall-clock timing of the acados solve call itself (i.e. just
+// quadrotor_acados_solve()), accumulated across every step() call made so
+// far on this instance. Excludes state/yref packing/unpacking — this is the
+// number that matters for "can this run in real time at Ts".
+struct SolverTiming
+{
+    double min_ms  = 0.0;
+    double max_ms  = 0.0;
+    double mean_ms = 0.0;
+    long   count   = 0;
+};
+
 class QuadrotorMpc
 {
 public:
@@ -67,6 +79,11 @@ public:
     // target.{x,y,z} → model.p (FOV cost).  target.{vx,vy,vz} → velocity yref.
     Command step(const State& x0, const std::vector<Reference>& horizon,
                  const TargetState& target);
+
+    // Accumulated acados solve-time stats since construction (or since the
+    // last resetSolverTiming() call).
+    SolverTiming solverTiming() const;
+    void resetSolverTiming();
 
 private:
     struct Impl;
