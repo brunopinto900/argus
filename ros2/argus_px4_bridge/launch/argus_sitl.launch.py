@@ -2,6 +2,7 @@
 
 import os
 
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, OpaqueFunction, RegisterEventHandler, TimerAction
 from launch.event_handlers import OnProcessIO, OnProcessExit
@@ -23,6 +24,8 @@ def _launch_setup(context, *args, **kwargs):
     px4_dir = LaunchConfiguration("px4_dir").perform(context)
     headless = LaunchConfiguration("headless").perform(context)
     mpc_thr_hover = LaunchConfiguration("mpc_thr_hover").perform(context)
+    rviz = LaunchConfiguration("rviz").perform(context)
+    launch_gazebo = LaunchConfiguration("launch_gazebo").perform(context)
 
     agent = ExecuteProcess(
         cmd=["MicroXRCEAgent", "udp4", "-p", "8888"],
@@ -111,7 +114,24 @@ def _launch_setup(context, *args, **kwargs):
         OnProcessExit(target_action=wait_for_odometry, on_exit=_on_wait_exit)
     )
 
-    actions = [agent, px4_sitl, set_arming_bypass_params, wait_for_odometry, start_bridge_when_ready]
+    # launch_gazebo=0 assumes the Agent + PX4 SITL/Gazebo are already running
+    # externally (e.g. started by hand per the README's "Manual" section, or
+    # a previous launch left running) — skip spawning new ones and just wait
+    # for odometry from whatever's already up, then start the bridge (+ RViz).
+    actions = [wait_for_odometry, start_bridge_when_ready]
+    if launch_gazebo not in ("0", "", "false", "False"):
+        actions = [agent, px4_sitl, set_arming_bypass_params] + actions
+
+    if rviz not in ("0", "", "false", "False"):
+        rviz_config = os.path.join(
+            get_package_share_directory("argus_px4_bridge"), "rviz", "argus.rviz")
+        actions.append(Node(
+            package="rviz2",
+            executable="rviz2",
+            name="rviz2",
+            arguments=["-d", rviz_config],
+            output="screen",
+        ))
 
     # if headless in ("0", "", "false", "False"):
     #     # PX4's px4-rc.gzsim sends a one-shot "follow this model" camera
@@ -155,10 +175,23 @@ def generate_launch_description():
         default_value="0.6",
         description="Normalized PX4 thrust at hover (must match the vehicle's MPC_THR_HOVER param)",
     )
+    rviz_arg = DeclareLaunchArgument(
+        "rviz",
+        default_value="1",
+        description="1 to launch RViz (circle reference, drone trajectory, FOV frustum), 0 to skip",
+    )
+    launch_gazebo_arg = DeclareLaunchArgument(
+        "launch_gazebo",
+        default_value="1",
+        description="1 to start MicroXRCEAgent + PX4 SITL/Gazebo, 0 to assume they're "
+                     "already running externally and only start the bridge node (+ RViz)",
+    )
 
     return LaunchDescription([
         px4_dir_arg,
         headless_arg,
         mpc_thr_hover_arg,
+        rviz_arg,
+        launch_gazebo_arg,
         OpaqueFunction(function=_launch_setup),
     ])

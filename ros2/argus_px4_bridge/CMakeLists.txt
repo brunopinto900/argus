@@ -10,6 +10,9 @@ find_package(px4_msgs REQUIRED)
 find_package(px4_ros_com REQUIRED)
 find_package(eigen3_cmake_module REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
 
 # Pull in argus as a subdirectory to get the `quadrotor_mpc` target — same
 # consumption pattern the argus repo's own CMakeLists.txt is built for
@@ -29,12 +32,18 @@ ament_target_dependencies(argus_bridge_node
   px4_msgs
   px4_ros_com
   Eigen3
+  geometry_msgs
+  nav_msgs
+  visualization_msgs
 )
 
 install(TARGETS argus_bridge_node
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY launch
+  DESTINATION share/${PROJECT_NAME})
+
+install(DIRECTORY rviz
   DESTINATION share/${PROJECT_NAME})
 
 ament_package()

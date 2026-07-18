@@ -82,10 +82,33 @@ Launch arguments:
 | `px4_dir` | `~/PX4-Autopilot` | Path to the PX4-Autopilot source tree. |
 | `headless` | `0` | `0` shows the Gazebo GUI, `1` hides it. **Note:** PX4's own `px4-rc.gzsim` decides this by checking whether `HEADLESS` is *unset*, not whether it's `"0"` — the launch file handles that translation for you (leaves the env var unset entirely when `headless=0`). |
 | `mpc_thr_hover` | `0.6` | Forwarded to the node's `mpc_thr_hover` param — see below. |
+| `rviz` | `1` | `1` launches RViz with the checked-in visualization config (see below), `0` skips it. |
+| `launch_gazebo` | `1` | `1` starts the Agent + PX4 SITL/Gazebo. `0` assumes they're already running externally (e.g. started by hand per the "Manual" section above, or left running from a previous launch) and only starts the bridge node (+ RViz) against them. |
 
 ```bash
 ros2 launch argus_px4_bridge argus_sitl.launch.py headless:=1 mpc_thr_hover:=0.5
 ```
+
+`rviz:=0` skips launching RViz if you don't want it (see below).
+
+## Visualization (RViz)
+
+The node also publishes three RViz-ready topics, all in a fixed `map` frame
+(ENU, no TF tree needed — `map` is set as RViz's own Fixed Frame, so no
+lookup is required):
+
+| Topic | Type | What it shows |
+|---|---|---|
+| `/argus/reference_path` | `nav_msgs/Path` | The fixed circle the drone is commanded to track (`ARGUS_CIRCLE_R`/`ARGUS_HOVER_ALTITUDE`), sampled once at 100 points. |
+| `/argus/drone_path` | `nav_msgs/Path` | The drone's actual flown trajectory, accumulated tick by tick (capped at the last ~200 s / 4000 points so it doesn't grow unbounded on a long-running flight). |
+| `/argus/fov_markers` | `visualization_msgs/MarkerArray` | A wireframe cone (`id=0`) showing the camera FOV — body `+x` boresight, half-angle `fov_half_angle_deg` (default `40°`, must match `config/quadrotor.yaml`'s `camera.fov_half_angle_deg`) — drawn out to the current range to the target, plus a sphere (`id=1`) marking the target itself at the circle's center. Mirrors the OCP's `r_fov` cost term directly: the cone is empty of penalty exactly when the target sphere sits inside it. |
+
+`ros2 launch argus_px4_bridge argus_sitl.launch.py` starts `rviz2` automatically
+(`rviz:=0` to skip it) with a checked-in config
+(`ros2/argus_px4_bridge/rviz/argus.rviz`) that already has all three displays
+set up. To view them against a node started manually instead, just run
+`rviz2 -d $(ros2 pkg prefix argus_px4_bridge)/share/argus_px4_bridge/rviz/argus.rviz`
+in a separate terminal.
 
 ## Node: `argus_bridge_node`
 
@@ -181,6 +204,7 @@ needs that heartbeat continuously or it drops out of offboard.
 | Name | Type | Default | Description |
 |---|---|---|---|
 | `mpc_thr_hover` | double | `0.6` | Normalized PX4 thrust at hover. Must match the vehicle's actual `MPC_THR_HOVER` param — argus's `Command.thrust` is normalized so `1.0 == hover` in its own convention, and `thrust_norm = mpc_thr_hover * cmd.thrust` assumes PX4's thrust curve is linear (`THR_MDL_FAC=0`, the SITL default). Check with `param show MPC_THR_HOVER` in the PX4 shell before trusting altitude hold on a new vehicle. |
+| `fov_half_angle_deg` | double | `40.0` | Visualization only — half-angle of the FOV cone drawn on `/argus/fov_markers`. Must match `config/quadrotor.yaml`'s `camera.fov_half_angle_deg`; not auto-generated into `argus_params.h` since it doesn't feed the OCP itself. |
 
 ## Known issues
 

@@ -13,9 +13,16 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <deque>
 #include <vector>
 
 #include <rclcpp/rclcpp.hpp>
+
+#include <geometry_msgs/msg/point.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
+#include <nav_msgs/msg/path.hpp>
+#include <visualization_msgs/msg/marker.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
 
 #include <px4_msgs/msg/offboard_control_mode.hpp>
 #include <px4_msgs/msg/trajectory_setpoint.hpp>
@@ -38,6 +45,13 @@ namespace ft = px4_ros_com::frame_transforms;
 namespace {
 constexpr double kTakeoffAltTol = 0.15;  // m
 constexpr double kTakeoffVelTol = 0.3;   // m/s
+
+// RViz visualization only — everything is published in a fixed "map" frame
+// with no TF tree involved (Fixed Frame == frame_id, so RViz needs no lookup).
+constexpr char kVizFrame[] = "map";
+constexpr size_t kMaxDronePathPoints = 4000;  // ~200s of history at 20Hz
+constexpr int kRefPathPoints = 100;
+constexpr int kFovConeRays = 16;
 
 // px4_ros_com's quaternion_to_euler() wraps Eigen's generic eulerAngles(),
 // which branch-flips to the (roll+pi, -pitch, yaw-pi) equivalent whenever the
@@ -62,6 +76,11 @@ public:
     ArgusBridgeNode() : Node("argus_bridge_node")
     {
         mpc_thr_hover_ = this->declare_parameter<double>("mpc_thr_hover", 0.6);
+        // Must match config/quadrotor.yaml's camera.fov_half_angle_deg — not
+        // auto-generated into argus_params.h (visualization-only, no cost-
+        // formulation dependency), so keep the two in sync by hand.
+        const double fov_half_angle_deg = this->declare_parameter<double>("fov_half_angle_deg", 40.0);
+        fov_half_angle_rad_ = fov_half_angle_deg * M_PI / 180.0;
         N_ = mpc_.horizonLength();
         omega_ = 2.0 * M_PI / ARGUS_CIRCLE_PERIOD;
 
@@ -85,6 +104,11 @@ public:
             "/fmu/in/vehicle_rates_setpoint", 10);
         vehicle_command_pub_ = this->create_publisher<VehicleCommand>(
             "/fmu/in/vehicle_command", 10);
+
+        drone_path_pub_ = this->create_publisher<nav_msgs::msg::Path>("argus/drone_path", 10);
+        reference_path_pub_ = this->create_publisher<nav_msgs::msg::Path>("argus/reference_path", 10);
+        fov_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("argus/fov_markers", 10);
+        initReferencePath();
 
         const auto period = std::chrono::duration<double>(ARGUS_MPC_TS);
         timer_ = this->create_wall_timer(
@@ -190,6 +214,123 @@ private:
                 break;
             }
         }
+
+        publishVisualization(pos_enu, euler);
+    }
+
+    // ── Visualization (RViz) ─────────────────────────────────────────────────
+    // Fixed circle reference the drone tracks — computed once since it doesn't
+    // depend on wall-clock time, republished (transient_local not needed: this
+    // is cheap enough to just resend every tick alongside everything else).
+    void initReferencePath()
+    {
+        reference_path_msg_.header.frame_id = kVizFrame;
+        reference_path_msg_.poses.resize(kRefPathPoints + 1);
+        for (int i = 0; i <= kRefPathPoints; ++i) {
+            const double theta = 2.0 * M_PI * i / kRefPathPoints;
+            auto& pose = reference_path_msg_.poses[i];
+            pose.header.frame_id = kVizFrame;
+            pose.pose.position.x = ARGUS_CIRCLE_R * std::cos(theta);
+            pose.pose.position.y = ARGUS_CIRCLE_R * std::sin(theta);
+            pose.pose.position.z = ARGUS_HOVER_ALTITUDE;
+            pose.pose.orientation.w = 1.0;
+        }
+    }
+
+    void publishVisualization(const Eigen::Vector3d& pos_enu, const Eigen::Vector3d& euler)
+    {
+        const auto stamp = this->now();
+
+        geometry_msgs::msg::PoseStamped pose;
+        pose.header.stamp = stamp;
+        pose.header.frame_id = kVizFrame;
+        pose.pose.position.x = pos_enu.x();
+        pose.pose.position.y = pos_enu.y();
+        pose.pose.position.z = pos_enu.z();
+        pose.pose.orientation.w = 1.0;
+        drone_path_.push_back(pose);
+        if (drone_path_.size() > kMaxDronePathPoints) drone_path_.pop_front();
+
+        nav_msgs::msg::Path drone_path_msg;
+        drone_path_msg.header.stamp = stamp;
+        drone_path_msg.header.frame_id = kVizFrame;
+        drone_path_msg.poses.assign(drone_path_.begin(), drone_path_.end());
+        drone_path_pub_->publish(drone_path_msg);
+
+        reference_path_msg_.header.stamp = stamp;
+        reference_path_pub_->publish(reference_path_msg_);
+
+        fov_marker_pub_->publish(buildFovMarkers(pos_enu, euler, stamp));
+    }
+
+    // Body +x (boresight) cone wireframe, half-angle = fov_half_angle_rad_ —
+    // mirrors argus's r_fov cost (r_fov = softplus(cos(alpha_fov) -
+    // d_body[0]/range), generate_mpc.py), which is zero (no penalty) exactly
+    // when the target sits inside this cone. Drawn out to the current range
+    // to the target so the cone visibly reaches (or misses) it each tick.
+    visualization_msgs::msg::MarkerArray buildFovMarkers(
+        const Eigen::Vector3d& pos_enu, const Eigen::Vector3d& euler, const rclcpp::Time& stamp)
+    {
+        const Eigen::Matrix3d R =
+            (Eigen::AngleAxisd(euler.z(), Eigen::Vector3d::UnitZ()) *
+             Eigen::AngleAxisd(euler.y(), Eigen::Vector3d::UnitY()) *
+             Eigen::AngleAxisd(euler.x(), Eigen::Vector3d::UnitX())).toRotationMatrix();
+
+        const Eigen::Vector3d target_pos(0.0, 0.0, ARGUS_CIRCLE_Z);
+        const double range = (target_pos - pos_enu).norm();
+
+        visualization_msgs::msg::Marker frustum;
+        frustum.header.frame_id = kVizFrame;
+        frustum.header.stamp = stamp;
+        frustum.ns = "argus_fov";
+        frustum.id = 0;
+        frustum.type = visualization_msgs::msg::Marker::LINE_LIST;
+        frustum.action = visualization_msgs::msg::Marker::ADD;
+        frustum.pose.orientation.w = 1.0;
+        frustum.scale.x = 0.02;
+        frustum.color.r = 1.0f;
+        frustum.color.g = 0.6f;
+        frustum.color.b = 0.0f;
+        frustum.color.a = 0.6f;
+
+        const auto toPoint = [](const Eigen::Vector3d& v) {
+            geometry_msgs::msg::Point p;
+            p.x = v.x(); p.y = v.y(); p.z = v.z();
+            return p;
+        };
+        const geometry_msgs::msg::Point apex = toPoint(pos_enu);
+
+        std::vector<geometry_msgs::msg::Point> tips(kFovConeRays);
+        for (int i = 0; i < kFovConeRays; ++i) {
+            const double ring = 2.0 * M_PI * i / kFovConeRays;
+            const Eigen::Vector3d dir_body(
+                std::cos(fov_half_angle_rad_),
+                std::sin(fov_half_angle_rad_) * std::cos(ring),
+                std::sin(fov_half_angle_rad_) * std::sin(ring));
+            tips[i] = toPoint(pos_enu + range * (R * dir_body));
+            frustum.points.push_back(apex);
+            frustum.points.push_back(tips[i]);
+        }
+        for (int i = 0; i < kFovConeRays; ++i) {
+            frustum.points.push_back(tips[i]);
+            frustum.points.push_back(tips[(i + 1) % kFovConeRays]);
+        }
+
+        visualization_msgs::msg::Marker target_marker;
+        target_marker.header = frustum.header;
+        target_marker.ns = "argus_fov";
+        target_marker.id = 1;
+        target_marker.type = visualization_msgs::msg::Marker::SPHERE;
+        target_marker.action = visualization_msgs::msg::Marker::ADD;
+        target_marker.pose.position = toPoint(target_pos);
+        target_marker.pose.orientation.w = 1.0;
+        target_marker.scale.x = target_marker.scale.y = target_marker.scale.z = 0.3;
+        target_marker.color.r = 1.0f;
+        target_marker.color.a = 1.0f;
+
+        visualization_msgs::msg::MarkerArray markers;
+        markers.markers = {frustum, target_marker};
+        return markers;
     }
 
     // ── Publishers ───────────────────────────────────────────────────────────
@@ -283,6 +424,7 @@ private:
     int N_ = 0;
     double omega_ = 0.0;
     double mpc_thr_hover_ = 0.5;
+    double fov_half_angle_rad_ = 0.0;
 
     State state_ = State::kInit;
     int offboard_setpoint_counter_ = 0;
@@ -304,6 +446,12 @@ private:
     rclcpp::Publisher<VehicleRatesSetpoint>::SharedPtr rates_setpoint_pub_;
     rclcpp::Publisher<VehicleCommand>::SharedPtr vehicle_command_pub_;
     rclcpp::TimerBase::SharedPtr timer_;
+
+    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr drone_path_pub_;
+    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr reference_path_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr fov_marker_pub_;
+    nav_msgs::msg::Path reference_path_msg_;
+    std::deque<geometry_msgs::msg::PoseStamped> drone_path_;
 };
 
 int main(int argc, char** argv)
