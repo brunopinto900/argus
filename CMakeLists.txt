@@ -77,6 +77,22 @@ target_link_options(quadrotor_mpc INTERFACE
     "-Wl,--disable-new-dtags"
 )
 
+# ── argus_esdf library — occupancy grid + Euclidean distance field ─────────
+# Pure C++ like quadrotor_mpc above (no ROS dependency); ros2/argus_mapping
+# is the thin ROS2 shim that feeds it point clouds. New Eigen3 dependency
+# for this target only — the rest of argus has never needed vector math.
+find_package(Eigen3 REQUIRED)
+
+add_library(argus_esdf STATIC
+    src/argus_esdf/VoxelGrid.cpp
+)
+
+target_include_directories(argus_esdf PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_link_libraries(argus_esdf PUBLIC Eigen3::Eigen)
+
 # ── Main executable (moving-target tracking demo) ────────────────────────────
 add_executable(argus_mpc
     src/mpc_controller.cpp
@@ -116,6 +132,15 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
         GTest::gtest_main
     )
 
+    add_executable(voxel_grid_tests
+        tests/test_voxel_grid.cpp
+    )
+    target_link_libraries(voxel_grid_tests PRIVATE
+        argus_esdf
+        GTest::gtest_main
+    )
+
     include(GoogleTest)
     gtest_discover_tests(quadrotor_mpc_tests)
+    gtest_discover_tests(voxel_grid_tests)
 endif()

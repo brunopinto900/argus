@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <vector>
 
 #include <rclcpp/rclcpp.hpp>
@@ -37,6 +38,9 @@
 // Auto-generated from config/quadrotor.yaml — re-run generate_mpc.py to update.
 // Pulled in transitively via the quadrotor_mpc target's include dirs.
 #include "argus_params.h"
+
+#include <argus_esdf/VoxelGrid.hpp>
+#include <argus_mapping/msg/esdf_grid.hpp>
 
 using namespace std::chrono_literals;
 using namespace px4_msgs::msg;
@@ -106,6 +110,13 @@ public:
         status_sub_ = this->create_subscription<VehicleStatus>(
             "/fmu/out/vehicle_status_v4", px4_out_qos,
             std::bind(&ArgusBridgeNode::statusCallback, this, std::placeholders::_1));
+        // From argus_mapping_node, a separate process — see the "Inter-process,
+        // pub/sub + local cache" decision in the top-level todo file. Cached
+        // and queried locally at solve time, not fed into the OCP yet (that's
+        // a separately-scoped follow-up item).
+        esdf_grid_sub_ = this->create_subscription<argus_mapping::msg::EsdfGrid>(
+            "/argus_mapping/esdf_grid", 1,
+            std::bind(&ArgusBridgeNode::esdfGridCallback, this, std::placeholders::_1));
 
         offboard_mode_pub_ = this->create_publisher<OffboardControlMode>(
             "/fmu/in/offboard_control_mode", 10);
@@ -151,6 +162,22 @@ private:
     {
         arming_state_ = msg->arming_state;
         nav_state_ = msg->nav_state;
+    }
+
+    // Rebuilds the local ESDF cache from argus_mapping_node's latest
+    // publication. Reallocates a fresh VoxelGrid each time rather than
+    // trying to update in place — cheap relative to the ~0.5s publish
+    // period, and simplest to get right if argus_mapping_node's grid
+    // bounds/resolution parameters ever change at runtime.
+    void esdfGridCallback(const argus_mapping::msg::EsdfGrid::SharedPtr msg)
+    {
+        std::vector<double> distances(msg->distances.begin(), msg->distances.end());
+        auto grid = std::make_unique<argus_esdf::VoxelGrid>(
+            Eigen::Vector3d(msg->origin.x, msg->origin.y, msg->origin.z),
+            Eigen::Vector3i(msg->dims[0], msg->dims[1], msg->dims[2]),
+            msg->voxel_size);
+        grid->setDistanceField(distances);
+        esdf_grid_ = std::move(grid);
     }
 
     // ── Main loop ────────────────────────────────────────────────────────────
@@ -235,6 +262,23 @@ private:
         }
 
         publishVisualization(pos_enu, euler);
+        logEsdfAtCurrentPosition(pos_enu);
+    }
+
+    // Proves out the mapping pipeline end-to-end (subscribe -> cache ->
+    // query) ahead of actually feeding it into the OCP as a cost/constraint
+    // — that wiring is a separately-scoped follow-up (see the "Add basic
+    // obstacle avoidance via ESDF" / advanced-ESDF items in the top-level
+    // todo file). Throttled since this runs every tick (20Hz) but the map
+    // only changes at argus_mapping_node's ~2Hz publish rate.
+    void logEsdfAtCurrentPosition(const Eigen::Vector3d& pos_enu)
+    {
+        if (!esdf_grid_) return;
+        const auto q = esdf_grid_->query(pos_enu);
+        if (!q.valid) return;
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                              "ESDF at drone pos: distance=%.2fm gradient=(%.2f,%.2f,%.2f)",
+                              q.distance, q.gradient.x(), q.gradient.y(), q.gradient.z());
     }
 
     // ── Visualization (RViz) ─────────────────────────────────────────────────
@@ -495,6 +539,8 @@ private:
 
     rclcpp::Subscription<VehicleOdometry>::SharedPtr odometry_sub_;
     rclcpp::Subscription<VehicleStatus>::SharedPtr status_sub_;
+    rclcpp::Subscription<argus_mapping::msg::EsdfGrid>::SharedPtr esdf_grid_sub_;
+    std::unique_ptr<argus_esdf::VoxelGrid> esdf_grid_;
     rclcpp::Publisher<OffboardControlMode>::SharedPtr offboard_mode_pub_;
     rclcpp::Publisher<TrajectorySetpoint>::SharedPtr trajectory_setpoint_pub_;
     rclcpp::Publisher<VehicleRatesSetpoint>::SharedPtr rates_setpoint_pub_;

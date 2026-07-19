@@ -11,9 +11,10 @@ PX4 dependency; this package is the only place that bridges the two.
 Prerequisites: `~/PX4-Autopilot` built (`make px4_sitl gz_x500_depth` once,
 standalone — or `gz_x500` if you don't need the camera), `Micro-XRCE-DDS-Agent`
 installed, `ros_gz_bridge` installed (`ros2 pkg prefix ros_gz_bridge` should
-resolve), and a colcon workspace with `px4_msgs`, `px4_ros_com`, and this
-package (`argus/ros2/argus_px4_bridge`, symlinked into the workspace's `src/`)
-built:
+resolve), and a colcon workspace with `px4_msgs`, `px4_ros_com`, this package
+(`argus/ros2/argus_px4_bridge`, symlinked into the workspace's `src/`), and
+its sibling `argus/ros2/argus_mapping` (also symlinked in — see
+[Mapping (argus_mapping)](#mapping-argus_mapping) below) built:
 
 ```bash
 source ~/ros2_jazzy/install/setup.bash   # or your ROS2 distro's setup.bash
@@ -222,6 +223,41 @@ built from `PX4_GZ_WORLD`/the `px4_world` arg, so a mismatch there makes
 SITL hang forever waiting for a world that never reports ready under that
 name.
 
+## Mapping (`argus_mapping`)
+
+A separate package/process (`argus/ros2/argus_mapping`, sibling to this one —
+see the "one repo, two ROS2 packages" / "inter-process, pub/sub + local
+cache" decisions in the top-level `todo` file for why it isn't folded in
+here) turns the depth point cloud above into a queryable Euclidean distance
+field:
+
+- **`argus_mapping_node`** subscribes to `/depth_camera/points` and
+  `/fmu/out/vehicle_odometry` (its own subscription — deliberately not
+  shared with `argus_bridge_node`), transforms each point from the camera's
+  optical frame through the camera's fixed body-frame extrinsic and the
+  drone's current pose into world (ENU) coordinates, feeds them into an
+  `argus_esdf::VoxelGrid` (raycast insertion, marking traversed voxels free
+  and hit voxels occupied), and every `esdf_update_period` (default `0.5s`)
+  runs the exact distance transform and publishes the result on
+  `/argus_mapping/esdf_grid` (`argus_mapping/msg/EsdfGrid`, a fixed-bounds
+  grid: origin, `dims[3]`, `voxel_size`, and a flat `distances[]` array).
+- **`argus_bridge_node`** subscribes to that topic, rebuilds a local
+  `argus_esdf::VoxelGrid` from it each time (via `VoxelGrid::setDistanceField()`),
+  and queries `(distance, gradient)` at the drone's current position every
+  tick — logged (throttled) to prove the pipeline end-to-end. Not yet fed
+  into the OCP as a cost/constraint; that's a separate, still-open `todo`
+  item.
+
+Grid bounds default to `origin=(-3,-3,0)`, `dims=(60,60,25)`,
+`voxel_size=0.1m` — covering the circle-tracking flight envelope
+(`ARGUS_CIRCLE_R=2m`, `ARGUS_HOVER_ALTITUDE=1.5m`) plus margin. Override via
+`argus_mapping_node`'s standard ROS2 parameters
+(`--ros-args -p voxel_size:=0.05`, etc.) if testing a different scene.
+
+`argus_sitl.launch.py` starts `argus_mapping_node` automatically alongside
+`argus_bridge_node` (same odometry-ready gate); see `run_sitl.sh`'s cleanup
+patterns if you need to kill a stray instance manually.
+
 ## Node: `argus_bridge_node`
 
 A single node, `argus/ros2/argus_px4_bridge/src/argus_bridge_node.cpp`, built
@@ -305,6 +341,7 @@ needs that heartbeat continuously or it drops out of offboard.
 |---|---|---|---|
 | `/fmu/out/vehicle_odometry` | `px4_msgs/VehicleOdometry` | `rmw_qos_profile_sensor_data` (best-effort, depth 5) | Assumes NED pose/velocity frame (PX4 SITL default) — `pose_frame`/`velocity_frame` fields aren't checked per-message. |
 | `/fmu/out/vehicle_status_v4` | `px4_msgs/VehicleStatus` | `rmw_qos_profile_sensor_data` | Version-suffixed topic name — `VehicleStatus` is schema version 4, PX4 does not publish it on the bare `/fmu/out/vehicle_status`. |
+| `/argus_mapping/esdf_grid` | `argus_mapping/msg/EsdfGrid` | depth 1 | From `argus_mapping_node` — see [Mapping (argus_mapping)](#mapping-argus_mapping). Cached and queried locally, not yet fed into the OCP. |
 
 ## Publishers
 

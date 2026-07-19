@@ -153,9 +153,20 @@ def _launch_setup(context, *args, **kwargs):
         remappings=[(gz_rgb_image_topic, "/camera/image_raw")],
     )
 
+    # Separate package/process from argus_bridge_node by design (see the
+    # "One repo, two ROS2 packages" / "Inter-process, pub/sub" decisions in
+    # the top-level todo file) — gated on the same odometry-ready signal
+    # since it needs PX4 odometry itself, but otherwise fully independent.
+    mapping_node = Node(
+        package="argus_mapping",
+        executable="argus_mapping_node",
+        name="argus_mapping_node",
+        output="screen",
+    )
+
     def _on_wait_exit(event, _context):
         if event.returncode == 0:
-            return [TimerAction(period=5.0, actions=[bridge_node])]
+            return [TimerAction(period=5.0, actions=[bridge_node, mapping_node])]
         # Times out (exit 124) if PX4/Gazebo/the DDS bridge never came up —
         # surface that clearly instead of silently starting the node anyway
         # (OnProcessExit fires on any exit code, success or not).

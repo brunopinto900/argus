@@ -32,6 +32,7 @@ patterns=(
   "ros2 launch argus_px4_bridge"
   "ros_gz_bridge/parameter_bridge"
   "argus_px4_bridge/lib/argus_px4_bridge/argus_bridge_node"
+  "argus_mapping/lib/argus_mapping/argus_mapping_node"
   "rviz2/lib/rviz2/rviz2"
 )
 for pattern in "${patterns[@]}"; do
@@ -54,9 +55,17 @@ source ~/ros2_jazzy/install/setup.bash
 # shellcheck disable=SC1090
 source ~/ros2_ws/install/setup.bash
 
-echo "==> Building argus_px4_bridge..."
+echo "==> Building argus_mapping + argus_px4_bridge..."
 cd ~/ros2_ws
-colcon build --packages-select argus_px4_bridge --symlink-install || exit 1
+colcon build --packages-select argus_mapping argus_px4_bridge --symlink-install || exit 1
+
+# Re-source after building: a package built for the first time this run
+# (e.g. argus_mapping, freshly added) isn't on `ros2 launch`'s search path
+# from the source above — that ran before install/argus_mapping existed,
+# and sourcing doesn't retroactively pick up packages added later in the
+# same shell. Re-sourcing after the build closes that gap.
+# shellcheck disable=SC1090
+source ~/ros2_ws/install/setup.bash
 
 echo "==> Launching..."
 cd "$ARGUS_DIR"

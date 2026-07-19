@@ -13,6 +13,7 @@ find_package(Eigen3 REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
+find_package(argus_mapping REQUIRED)
 
 # Pull in argus as a subdirectory to get the `quadrotor_mpc` target — same
 # consumption pattern the argus repo's own CMakeLists.txt is built for
@@ -24,6 +25,7 @@ add_executable(argus_bridge_node src/argus_bridge_node.cpp)
 
 target_link_libraries(argus_bridge_node
   quadrotor_mpc
+  argus_esdf
   px4_ros_com::frame_transforms
 )
 
@@ -35,6 +37,7 @@ ament_target_dependencies(argus_bridge_node
   geometry_msgs
   nav_msgs
   visualization_msgs
+  argus_mapping
 )
 
 install(TARGETS argus_bridge_node
