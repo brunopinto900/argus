@@ -9,6 +9,7 @@ find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
 find_package(px4_msgs REQUIRED)
 find_package(px4_ros_com REQUIRED)
 find_package(eigen3_cmake_module REQUIRED)
@@ -44,6 +45,7 @@ ament_target_dependencies(argus_mapping_node
   sensor_msgs
   std_msgs
   geometry_msgs
+  visualization_msgs
   px4_msgs
   px4_ros_com
   Eigen3

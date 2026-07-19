@@ -1,5 +1,7 @@
 #include <argus_esdf/VoxelGrid.hpp>
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -173,13 +175,24 @@ void VoxelGrid::markRay(const Eigen::Vector3d& sensor_origin, const Eigen::Vecto
 void VoxelGrid::insertPointCloud(const Eigen::Vector3d& sensor_origin,
                                   const std::vector<Eigen::Vector3d>& points)
 {
+    const auto start = std::chrono::steady_clock::now();
+
     for (const auto& point : points) {
         markRay(sensor_origin, point);
     }
+
+    const auto end = std::chrono::steady_clock::now();
+    const double ms = std::chrono::duration<double, std::milli>(end - start).count();
+    insert_min_ms_ = (insert_count_ == 0) ? ms : std::min(insert_min_ms_, ms);
+    insert_max_ms_ = std::max(insert_max_ms_, ms);
+    insert_sum_ms_ += ms;
+    ++insert_count_;
 }
 
 void VoxelGrid::computeEsdf()
 {
+    const auto start = std::chrono::steady_clock::now();
+
     std::vector<double> sq(occupancy_.size());
     for (std::size_t i = 0; i < occupancy_.size(); ++i) {
         sq[i] = (occupancy_[i] == VoxelState::kOccupied) ? 0.0 : kNoObstacleSq;
@@ -219,6 +232,13 @@ void VoxelGrid::computeEsdf()
     for (std::size_t i = 0; i < sq.size(); ++i) {
         distance_[i] = std::sqrt(sq[i]) * voxel_size_;
     }
+
+    const auto end = std::chrono::steady_clock::now();
+    const double ms = std::chrono::duration<double, std::milli>(end - start).count();
+    compute_min_ms_ = (compute_count_ == 0) ? ms : std::min(compute_min_ms_, ms);
+    compute_max_ms_ = std::max(compute_max_ms_, ms);
+    compute_sum_ms_ += ms;
+    ++compute_count_;
 }
 
 void VoxelGrid::setDistanceField(const std::vector<double>& distances)
@@ -227,6 +247,46 @@ void VoxelGrid::setDistanceField(const std::vector<double>& distances)
         throw std::invalid_argument("VoxelGrid::setDistanceField: size mismatch with dims");
     }
     distance_ = distances;
+}
+
+VoxelGridTiming VoxelGrid::insertTiming() const
+{
+    VoxelGridTiming t;
+    t.count = insert_count_;
+    if (t.count > 0) {
+        t.min_ms  = insert_min_ms_;
+        t.max_ms  = insert_max_ms_;
+        t.mean_ms = insert_sum_ms_ / static_cast<double>(t.count);
+    }
+    return t;
+}
+
+VoxelGridTiming VoxelGrid::computeEsdfTiming() const
+{
+    VoxelGridTiming t;
+    t.count = compute_count_;
+    if (t.count > 0) {
+        t.min_ms  = compute_min_ms_;
+        t.max_ms  = compute_max_ms_;
+        t.mean_ms = compute_sum_ms_ / static_cast<double>(t.count);
+    }
+    return t;
+}
+
+void VoxelGrid::resetInsertTiming()
+{
+    insert_min_ms_ = 0.0;
+    insert_max_ms_ = 0.0;
+    insert_sum_ms_ = 0.0;
+    insert_count_  = 0;
+}
+
+void VoxelGrid::resetComputeEsdfTiming()
+{
+    compute_min_ms_ = 0.0;
+    compute_max_ms_ = 0.0;
+    compute_sum_ms_ = 0.0;
+    compute_count_  = 0;
 }
 
 EsdfQuery VoxelGrid::query(const Eigen::Vector3d& point) const

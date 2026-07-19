@@ -144,6 +144,38 @@ TEST(VoxelGrid, SetDistanceFieldRejectsSizeMismatch)
     EXPECT_THROW(grid.setDistanceField(std::vector<double>(10, 0.0)), std::invalid_argument);
 }
 
+TEST(VoxelGrid, TimingAccumulatesAcrossCalls)
+{
+    VoxelGrid grid(Eigen::Vector3d::Zero(), Eigen::Vector3i(11, 11, 11), 1.0);
+    const Eigen::Vector3d sensor(0.5, 0.5, 0.5);
+
+    EXPECT_EQ(grid.insertTiming().count, 0);
+    EXPECT_EQ(grid.computeEsdfTiming().count, 0);
+
+    grid.insertPointCloud(sensor, {Eigen::Vector3d(5.5, 5.5, 5.5)});
+    grid.insertPointCloud(sensor, {Eigen::Vector3d(3.5, 3.5, 3.5)});
+    grid.computeEsdf();
+
+    const auto insert_t = grid.insertTiming();
+    EXPECT_EQ(insert_t.count, 2);
+    EXPECT_GE(insert_t.min_ms, 0.0);
+    EXPECT_LE(insert_t.min_ms, insert_t.mean_ms);
+    EXPECT_LE(insert_t.mean_ms, insert_t.max_ms);
+
+    const auto compute_t = grid.computeEsdfTiming();
+    EXPECT_EQ(compute_t.count, 1);
+    EXPECT_GE(compute_t.min_ms, 0.0);
+    EXPECT_DOUBLE_EQ(compute_t.min_ms, compute_t.max_ms);  // single sample
+
+    grid.resetInsertTiming();
+    EXPECT_EQ(grid.insertTiming().count, 0);
+    // resetInsertTiming() must not touch the other operation's stats.
+    EXPECT_EQ(grid.computeEsdfTiming().count, 1);
+
+    grid.resetComputeEsdfTiming();
+    EXPECT_EQ(grid.computeEsdfTiming().count, 0);
+}
+
 TEST(VoxelGrid, QueryOutOfBoundsIsInvalid)
 {
     VoxelGrid grid(Eigen::Vector3d::Zero(), Eigen::Vector3i(5, 5, 5), 1.0);

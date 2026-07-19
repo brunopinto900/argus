@@ -24,6 +24,19 @@ struct EsdfQuery
     bool valid = false;  // false if the query point is outside the grid
 };
 
+// Wall-clock timing of one operation (insertPointCloud() or computeEsdf()),
+// accumulated across calls since construction or the matching reset — same
+// pattern as argus_mpc::QuadrotorMpc's SolverTiming, for the same reason:
+// this is the number that says whether the mapping pipeline can keep up
+// with its sensor/publish rate, not just whether it's correct.
+struct VoxelGridTiming
+{
+    double min_ms  = 0.0;
+    double max_ms  = 0.0;
+    double mean_ms = 0.0;
+    long   count   = 0;
+};
+
 // Fixed-resolution 3-D occupancy grid with an exact Euclidean distance
 // transform computed over it. Bounds are fixed at construction — this does
 // not grow or rehash like an octree; it trades that flexibility for O(1)
@@ -82,6 +95,16 @@ public:
     // linearIndex() layout computeEsdf() itself produces.
     void setDistanceField(const std::vector<double>& distances);
 
+    // Accumulated wall-clock timing of insertPointCloud() / computeEsdf()
+    // calls made so far on this instance (or since the matching reset*()).
+    // Separate stats per operation since they run at very different
+    // frequencies/costs in practice (insertPointCloud() once per sensor
+    // frame, computeEsdf() once per publish cycle).
+    VoxelGridTiming insertTiming() const;
+    VoxelGridTiming computeEsdfTiming() const;
+    void resetInsertTiming();
+    void resetComputeEsdfTiming();
+
     // ── Accessors — visualization, testing, and diagnostics ─────────────
     VoxelState stateAt(const Eigen::Vector3i& idx) const;
     double distanceAt(const Eigen::Vector3i& idx) const;
@@ -113,6 +136,16 @@ private:
 
     std::vector<VoxelState> occupancy_;
     std::vector<double> distance_;  // valid only after computeEsdf()
+
+    double insert_min_ms_ = 0.0;
+    double insert_max_ms_ = 0.0;
+    double insert_sum_ms_ = 0.0;
+    long   insert_count_  = 0;
+
+    double compute_min_ms_ = 0.0;
+    double compute_max_ms_ = 0.0;
+    double compute_sum_ms_ = 0.0;
+    long   compute_count_  = 0;
 };
 
 }  // namespace argus_esdf

@@ -71,6 +71,16 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
       Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Name: ESDF (near-obstacle voxels)
+      Enabled: true
+      Topic:
+        Value: /argus_mapping/esdf_markers
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+      Value: true
     - Class: rviz_default_plugins/Image
       Name: RGB camera
       Enabled: true

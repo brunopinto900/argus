@@ -258,6 +258,31 @@ Grid bounds default to `origin=(-3,-3,0)`, `dims=(60,60,25)`,
 `argus_bridge_node` (same odometry-ready gate); see `run_sitl.sh`'s cleanup
 patterns if you need to kill a stray instance manually.
 
+### Profiling
+
+`argus_esdf::VoxelGrid` accumulates min/mean/max wall-clock timing for
+`insertPointCloud()` and `computeEsdf()` separately (`VoxelGridTiming`,
+`insertTiming()`/`computeEsdfTiming()`/`resetInsertTiming()`/
+`resetComputeEsdfTiming()`) — same shape as `argus_mpc::QuadrotorMpc`'s
+`SolverTiming`. `argus_mapping_node` logs both every `timing_report_period`
+`computeEsdf()` cycles (default `10`, ~5s at the default `0.5s`
+`esdf_update_period`):
+
+```
+ESDF timing — insertPointCloud: min/mean/max = 0.31/0.42/0.58ms (n=48) | computeEsdf: min/mean/max = 3.10/3.24/3.41ms (n=10)
+```
+
+### RViz distance-field coloring
+
+`argus_mapping_node` also publishes `/argus_mapping/esdf_markers`
+(`visualization_msgs/MarkerArray`, one `CUBE_LIST`) — every voxel within
+`esdf_viz_max_distance` (default `1.5m`) of an obstacle, colored red
+(close) to blue (far) via an HSV hue sweep. Occupied voxels (`distance==0`)
+render solid red. Unthresholded would be the full ~90k-voxel grid, mostly
+empty free space; only near-obstacle voxels are shown since those are what
+actually matter for avoidance. Included in `argus.rviz` by default ("ESDF
+(near-obstacle voxels)").
+
 ## Node: `argus_bridge_node`
 
 A single node, `argus/ros2/argus_px4_bridge/src/argus_bridge_node.cpp`, built
