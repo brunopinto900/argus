@@ -61,6 +61,29 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
       Value: true
+    - Class: rviz_default_plugins/Image
+      Name: Depth camera
+      Enabled: true
+      Topic:
+        Value: /depth_camera
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+      Value: true
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Depth cloud
+      Enabled: true
+      Topic:
+        Value: /depth_camera/points
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+      Style: Flat Squares
+      Size (Pixels): 3
+      Color Transformer: RGB8
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48

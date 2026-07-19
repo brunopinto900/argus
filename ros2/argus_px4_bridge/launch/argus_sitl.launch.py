@@ -1,4 +1,4 @@
-"""Launches Micro-XRCE-DDS-Agent + PX4 SITL (Gazebo, gz_x500) + argus_bridge_node."""
+"""Launches Micro-XRCE-DDS-Agent + PX4 SITL (Gazebo, gz_x500_depth) + argus_bridge_node."""
 
 import os
 
@@ -26,6 +26,7 @@ def _launch_setup(context, *args, **kwargs):
     mpc_thr_hover = LaunchConfiguration("mpc_thr_hover").perform(context)
     rviz = LaunchConfiguration("rviz").perform(context)
     launch_gazebo = LaunchConfiguration("launch_gazebo").perform(context)
+    px4_model = LaunchConfiguration("px4_model").perform(context)
 
     agent = ExecuteProcess(
         cmd=["MicroXRCEAgent", "udp4", "-p", "8888"],
@@ -43,7 +44,7 @@ def _launch_setup(context, *args, **kwargs):
         cmd=["bash", "-c",
              f"mkfifo {PX4_STDIN_FIFO} 2>/dev/null; "
              f"exec 3<>{PX4_STDIN_FIFO}; "
-             f"cd '{px4_dir}' && {headless_env}make px4_sitl gz_x500 <&3"],
+             f"cd '{px4_dir}' && {headless_env}make px4_sitl {px4_model} <&3"],
         name="px4_sitl_gz",
         output="screen",
     )
@@ -97,6 +98,23 @@ def _launch_setup(context, *args, **kwargs):
         parameters=[{"mpc_thr_hover": float(mpc_thr_hover)}],
     )
 
+    # x500_depth's OakD-Lite sensor names these topics explicitly in its SDF
+    # (see PX4-Autopilot/Tools/simulation/gz/models/OakD-Lite/model.sdf) —
+    # unlike PX4's other gz topics they aren't namespaced under
+    # /world/<world>/model/<model>/..., so the names below are stable
+    # regardless of world name or vehicle instance.
+    gz_camera_bridge = Node(
+        package="ros_gz_bridge",
+        executable="parameter_bridge",
+        name="gz_camera_bridge",
+        output="screen",
+        arguments=[
+            "/depth_camera@sensor_msgs/msg/Image[gz.msgs.Image",
+            "/depth_camera/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked",
+            "/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo",
+        ],
+    )
+
     def _on_wait_exit(event, _context):
         if event.returncode == 0:
             return [TimerAction(period=5.0, actions=[bridge_node])]
@@ -118,7 +136,7 @@ def _launch_setup(context, *args, **kwargs):
     # externally (e.g. started by hand per the README's "Manual" section, or
     # a previous launch left running) — skip spawning new ones and just wait
     # for odometry from whatever's already up, then start the bridge (+ RViz).
-    actions = [wait_for_odometry, start_bridge_when_ready]
+    actions = [wait_for_odometry, start_bridge_when_ready, gz_camera_bridge]
     if launch_gazebo not in ("0", "", "false", "False"):
         actions = [agent, px4_sitl, set_arming_bypass_params] + actions
 
@@ -186,6 +204,12 @@ def generate_launch_description():
         description="1 to start MicroXRCEAgent + PX4 SITL/Gazebo, 0 to assume they're "
                      "already running externally and only start the bridge node (+ RViz)",
     )
+    px4_model_arg = DeclareLaunchArgument(
+        "px4_model",
+        default_value="gz_x500_depth",
+        description="PX4 `make px4_sitl <target>` model target, e.g. gz_x500 (no camera) or "
+                     "gz_x500_depth (adds a downward-forward OakD-Lite RGB + depth camera)",
+    )
 
     return LaunchDescription([
         px4_dir_arg,
@@ -193,5 +217,6 @@ def generate_launch_description():
         mpc_thr_hover_arg,
         rviz_arg,
         launch_gazebo_arg,
+        px4_model_arg,
         OpaqueFunction(function=_launch_setup),
     ])
