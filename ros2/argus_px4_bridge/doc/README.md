@@ -8,10 +8,12 @@ PX4 dependency; this package is the only place that bridges the two.
 
 ## How to launch
 
-Prerequisites: `~/PX4-Autopilot` built (`make px4_sitl gz_x500` once, standalone),
-`Micro-XRCE-DDS-Agent` installed, and a colcon workspace with `px4_msgs`,
-`px4_ros_com`, and this package (`argus/ros2/argus_px4_bridge`, symlinked
-into the workspace's `src/`) built:
+Prerequisites: `~/PX4-Autopilot` built (`make px4_sitl gz_x500_depth` once,
+standalone — or `gz_x500` if you don't need the camera), `Micro-XRCE-DDS-Agent`
+installed, `ros_gz_bridge` installed (`ros2 pkg prefix ros_gz_bridge` should
+resolve), and a colcon workspace with `px4_msgs`, `px4_ros_com`, and this
+package (`argus/ros2/argus_px4_bridge`, symlinked into the workspace's `src/`)
+built:
 
 ```bash
 source ~/ros2_jazzy/install/setup.bash   # or your ROS2 distro's setup.bash
@@ -24,10 +26,16 @@ source ~/ros2_ws/install/setup.bash
    ```bash
    MicroXRCEAgent udp4 -p 8888
    ```
-2. **Start PX4 SITL** (separate terminal; `HEADLESS=1` to skip the Gazebo GUI):
+2. **Start PX4 SITL** (separate terminal; `HEADLESS=1` to skip the Gazebo GUI).
+   To get the depth camera + box world the launch file uses by default, first
+   symlink the world in (one-time, or after editing `worlds/argus_box_world.sdf`):
    ```bash
-   cd ~/PX4-Autopilot && HEADLESS=1 make px4_sitl gz_x500
+   ln -sf ~/thesis_to_cpp_ws/argus/ros2/argus_px4_bridge/worlds/argus_box_world.sdf \
+     ~/PX4-Autopilot/Tools/simulation/gz/worlds/argus_box_world.sdf
+   cd ~/PX4-Autopilot && HEADLESS=1 PX4_GZ_WORLD=argus_box_world make px4_sitl gz_x500_depth
    ```
+   (Plain `make px4_sitl gz_x500` with no `PX4_GZ_WORLD` set also still works —
+   PX4's own `default.sdf`, no camera, no box.)
 3. **Once it reaches the `pxh>` prompt**, set the two params that bypass
    SITL-only preflight checks (no simulated battery/GCS present — see
    `powerCheck.cpp`/`rcAndDataLinkCheck.cpp` in PX4 for what these guard):
@@ -37,13 +45,23 @@ source ~/ros2_ws/install/setup.bash
    ```
    Also worth checking once per vehicle model: `param show MPC_THR_HOVER`,
    and pass it via `--ros-args -p mpc_thr_hover:=<value>` below if it's not `0.6`.
-4. **Run the bridge node** (separate terminal):
+4. **Bridge the depth camera into ROS2** (separate terminal — only if you
+   started `gz_x500_depth` above; skip for `gz_x500`):
    ```bash
-   ros2 run argus_px4_bridge argus_bridge_node
+   ros2 run ros_gz_bridge parameter_bridge \
+     "/depth_camera@sensor_msgs/msg/Image[gz.msgs.Image" \
+     "/depth_camera/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked" \
+     "/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo"
+   ```
+5. **Run the bridge node** (separate terminal):
+   ```bash
+   ros2 run argus_px4_bridge argus_bridge_node --ros-args -p hover_only:=true
    ```
    It will stream a hold setpoint, arm, switch to offboard, climb to the
-   circle's start point, then start MPC tracking — watch its log for the
-   state transitions (`Armed + offboard...` → `On station...`).
+   circle's start point, then either hold there (`hover_only:=true`) or start
+   MPC circle tracking (`hover_only:=false`, the parameter's own default) —
+   watch its log for the state transitions (`Armed + offboard...` →
+   `On station...`).
 
 ### Launch file (one command — does everything above automatically)
 
@@ -53,20 +71,34 @@ ros2 launch argus_px4_bridge argus_sitl.launch.py
 
 Starts the Agent and PX4 SITL, then:
 
-1. Watches the SITL process's own stdout for the `pxh>` prompt and pushes
+1. Symlinks `worlds/<px4_world>.sdf` from this package's share directory into
+   `<px4_dir>/Tools/simulation/gz/worlds/`, re-linking on every launch so
+   edits to the world file take effect without a PX4 rebuild. This has to be
+   a physical file under `px4_dir` — PX4's own `gz_env.sh` unconditionally
+   re-exports `PX4_GZ_WORLDS` back to `Tools/simulation/gz/worlds` at
+   startup, so pointing that env var at a directory in this repo instead
+   gets silently clobbered. (`PX4_GZ_WORLD`, the world *name* passed to
+   `make`, isn't touched by `gz_env.sh` and works as a normal env var.)
+2. Watches the SITL process's own stdout for the `pxh>` prompt and pushes
    `param set CBRK_SUPPLY_CHK 894281` / `param set NAV_DLL_ACT 0` into it the
    moment it appears (via a FIFO wired to the process's stdin — the
    interactive shell PX4 exposes on stdin never sees EOF, so it keeps
    accepting input for the rest of the run).
-2. Polls `ros2 topic echo /fmu/out/vehicle_odometry --once` in a loop
+3. Polls `ros2 topic echo /fmu/out/vehicle_odometry --once` in a loop
    (bounded to 90 s) as a **real** readiness check — the earliest point
    PX4, Gazebo, and the DDS bridge are all confirmed up — rather than
    guessing a fixed boot delay. Fails loudly (`odometry_wait_failed`) instead
    of silently starting the node if that never happens.
-3. Waits a further 5 s settle buffer after that (arming immediately on the
+4. Waits a further 5 s settle buffer after that (arming immediately on the
    first odometry sample was observed to trigger sensor-TIMEOUT failsafes in
    SITL), then starts `argus_bridge_node`.
-4. (GUI runs only, i.e. `headless=0`) Resends the model-follow camera command
+5. Starts `gz_camera_bridge` (a `ros_gz_bridge parameter_bridge` instance)
+   bridging `/depth_camera`, `/depth_camera/points`, and `/camera_info` from
+   Gazebo into ROS2 — see [Depth camera](#depth-camera--world) below. Started
+   unconditionally and immediately (it just waits for the gz topics to exist),
+   regardless of `launch_gazebo`, so it also works against an
+   already-running instance.
+6. (GUI runs only, i.e. `headless=0`) Resends the model-follow camera command
    (`gz topic -t /gui/track ...`) every 2 s for five attempts. PX4's own init
    script only sends this once, right after spawning the model — if the GUI
    client is still starting up at that exact moment (it takes a few seconds
@@ -84,12 +116,47 @@ Launch arguments:
 | `mpc_thr_hover` | `0.6` | Forwarded to the node's `mpc_thr_hover` param — see below. |
 | `rviz` | `1` | `1` launches RViz with the checked-in visualization config (see below), `0` skips it. |
 | `launch_gazebo` | `1` | `1` starts the Agent + PX4 SITL/Gazebo. `0` assumes they're already running externally (e.g. started by hand per the "Manual" section above, or left running from a previous launch) and only starts the bridge node (+ RViz) against them. |
+| `px4_model` | `gz_x500_depth` | PX4 `make px4_sitl <target>` model target. `gz_x500` for the plain airframe with no camera. |
+| `px4_world` | `argus_box_world` | Gazebo world name (no `.sdf`), looked up in this package's `worlds/` dir. `argus_box_world` is PX4's `default.sdf` plus one static box obstacle on the circle-start hover point's boresight — see [Depth camera & world](#depth-camera--world). Use `default` (or any other name under `PX4-Autopilot/Tools/simulation/gz/worlds/`) for PX4's stock worlds. |
+| `hover_only` | `1` | `1` holds position at the circle-start point after takeoff instead of handing off to MPC circle tracking — set up for obstacle/depth-camera testing where the drone should stay put near `argus_box_world`'s box. `0` restores the original circle-tracking behavior. |
 
 ```bash
 ros2 launch argus_px4_bridge argus_sitl.launch.py headless:=1 mpc_thr_hover:=0.5
 ```
 
 `rviz:=0` skips launching RViz if you don't want it (see below).
+
+Other common variations:
+
+```bash
+# Watch it in the Gazebo GUI instead of headless
+ros2 launch argus_px4_bridge argus_sitl.launch.py headless:=0
+
+# Go back to circle-tracking instead of hovering in place
+ros2 launch argus_px4_bridge argus_sitl.launch.py hover_only:=0
+
+# Original plain model/world — no camera, no box, for comparing against
+# pre-depth-camera behavior
+ros2 launch argus_px4_bridge argus_sitl.launch.py px4_model:=gz_x500 px4_world:=default
+```
+
+### Re-launching: check for stale processes first
+
+If a Gazebo/PX4 process from a previous run doesn't fully exit (observed
+happening even after what looked like a successful Ctrl-C or `pkill`), the
+*next* launch's `px4-rc.gzsim` will silently detect that a world is "already
+running" and just attach to it — you'll get the old world/model instead of
+whatever `px4_world`/`px4_model` you just asked for, with no error. Before
+re-launching, especially after killing a previous run, check for leftovers
+and force-kill anything still there:
+
+```bash
+ps aux | grep -E "gz sim|px4_sitl_default"
+kill -9 <pid> ...
+```
+
+(worth checking `MicroXRCEAgent`, `ros_gz_bridge`, and `rviz2` too if things
+still look wrong after that — `ps aux | grep -E "MicroXRCEAgent|parameter_bridge|rviz2"`)
 
 ## Visualization (RViz)
 
@@ -103,12 +170,45 @@ lookup is required):
 | `/argus/drone_path` | `nav_msgs/Path` | The drone's actual flown trajectory, accumulated tick by tick (capped at the last ~200 s / 4000 points so it doesn't grow unbounded on a long-running flight). |
 | `/argus/fov_markers` | `visualization_msgs/MarkerArray` | A wireframe cone (`id=0`) showing the camera FOV — body `+x` boresight, half-angle `fov_half_angle_deg` (default `40°`, must match `config/quadrotor.yaml`'s `camera.fov_half_angle_deg`) — drawn out to the current range to the target, plus a sphere (`id=1`) marking the target itself at the circle's center. Mirrors the OCP's `r_fov` cost term directly: the cone is empty of penalty exactly when the target sphere sits inside it. |
 
+Plus, when `gz_camera_bridge` is running (see below), an `Image` display on
+`/depth_camera` and a `PointCloud2` display on `/depth_camera/points`.
+
 `ros2 launch argus_px4_bridge argus_sitl.launch.py` starts `rviz2` automatically
 (`rviz:=0` to skip it) with a checked-in config
-(`ros2/argus_px4_bridge/rviz/argus.rviz`) that already has all three displays
+(`ros2/argus_px4_bridge/rviz/argus.rviz`) that already has all displays
 set up. To view them against a node started manually instead, just run
 `rviz2 -d $(ros2 pkg prefix argus_px4_bridge)/share/argus_px4_bridge/rviz/argus.rviz`
 in a separate terminal.
+
+## Depth camera & world
+
+The default `px4_model` (`gz_x500_depth`) is PX4's stock `x500` airframe with
+an OakD-Lite camera bolted on (`PX4-Autopilot/Tools/simulation/gz/models/x500_depth`).
+It publishes on Gazebo-transport topics that `gz_camera_bridge` bridges into
+ROS2 as-is (same names, `sensor_msgs` types):
+
+| Gazebo topic | ROS2 topic | Type | Notes |
+|---|---|---|---|
+| `/depth_camera` | `/depth_camera` | `sensor_msgs/msg/Image` | `640x480`, `32FC1` (metres, float32). Named explicitly in the OakD-Lite model's SDF, so unlike PX4's other gz topics it isn't namespaced under `/world/<world>/model/<model>/...` — the name is stable regardless of world or vehicle instance. |
+| `/depth_camera/points` | `/depth_camera/points` | `sensor_msgs/msg/PointCloud2` | Same sensor, as a point cloud. |
+| `/camera_info` | `/camera_info` | `sensor_msgs/msg/CameraInfo` | Matches the depth image's intrinsics. |
+
+The OakD-Lite model also has a plain RGB camera (`IMX214`) but it isn't
+bridged — its gz topic *is* namespaced under
+`/world/<world>/model/x500_depth_0/link/camera_link/sensor/IMX214/image`, so
+add it to `gz_camera_bridge`'s `arguments` in the launch file if you need it.
+
+`argus_box_world` (the default `px4_world`) is PX4's stock `default.sdf` with
+one static `0.5 x 0.5 x 1.5 m` box added at `(1, 0, 0.75)` in ENU — directly
+on the boresight from the drone's circle-start hover point
+`(ARGUS_CIRCLE_R, 0, ARGUS_HOVER_ALTITUDE) = (2, 0, 1.5)`, nose toward the
+origin. With `hover_only:=1` (the default) the drone parks there after
+takeoff, so the box is visible to the depth camera immediately with no
+circle tracking needed. Its `<world name="...">` is deliberately set to
+match the filename (`argus_box_world`, not PX4's usual `default`) — PX4's
+world-readiness check polls a gz-transport topic built from
+`PX4_GZ_WORLD`/the `px4_world` arg, so a mismatch there makes SITL hang
+forever waiting for a world that never reports ready under that name.
 
 ## Node: `argus_bridge_node`
 
@@ -118,6 +218,8 @@ machine:
 
 ```
 INIT ──(armed + offboard)──▶ TAKEOFF ──(on station)──▶ MPC_TRACKING
+                                  │
+                                  └──(hover_only:=true)──▶ stays in TAKEOFF, holding position
 ```
 
 - **INIT** — streams a hold setpoint, waits ~11 cycles, then requests
@@ -128,8 +230,10 @@ INIT ──(armed + offboard)──▶ TAKEOFF ──(on station)──▶ MPC_T
   straight up above the center. The MPC is only ever validated starting
   already on the circle (see `mpc_controller.cpp` in the main repo); handing
   off from a hover above the center would present it with a full
-  radius-length position/yaw step it's never had to recover from.
-  Transitions once position error and velocity drop below tolerance.
+  radius-length position/yaw step it's never had to recover from. Once
+  position error and velocity drop below tolerance: transitions to
+  `MPC_TRACKING`, unless the `hover_only` parameter is set, in which case it
+  just keeps re-publishing the same hold setpoint indefinitely instead.
 - **MPC_TRACKING** — builds the `N`-step circle horizon for the current time,
   calls `mpc_.step()`, and publishes the resulting body-rate command.
 
@@ -205,6 +309,7 @@ needs that heartbeat continuously or it drops out of offboard.
 |---|---|---|---|
 | `mpc_thr_hover` | double | `0.6` | Normalized PX4 thrust at hover. Must match the vehicle's actual `MPC_THR_HOVER` param — argus's `Command.thrust` is normalized so `1.0 == hover` in its own convention, and `thrust_norm = mpc_thr_hover * cmd.thrust` assumes PX4's thrust curve is linear (`THR_MDL_FAC=0`, the SITL default). Check with `param show MPC_THR_HOVER` in the PX4 shell before trusting altitude hold on a new vehicle. |
 | `fov_half_angle_deg` | double | `40.0` | Visualization only — half-angle of the FOV cone drawn on `/argus/fov_markers`. Must match `config/quadrotor.yaml`'s `camera.fov_half_angle_deg`; not auto-generated into `argus_params.h` since it doesn't feed the OCP itself. |
+| `hover_only` | bool | `false` | When `true`, stays parked at the `TAKEOFF` hold setpoint instead of transitioning to `MPC_TRACKING` once on station — see the state machine above. The launch file's `hover_only` arg defaults to `1`/true, so this node-level default (`false`) only applies when running `argus_bridge_node` directly without it. |
 
 ## Known issues
 

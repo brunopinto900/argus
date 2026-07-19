@@ -27,6 +27,8 @@ def _launch_setup(context, *args, **kwargs):
     rviz = LaunchConfiguration("rviz").perform(context)
     launch_gazebo = LaunchConfiguration("launch_gazebo").perform(context)
     px4_model = LaunchConfiguration("px4_model").perform(context)
+    px4_world = LaunchConfiguration("px4_world").perform(context)
+    hover_only = LaunchConfiguration("hover_only").perform(context)
 
     agent = ExecuteProcess(
         cmd=["MicroXRCEAgent", "udp4", "-p", "8888"],
@@ -34,6 +36,24 @@ def _launch_setup(context, *args, **kwargs):
         output="screen",
     )
 
+    # PX4's gz_env.sh unconditionally re-exports PX4_GZ_WORLDS to PX4-Autopilot's
+    # own Tools/simulation/gz/worlds — an externally-set PX4_GZ_WORLDS gets
+    # clobbered before px4-rc.gzsim ever reads it. So a world sourced from this
+    # package can't be pointed to by directory; it has to physically live under
+    # px4_dir. Symlinking it in (re-linked every launch, so edits here take
+    # effect without a PX4 rebuild) keeps this repo as the single source of
+    # truth instead of hand-copying it into the PX4-Autopilot checkout.
+    world_src = os.path.join(
+        get_package_share_directory("argus_px4_bridge"), "worlds", f"{px4_world}.sdf")
+    world_dst = os.path.join(px4_dir, "Tools", "simulation", "gz", "worlds", f"{px4_world}.sdf")
+    if os.path.isfile(world_src):
+        if os.path.islink(world_dst) or os.path.exists(world_dst):
+            os.remove(world_dst)
+        os.symlink(world_src, world_dst)
+
+    # PX4_GZ_WORLD (the world *name*, unlike PX4_GZ_WORLDS above) isn't
+    # touched by gz_env.sh, so setting it here is honored as-is.
+    #
     # PX4's own px4-rc.gzsim decides whether to launch the Gazebo GUI with
     # `[ -z "${HEADLESS}" ]` — i.e. it checks whether the var is *unset/empty*,
     # not whether it equals "0". Setting HEADLESS=0 is non-empty, so it's
@@ -44,7 +64,7 @@ def _launch_setup(context, *args, **kwargs):
         cmd=["bash", "-c",
              f"mkfifo {PX4_STDIN_FIFO} 2>/dev/null; "
              f"exec 3<>{PX4_STDIN_FIFO}; "
-             f"cd '{px4_dir}' && {headless_env}make px4_sitl {px4_model} <&3"],
+             f"cd '{px4_dir}' && PX4_GZ_WORLD={px4_world} {headless_env}make px4_sitl {px4_model} <&3"],
         name="px4_sitl_gz",
         output="screen",
     )
@@ -95,7 +115,10 @@ def _launch_setup(context, *args, **kwargs):
         executable="argus_bridge_node",
         name="argus_bridge_node",
         output="screen",
-        parameters=[{"mpc_thr_hover": float(mpc_thr_hover)}],
+        parameters=[{
+            "mpc_thr_hover": float(mpc_thr_hover),
+            "hover_only": hover_only not in ("0", "", "false", "False"),
+        }],
     )
 
     # x500_depth's OakD-Lite sensor names these topics explicitly in its SDF
@@ -210,6 +233,20 @@ def generate_launch_description():
         description="PX4 `make px4_sitl <target>` model target, e.g. gz_x500 (no camera) or "
                      "gz_x500_depth (adds a downward-forward OakD-Lite RGB + depth camera)",
     )
+    px4_world_arg = DeclareLaunchArgument(
+        "px4_world",
+        default_value="argus_box_world",
+        description="Gazebo world name (no .sdf) — looked up in this package's worlds/ dir "
+                     "and symlinked into px4_dir. argus_box_world is PX4's default.sdf plus "
+                     "one static box obstacle on the circle-start hover point's boresight.",
+    )
+    hover_only_arg = DeclareLaunchArgument(
+        "hover_only",
+        default_value="1",
+        description="1 to hold position at the circle-start point after takeoff instead of "
+                     "handing off to MPC circle tracking — for obstacle/depth-camera testing "
+                     "where the drone should stay put near argus_box_world's box",
+    )
 
     return LaunchDescription([
         px4_dir_arg,
@@ -218,5 +255,7 @@ def generate_launch_description():
         rviz_arg,
         launch_gazebo_arg,
         px4_model_arg,
+        px4_world_arg,
+        hover_only_arg,
         OpaqueFunction(function=_launch_setup),
     ])

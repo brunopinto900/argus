@@ -76,6 +76,7 @@ public:
     ArgusBridgeNode() : Node("argus_bridge_node")
     {
         mpc_thr_hover_ = this->declare_parameter<double>("mpc_thr_hover", 0.6);
+        hover_only_ = this->declare_parameter<bool>("hover_only", false);
         // Must match config/quadrotor.yaml's camera.fov_half_angle_deg — not
         // auto-generated into argus_params.h (visualization-only, no cost-
         // formulation dependency), so keep the two in sync by hand.
@@ -180,9 +181,15 @@ private:
                 publishTakeoffSetpoint();
                 const double pos_err = (pos_enu - Eigen::Vector3d(ARGUS_CIRCLE_R, 0.0, ARGUS_HOVER_ALTITUDE)).norm();
                 if (pos_err < kTakeoffAltTol && vel_enu.norm() < kTakeoffVelTol) {
-                    RCLCPP_INFO(this->get_logger(), "On station at circle start — beginning MPC circle tracking");
-                    state_ = State::kMpcTracking;
-                    track_start_time_ = this->now();
+                    if (hover_only_) {
+                        RCLCPP_INFO_ONCE(this->get_logger(),
+                            "On station at circle start — hover_only set, holding position "
+                            "instead of starting MPC circle tracking");
+                    } else {
+                        RCLCPP_INFO(this->get_logger(), "On station at circle start — beginning MPC circle tracking");
+                        state_ = State::kMpcTracking;
+                        track_start_time_ = this->now();
+                    }
                 }
                 break;
             }
@@ -424,6 +431,7 @@ private:
     int N_ = 0;
     double omega_ = 0.0;
     double mpc_thr_hover_ = 0.5;
+    bool hover_only_ = false;
     double fov_half_angle_rad_ = 0.0;
 
     State state_ = State::kInit;
