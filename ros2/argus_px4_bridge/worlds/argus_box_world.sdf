@@ -4,8 +4,10 @@
   static box obstacle, placed for the drone's default circle-start hover
   point (ENU (ARGUS_CIRCLE_R, 0, ARGUS_HOVER_ALTITUDE) = (2, 0, 1.5), nose
   toward the origin — see argus_bridge_node.cpp's publishTakeoffSetpoint()).
-  The box sits directly on that boresight, ~1m in front of the hover point,
-  so the depth camera sees it immediately without needing circle tracking.
+  The box sits ~1m in front of the hover point and just off to one side
+  (see the pose comment on obstacle_box_0 below for why it's offset rather
+  than dead-center) so the depth camera sees it immediately without needing
+  circle tracking, without also sitting on the takeoff climb-out path.
 -->
 <sdf version="1.9">
   <world name="argus_box_world">
@@ -74,7 +76,21 @@
     </model>
     <model name="obstacle_box_0">
       <static>true</static>
-      <pose>1 0 0.75 0 0 0</pose>
+      <!-- y=0.45 wasn't enough clearance — still clipped during takeoff.
+           Pushed farther out on both axes: x=0.3 (was 1) increases standoff
+           distance from the hover point AND, since horizontal FOV angle is
+           atan(y_offset / depth), buys room for a bigger y_offset while
+           staying inside the OakD-Lite's ~34.5 deg horizontal half-angle;
+           y=0.8 (was 0.45) roughly doubles clearance off the flight line's
+           y=0 centerline. See publishTakeoffSetpoint() in
+           argus_bridge_node.cpp — the takeoff setpoint is a single direct
+           position command from spawn to the hover point (2, 0, 1.5), and
+           PX4 flies close to a straight 3-D line to it holding y~=0
+           throughout, so only a lateral offset (not an x position along
+           that line) clears a box whose height matches the hover altitude.
+           Still an estimate, not re-verified in SITL after this change —
+           check again if it's still catching the box. -->
+      <pose>0.3 0.8 0.75 0 0 0</pose>
       <link name="link">
         <collision name="collision">
           <geometry>

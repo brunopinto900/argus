@@ -51,7 +51,17 @@ constexpr double kTakeoffVelTol = 0.3;   // m/s
 constexpr char kVizFrame[] = "map";
 constexpr size_t kMaxDronePathPoints = 4000;  // ~200s of history at 20Hz
 constexpr int kRefPathPoints = 100;
-constexpr int kFovConeRays = 16;
+// 4 corners = a pyramid (proper camera-frustum look) rather than a
+// many-sided cone — same half-angle geometry either way, see
+// buildFovMarkers() below.
+constexpr int kFovFrustumCorners = 4;
+
+// Mirrors worlds/argus_box_world.sdf's obstacle_box_0 <pose>/<size> — RViz
+// has no visibility into Gazebo's own world geometry, so this is a second,
+// hand-kept copy purely for visualization. Keep in sync by hand if the SDF
+// pose/size ever changes; nothing enforces it automatically.
+constexpr double kObstacleBoxPos[3] = {0.3, 0.8, 0.75};
+constexpr double kObstacleBoxSize[3] = {0.5, 0.5, 1.5};
 
 // px4_ros_com's quaternion_to_euler() wraps Eigen's generic eulerAngles(),
 // which branch-flips to the (roll+pi, -pitch, yaw-pi) equivalent whenever the
@@ -109,7 +119,9 @@ public:
         drone_path_pub_ = this->create_publisher<nav_msgs::msg::Path>("argus/drone_path", 10);
         reference_path_pub_ = this->create_publisher<nav_msgs::msg::Path>("argus/reference_path", 10);
         fov_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("argus/fov_markers", 10);
+        obstacle_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("argus/obstacle_markers", 10);
         initReferencePath();
+        initObstacleMarkers();
 
         const auto period = std::chrono::duration<double>(ARGUS_MPC_TS);
         timer_ = this->create_wall_timer(
@@ -244,6 +256,30 @@ private:
         }
     }
 
+    // Same rationale as initReferencePath() above — static, so built once
+    // and just restamped/republished every tick alongside everything else.
+    void initObstacleMarkers()
+    {
+        visualization_msgs::msg::Marker box;
+        box.header.frame_id = kVizFrame;
+        box.ns = "argus_obstacles";
+        box.id = 0;
+        box.type = visualization_msgs::msg::Marker::CUBE;
+        box.action = visualization_msgs::msg::Marker::ADD;
+        box.pose.position.x = kObstacleBoxPos[0];
+        box.pose.position.y = kObstacleBoxPos[1];
+        box.pose.position.z = kObstacleBoxPos[2];
+        box.pose.orientation.w = 1.0;
+        box.scale.x = kObstacleBoxSize[0];
+        box.scale.y = kObstacleBoxSize[1];
+        box.scale.z = kObstacleBoxSize[2];
+        box.color.r = 0.9f;
+        box.color.g = 0.2f;
+        box.color.b = 0.1f;
+        box.color.a = 0.9f;
+        obstacle_markers_msg_.markers = {box};
+    }
+
     void publishVisualization(const Eigen::Vector3d& pos_enu, const Eigen::Vector3d& euler)
     {
         const auto stamp = this->now();
@@ -267,14 +303,24 @@ private:
         reference_path_msg_.header.stamp = stamp;
         reference_path_pub_->publish(reference_path_msg_);
 
+        for (auto& marker : obstacle_markers_msg_.markers) {
+            marker.header.stamp = stamp;
+        }
+        obstacle_marker_pub_->publish(obstacle_markers_msg_);
+
         fov_marker_pub_->publish(buildFovMarkers(pos_enu, euler, stamp));
     }
 
-    // Body +x (boresight) cone wireframe, half-angle = fov_half_angle_rad_ —
-    // mirrors argus's r_fov cost (r_fov = softplus(cos(alpha_fov) -
-    // d_body[0]/range), generate_mpc.py), which is zero (no penalty) exactly
-    // when the target sits inside this cone. Drawn out to the current range
-    // to the target so the cone visibly reaches (or misses) it each tick.
+    // Body +x (boresight) pyramidal FOV wireframe, half-angle =
+    // fov_half_angle_rad_ — mirrors argus's r_fov cost (r_fov =
+    // softplus(cos(alpha_fov) - d_body[0]/range), generate_mpc.py), which is
+    // zero (no penalty) exactly when the target sits inside this cone.
+    // r_fov itself is rotationally symmetric (a true circular cone, not
+    // actually a rectangular camera frustum) — the 4-corner pyramid drawn
+    // here is a simplified stand-in for that same cone (same half-angle,
+    // corners instead of a smooth many-sided fan), not a literal rendering
+    // of a different, non-symmetric FOV shape. Drawn out to the current
+    // range to the target so it visibly reaches (or misses) it each tick.
     visualization_msgs::msg::MarkerArray buildFovMarkers(
         const Eigen::Vector3d& pos_enu, const Eigen::Vector3d& euler, const rclcpp::Time& stamp)
     {
@@ -307,9 +353,9 @@ private:
         };
         const geometry_msgs::msg::Point apex = toPoint(pos_enu);
 
-        std::vector<geometry_msgs::msg::Point> tips(kFovConeRays);
-        for (int i = 0; i < kFovConeRays; ++i) {
-            const double ring = 2.0 * M_PI * i / kFovConeRays;
+        std::vector<geometry_msgs::msg::Point> tips(kFovFrustumCorners);
+        for (int i = 0; i < kFovFrustumCorners; ++i) {
+            const double ring = 2.0 * M_PI * i / kFovFrustumCorners;
             const Eigen::Vector3d dir_body(
                 std::cos(fov_half_angle_rad_),
                 std::sin(fov_half_angle_rad_) * std::cos(ring),
@@ -318,9 +364,9 @@ private:
             frustum.points.push_back(apex);
             frustum.points.push_back(tips[i]);
         }
-        for (int i = 0; i < kFovConeRays; ++i) {
+        for (int i = 0; i < kFovFrustumCorners; ++i) {
             frustum.points.push_back(tips[i]);
-            frustum.points.push_back(tips[(i + 1) % kFovConeRays]);
+            frustum.points.push_back(tips[(i + 1) % kFovFrustumCorners]);
         }
 
         visualization_msgs::msg::Marker target_marker;
@@ -458,7 +504,9 @@ private:
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr drone_path_pub_;
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr reference_path_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr fov_marker_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr obstacle_marker_pub_;
     nav_msgs::msg::Path reference_path_msg_;
+    visualization_msgs::msg::MarkerArray obstacle_markers_msg_;
     std::deque<geometry_msgs::msg::PoseStamped> drone_path_;
 };
 

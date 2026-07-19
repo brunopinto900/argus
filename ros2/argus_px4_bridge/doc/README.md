@@ -45,13 +45,18 @@ source ~/ros2_ws/install/setup.bash
    ```
    Also worth checking once per vehicle model: `param show MPC_THR_HOVER`,
    and pass it via `--ros-args -p mpc_thr_hover:=<value>` below if it's not `0.6`.
-4. **Bridge the depth camera into ROS2** (separate terminal — only if you
-   started `gz_x500_depth` above; skip for `gz_x500`):
+4. **Bridge the cameras into ROS2** (separate terminal — only if you
+   started `gz_x500_depth` above; skip for `gz_x500`). The RGB topic is
+   namespaced under the world/vehicle-instance names — this assumes
+   `argus_box_world` and the first (only) vehicle instance, matching the
+   launch file's own default derivation:
    ```bash
    ros2 run ros_gz_bridge parameter_bridge \
      "/depth_camera@sensor_msgs/msg/Image[gz.msgs.Image" \
      "/depth_camera/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked" \
-     "/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo"
+     "/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo" \
+     "/world/argus_box_world/model/x500_depth_0/link/camera_link/sensor/IMX214/image@sensor_msgs/msg/Image[gz.msgs.Image" \
+     --ros-args -r /world/argus_box_world/model/x500_depth_0/link/camera_link/sensor/IMX214/image:=/camera/image_raw
    ```
 5. **Run the bridge node** (separate terminal):
    ```bash
@@ -160,7 +165,7 @@ still look wrong after that — `ps aux | grep -E "MicroXRCEAgent|parameter_brid
 
 ## Visualization (RViz)
 
-The node also publishes three RViz-ready topics, all in a fixed `map` frame
+The node also publishes RViz-ready topics, all in a fixed `map` frame
 (ENU, no TF tree needed — `map` is set as RViz's own Fixed Frame, so no
 lookup is required):
 
@@ -168,10 +173,12 @@ lookup is required):
 |---|---|---|
 | `/argus/reference_path` | `nav_msgs/Path` | The fixed circle the drone is commanded to track (`ARGUS_CIRCLE_R`/`ARGUS_HOVER_ALTITUDE`), sampled once at 100 points. |
 | `/argus/drone_path` | `nav_msgs/Path` | The drone's actual flown trajectory, accumulated tick by tick (capped at the last ~200 s / 4000 points so it doesn't grow unbounded on a long-running flight). |
-| `/argus/fov_markers` | `visualization_msgs/MarkerArray` | A wireframe cone (`id=0`) showing the camera FOV — body `+x` boresight, half-angle `fov_half_angle_deg` (default `40°`, must match `config/quadrotor.yaml`'s `camera.fov_half_angle_deg`) — drawn out to the current range to the target, plus a sphere (`id=1`) marking the target itself at the circle's center. Mirrors the OCP's `r_fov` cost term directly: the cone is empty of penalty exactly when the target sphere sits inside it. |
+| `/argus/fov_markers` | `visualization_msgs/MarkerArray` | A wireframe pyramid (`id=0`, 4 corners) showing the camera FOV — body `+x` boresight, half-angle `fov_half_angle_deg` (default `40°`, must match `config/quadrotor.yaml`'s `camera.fov_half_angle_deg`) — drawn out to the current range to the target, plus a sphere (`id=1`) marking the target itself at the circle's center. Mirrors the OCP's `r_fov` cost term directly: the cost is rotationally symmetric (a true circular cone, not an actual rectangular camera frustum), so the pyramid is a simplified stand-in at the same half-angle, not a literal FOV shape — empty of penalty exactly when the target sphere sits inside it. |
+| `/argus/obstacle_markers` | `visualization_msgs/MarkerArray` | A `CUBE` marker (`id=0`) matching `argus_box_world`'s box obstacle — RViz has no visibility into Gazebo's own world geometry, so this is a second, hand-kept copy of the box's pose/size (`kObstacleBoxPos`/`kObstacleBoxSize` in `argus_bridge_node.cpp`) purely for visualization. Nothing keeps it in sync with `worlds/argus_box_world.sdf` automatically — update both if the box ever moves. |
 
 Plus, when `gz_camera_bridge` is running (see below), an `Image` display on
-`/depth_camera` and a `PointCloud2` display on `/depth_camera/points`.
+`/camera/image_raw` (RGB), an `Image` display on `/depth_camera` (depth), and
+a `PointCloud2` display on `/depth_camera/points`.
 
 `ros2 launch argus_px4_bridge argus_sitl.launch.py` starts `rviz2` automatically
 (`rviz:=0` to skip it) with a checked-in config
@@ -192,23 +199,28 @@ ROS2 as-is (same names, `sensor_msgs` types):
 | `/depth_camera` | `/depth_camera` | `sensor_msgs/msg/Image` | `640x480`, `32FC1` (metres, float32). Named explicitly in the OakD-Lite model's SDF, so unlike PX4's other gz topics it isn't namespaced under `/world/<world>/model/<model>/...` — the name is stable regardless of world or vehicle instance. |
 | `/depth_camera/points` | `/depth_camera/points` | `sensor_msgs/msg/PointCloud2` | Same sensor, as a point cloud. |
 | `/camera_info` | `/camera_info` | `sensor_msgs/msg/CameraInfo` | Matches the depth image's intrinsics. |
-
-The OakD-Lite model also has a plain RGB camera (`IMX214`) but it isn't
-bridged — its gz topic *is* namespaced under
-`/world/<world>/model/x500_depth_0/link/camera_link/sensor/IMX214/image`, so
-add it to `gz_camera_bridge`'s `arguments` in the launch file if you need it.
+| `/world/<px4_world>/model/<px4_model minus "gz_">_0/link/camera_link/sensor/IMX214/image` | `/camera/image_raw` | `sensor_msgs/msg/Image` | The OakD-Lite's plain RGB feed. Unlike the depth topics above, its gz topic *is* namespaced under `/world/<world>/model/<instance>/...`, so the launch file builds it from `px4_world`/`px4_model` and remaps it to the short name via the `Node`'s `remappings` (see [argus_sitl.launch.py:124-146](../launch/argus_sitl.launch.py)). Assumes a single vehicle instance (`_0`) — this launch file doesn't support spawning more than one. Only exists at all for a camera-equipped model (`gz_x500_depth`); harmless no-op if you're running plain `gz_x500`. |
 
 `argus_box_world` (the default `px4_world`) is PX4's stock `default.sdf` with
-one static `0.5 x 0.5 x 1.5 m` box added at `(1, 0, 0.75)` in ENU — directly
-on the boresight from the drone's circle-start hover point
+one static `0.5 x 0.5 x 1.5 m` box added at `(0.3, 0.8, 0.75)` in ENU — near
+the boresight from the drone's circle-start hover point
 `(ARGUS_CIRCLE_R, 0, ARGUS_HOVER_ALTITUDE) = (2, 0, 1.5)`, nose toward the
-origin. With `hover_only:=1` (the default) the drone parks there after
+origin, but offset laterally (`y=0.8`, not `0`). That offset isn't
+cosmetic: the takeoff setpoint (`publishTakeoffSetpoint()` in
+`argus_bridge_node.cpp`) is a single direct position command from spawn to
+the hover point, and PX4 flies roughly a straight line to it holding
+`y≈0` the whole climb — a `y=0` box with height matching the hover
+altitude sits squarely on that line no matter its x position (confirmed by
+an actual mid-takeoff collision during development; a first attempt at
+`y=0.45` still clipped it, hence the larger offset here). With
+`hover_only:=1` (the default) the drone parks at the hover point after
 takeoff, so the box is visible to the depth camera immediately with no
-circle tracking needed. Its `<world name="...">` is deliberately set to
-match the filename (`argus_box_world`, not PX4's usual `default`) — PX4's
-world-readiness check polls a gz-transport topic built from
-`PX4_GZ_WORLD`/the `px4_world` arg, so a mismatch there makes SITL hang
-forever waiting for a world that never reports ready under that name.
+circle tracking needed. The world's `<world name="...">`
+is deliberately set to match the filename (`argus_box_world`, not PX4's
+usual `default`) — PX4's world-readiness check polls a gz-transport topic
+built from `PX4_GZ_WORLD`/the `px4_world` arg, so a mismatch there makes
+SITL hang forever waiting for a world that never reports ready under that
+name.
 
 ## Node: `argus_bridge_node`
 

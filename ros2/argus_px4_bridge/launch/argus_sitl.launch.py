@@ -126,6 +126,19 @@ def _launch_setup(context, *args, **kwargs):
     # unlike PX4's other gz topics they aren't namespaced under
     # /world/<world>/model/<model>/..., so the names below are stable
     # regardless of world name or vehicle instance.
+    #
+    # The plain RGB camera (IMX214) doesn't get this treatment, though — its
+    # gz topic *is* namespaced under /world/<world>/model/<instance>/...,
+    # so it has to be built from px4_world/px4_model. <instance> is
+    # PX4_SIM_MODEL (px4_model here, minus its "gz_" prefix) with a "_0"
+    # instance suffix — see px4-rc.gzsim's MODEL_NAME_INSTANCE. "_0" assumes
+    # a single vehicle (this launch file doesn't support spawning more than
+    # one), and the topic only exists at all for a camera-equipped model
+    # (gz_x500_depth, not plain gz_x500) — harmless if absent, the bridge
+    # just never gets anything to forward on it.
+    gz_model_instance = f"{px4_model.removeprefix('gz_')}_0"
+    gz_rgb_image_topic = (
+        f"/world/{px4_world}/model/{gz_model_instance}/link/camera_link/sensor/IMX214/image")
     gz_camera_bridge = Node(
         package="ros_gz_bridge",
         executable="parameter_bridge",
@@ -135,7 +148,9 @@ def _launch_setup(context, *args, **kwargs):
             "/depth_camera@sensor_msgs/msg/Image[gz.msgs.Image",
             "/depth_camera/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked",
             "/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo",
+            f"{gz_rgb_image_topic}@sensor_msgs/msg/Image[gz.msgs.Image",
         ],
+        remappings=[(gz_rgb_image_topic, "/camera/image_raw")],
     )
 
     def _on_wait_exit(event, _context):
