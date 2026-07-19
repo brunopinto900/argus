@@ -88,8 +88,7 @@
            PX4 flies close to a straight 3-D line to it holding y~=0
            throughout, so only a lateral offset (not an x position along
            that line) clears a box whose height matches the hover altitude.
-           Still an estimate, not re-verified in SITL after this change —
-           check again if it's still catching the box. -->
+           Confirmed clear of the takeoff climb in SITL at this pose. -->
       <pose>0.3 0.8 0.75 0 0 0</pose>
       <link name="link">
         <collision name="collision">
