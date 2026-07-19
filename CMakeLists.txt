@@ -1,6 +1,15 @@
 cmake_minimum_required(VERSION 3.16)
 project(argus_mpc CXX C)
 
+# Default to Release if the caller (or a parent add_subdirectory(), e.g.
+# colcon building ros2/argus_mapping or ros2/argus_px4_bridge) didn't set
+# one — an unset CMAKE_BUILD_TYPE means no -O flags at all, not a
+# conservative default. Caught via ESDF profiling numbers ~100-150x slower
+# than expected before this guard existed; see the top-level todo file.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 99)

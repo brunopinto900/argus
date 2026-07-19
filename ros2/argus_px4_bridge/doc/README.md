@@ -269,8 +269,16 @@ patterns if you need to kill a stray instance manually.
 `esdf_update_period`):
 
 ```
-ESDF timing — insertPointCloud: min/mean/max = 0.31/0.42/0.58ms (n=48) | computeEsdf: min/mean/max = 3.10/3.24/3.41ms (n=10)
+ESDF timing — insertPointCloud: min/mean/max = 2.25/2.77/4.71ms (n=127) | computeEsdf: min/mean/max = 2.12/3.12/5.06ms (n=30)
 ```
+
+(measured in SITL, headless, no RViz, on the default 90k-voxel grid — a
+build with `CMAKE_BUILD_TYPE` unset showed ~100-150x these numbers; the
+top-level `argus/CMakeLists.txt` now defaults to `Release` for exactly
+this reason, see the top-level `todo` file. If these numbers ever look
+similarly inflated again, check `grep CMAKE_BUILD_TYPE
+~/ros2_ws/build/argus_mapping/CMakeCache.txt` before assuming an
+algorithmic regression.)
 
 ### RViz distance-field coloring
 
