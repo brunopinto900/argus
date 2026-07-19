@@ -82,7 +82,10 @@ public:
     // world-frame point (not required to land on a voxel center). Gradient
     // is the analytic derivative of the trilinear interpolant, not a
     // separate finite-difference pass. valid=false (distance/gradient left
-    // at their default) if point falls outside the grid.
+    // at their default) if point falls outside the grid — including, on a
+    // grid with dims.z()==1 (or any axis ==1), always: interpolation needs
+    // a neighbor on both sides in every axis, and a single-layer axis never
+    // has one. Use distanceAt() (no interpolation) on a grid that thin.
     EsdfQuery query(const Eigen::Vector3d& point) const;
 
     // Overwrites the distance field directly from a precomputed source —

@@ -102,6 +102,12 @@ target_include_directories(argus_esdf PUBLIC
 
 target_link_libraries(argus_esdf PUBLIC Eigen3::Eigen)
 
+# Standalone (no ROS2) visual sanity check: square obstacle in, ASCII art +
+# a PPM image out. See examples/esdf_2d_demo.cpp for why this is a useful
+# companion to tests/test_voxel_grid.cpp's exact-value assertions.
+add_executable(esdf_2d_demo examples/esdf_2d_demo.cpp)
+target_link_libraries(esdf_2d_demo PRIVATE argus_esdf)
+
 # ── Main executable (moving-target tracking demo) ────────────────────────────
 add_executable(argus_mpc
     src/mpc_controller.cpp

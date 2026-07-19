@@ -68,6 +68,25 @@ VoxelGrid singleObstacleGrid()
     grid.computeEsdf();
     return grid;
 }
+// A thin (dims.z()==1) grid with a filled 3x3 square obstacle — the "2-D-ish"
+// companion to singleObstacleGrid() above: a stronger check than a single
+// isolated voxel since it exercises the transform against an extended
+// occupied region (every cell's distance to the nearest edge of a solid
+// block, not just to one point), while still being a real 3-D VoxelGrid —
+// no special 2-D code path exists or is needed.
+VoxelGrid squareObstacleGrid()
+{
+    VoxelGrid grid(Eigen::Vector3d::Zero(), Eigen::Vector3i(21, 21, 1), 1.0);
+    for (int x = 9; x <= 11; ++x) {
+        for (int y = 9; y <= 11; ++y) {
+            const Eigen::Vector3d center = grid.voxelCenter({x, y, 0});
+            const Eigen::Vector3d sensor = center + Eigen::Vector3d(0.0, 0.0, 1.0);
+            grid.insertPointCloud(sensor, {center});
+        }
+    }
+    grid.computeEsdf();
+    return grid;
+}
 }  // namespace
 
 TEST(VoxelGrid, ExactDistanceTransformOnSingleObstacle)
@@ -80,6 +99,20 @@ TEST(VoxelGrid, ExactDistanceTransformOnSingleObstacle)
     EXPECT_NEAR(grid.distanceAt({6, 6, 5}), std::sqrt(2.0), 1e-9);  // edge-adjacent
     EXPECT_NEAR(grid.distanceAt({6, 6, 6}), std::sqrt(3.0), 1e-9);  // corner-adjacent
     EXPECT_NEAR(grid.distanceAt({7, 5, 5}), 2.0, 1e-9);
+}
+
+// Square spans x,y in [9,11]. Hand-verified against the nearest occupied
+// cell of the block, not just its center.
+TEST(VoxelGrid, ExactDistanceTransformOnSquareObstacle)
+{
+    VoxelGrid grid = squareObstacleGrid();
+
+    EXPECT_NEAR(grid.distanceAt({10, 10, 0}), 0.0, 1e-9);          // inside the square
+    EXPECT_NEAR(grid.distanceAt({9, 9, 0}), 0.0, 1e-9);            // square's own corner cell
+    EXPECT_NEAR(grid.distanceAt({12, 10, 0}), 1.0, 1e-9);          // face-adjacent to right edge
+    EXPECT_NEAR(grid.distanceAt({12, 12, 0}), std::sqrt(2.0), 1e-9);  // diagonal from corner (11,11)
+    EXPECT_NEAR(grid.distanceAt({15, 10, 0}), 4.0, 1e-9);          // straight out from right edge
+    EXPECT_NEAR(grid.distanceAt({10, 5, 0}), 4.0, 1e-9);           // straight out from bottom edge
 }
 
 TEST(VoxelGrid, QueryAtVoxelCenterMatchesDistanceAt)
