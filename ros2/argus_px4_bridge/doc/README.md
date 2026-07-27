@@ -305,18 +305,27 @@ point clouds until this long after odometry first starts flowing, since
 the vehicle's pose has settled — would otherwise be baked into the
 occupancy grid permanently.
 
-**Known limitation:** the simulated `/depth_camera/points` topic
-(PX4-Autopilot's OakD-Lite `depth_camera` sensor) does not produce a
-standard optical-frame point cloud — its `z` field is consistently
-negative (should be positive/forward) and one lateral field varies
-reciprocally with pixel row instead of linearly, which is a bug in the
-sensor's own point-cloud generation, not in `argus_mapping_node`'s
-transform chain. In practice this means the occupancy grid can accumulate
-a large corrupted region unrelated to any real obstacle. See the top-level
-`todo` file for the full diagnosis; left unfixed for now — the mapping
-pipeline (profiling, coloring, filtering, distance transform) is still
-correct and demonstrable, it just isn't being fed clean sensor data in
-this SITL setup.
+**Depth camera data quirk (worked around):** the simulated
+`/depth_camera/points` topic (PX4-Autopilot's OakD-Lite `depth_camera`
+sensor) does not produce a standard optical-frame point cloud — its `z`
+field is consistently negative (should be positive/forward) and its `x`
+field varies reciprocally with pixel row instead of linearly, a bug in the
+sensor's own point-cloud generation, not in `argus_mapping_node`'s own
+transform chain. `cloudCallback()` works around this by ignoring the
+message's `x`/`y` entirely and reprojecting each point itself from `z`
+(sign-corrected), the point's own pixel row/col, and the real camera
+intrinsics (subscribed from `/camera_info`) — the standard pinhole
+unprojection formula any depth-image driver uses internally. See the
+top-level `todo` file for the full diagnosis and before/after numbers.
+
+**Architecture note:** the optical→body→world frame chain above
+(`kOpticalToBody`, `kCameraOffsetBody`, the manual rotation composition in
+`cloudCallback()`) is hand-rolled Eigen math, not `tf2`. That was a
+deliberate scope-minimization choice (see "Inter-process, pub/sub + local
+cache" in the top-level `todo` file) — reasonable for a thesis-scope
+pipeline, but a `tf2` static+dynamic transform tree plus
+`tf2_sensor_msgs::doTransform()` would be the more idiomatic ROS2 way to do
+the same thing. Tracked as a future item in the top-level `todo` file.
 
 ## Node: `argus_bridge_node`
 

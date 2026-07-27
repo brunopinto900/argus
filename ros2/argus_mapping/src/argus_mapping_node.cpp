@@ -10,11 +10,21 @@
 // deployment).
 //
 // Frame chain from a raw depth point to a world (ENU) point:
-//   1. Depth camera points arrive in the sensor's *optical* frame
+//   1. Depth camera points *should* arrive in the sensor's optical frame
 //      (X-right, Y-down, Z-forward) — the standard convention gz-sim (and
 //      every ROS camera driver) uses for image/point-cloud data, regardless
 //      of the sensor's own <pose> rotation in the SDF (which is identity
-//      here — see kCameraOffsetBody below).
+//      here — see kCameraOffsetBody below). In practice, this simulated
+//      sensor's /depth_camera/points does NOT: its z is sign-flipped
+//      (negative-forward) and its x varies reciprocally (not linearly)
+//      with pixel row — a real bug in the plugin's own point generation,
+//      confirmed by comparing against the expected pinhole formula (see
+//      the top-level todo file for the full diagnosis). z (up to sign) is
+//      the one trustworthy field, so cloudCallback() ignores the message's
+//      x/y entirely and reprojects each point itself from depth + pixel
+//      row/col + the real intrinsics (/camera_info) — the same formula any
+//      depth-image-to-point-cloud driver uses internally, just done here
+//      explicitly instead of trusting a precomputed (here, broken) field.
 //   2. optical -> body (FLU): a fixed 90-ish-degree axis permutation
 //      (kOpticalToBody), then translate by the camera's fixed mount offset
 //      in the body frame (kCameraOffsetBody, read off
@@ -32,6 +42,7 @@
 #include <rclcpp/rclcpp.hpp>
 
 #include <geometry_msgs/msg/point.hpp>
+#include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <std_msgs/msg/color_rgba.hpp>
@@ -180,6 +191,14 @@ public:
             "/fmu/out/vehicle_odometry", px4_out_qos,
             std::bind(&ArgusMappingNode::odometryCallback, this, std::placeholders::_1));
 
+        // Real intrinsics for the reprojection in cloudCallback() — see the
+        // file-header comment on why we don't trust the depth cloud's own
+        // x/y fields. Static for a fixed camera, so only the first message
+        // is used (see cameraInfoCallback()).
+        camera_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
+            "/camera_info", rclcpp::SensorDataQoS(),
+            std::bind(&ArgusMappingNode::cameraInfoCallback, this, std::placeholders::_1));
+
         cloud_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
             "/depth_camera/points", rclcpp::SensorDataQoS(),
             std::bind(&ArgusMappingNode::cloudCallback, this, std::placeholders::_1));
@@ -207,9 +226,26 @@ private:
         have_odometry_ = true;
     }
 
+    // K = [fx 0 cx; 0 fy cy; 0 0 1], row-major — the intrinsics cloudCallback()
+    // uses to reproject points itself instead of trusting the depth cloud's
+    // own (broken) x/y fields. Fixed for the lifetime of the sim's static
+    // camera, so only the first message is kept.
+    void cameraInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg)
+    {
+        if (have_camera_info_) return;
+        fx_ = msg->k[0];
+        fy_ = msg->k[4];
+        cx_ = msg->k[2];
+        cy_ = msg->k[5];
+        have_camera_info_ = true;
+        RCLCPP_INFO(this->get_logger(),
+                    "argus_mapping_node: camera intrinsics received (fx=%.2f fy=%.2f cx=%.2f cy=%.2f)",
+                    fx_, fy_, cx_, cy_);
+    }
+
     void cloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
     {
-        if (!have_odometry_) return;
+        if (!have_odometry_ || !have_camera_info_) return;
         if ((this->now() - first_odometry_time_).seconds() < mapping_start_delay_s_) return;
 
         const Eigen::Vector3d pos_enu = ft::ned_to_enu_local_frame(pos_ned_);
@@ -218,20 +254,34 @@ private:
             r_body_to_world * kCameraOffsetBody + pos_enu;
         const Eigen::Matrix3d r_optical_to_world = r_body_to_world * kOpticalToBody;
 
-        sensor_msgs::PointCloud2ConstIterator<float> it_x(*msg, "x");
-        sensor_msgs::PointCloud2ConstIterator<float> it_y(*msg, "y");
+        // Only z is read from the message itself — see the file-header
+        // comment: this sensor's x/y fields don't follow the pinhole
+        // formula at all, but z (up to a sign flip) does behave like real
+        // depth, so every point's optical-frame (X, Y) is rebuilt here from
+        // that depth plus its own pixel row/col and the real intrinsics
+        // from /camera_info, the same formula any depth-image-to-point
+        // driver uses internally.
         sensor_msgs::PointCloud2ConstIterator<float> it_z(*msg, "z");
+        const int width = static_cast<int>(msg->width);
 
         std::vector<Eigen::Vector3d> points_world;
         points_world.reserve(msg->width * msg->height / std::max(1, point_stride_) + 1);
 
         int i = 0;
-        for (; it_x != it_x.end(); ++it_x, ++it_y, ++it_z, ++i) {
+        for (; it_z != it_z.end(); ++it_z, ++i) {
             if (i % point_stride_ != 0) continue;
-            const float x = *it_x, y = *it_y, z = *it_z;
-            if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) continue;  // no-return depth
+            const float z = *it_z;
+            if (!std::isfinite(z)) continue;  // no-return depth
+
+            const double depth = -static_cast<double>(z);  // sign-flipped in this sim's sensor
+            if (depth <= 0.0) continue;
+            const int row = i / width;
+            const int col = i % width;
+            const double optical_x = depth * (col - cx_) / fx_;
+            const double optical_y = depth * (row - cy_) / fy_;
+
             const Eigen::Vector3d point_world =
-                r_optical_to_world * Eigen::Vector3d(x, y, z) + sensor_origin_world;
+                r_optical_to_world * Eigen::Vector3d(optical_x, optical_y, depth) + sensor_origin_world;
             if ((point_world - sensor_origin_world).norm() > max_point_range_) continue;
             if (point_world.z() <= ground_filter_height_) continue;  // ground hit, not an obstacle
             points_world.push_back(point_world);
@@ -335,7 +385,11 @@ private:
     Eigen::Vector3d pos_ned_{0.0, 0.0, 0.0};
     Eigen::Quaterniond q_px4_{1.0, 0.0, 0.0, 0.0};
 
+    bool have_camera_info_ = false;
+    double fx_ = 0.0, fy_ = 0.0, cx_ = 0.0, cy_ = 0.0;
+
     rclcpp::Subscription<VehicleOdometry>::SharedPtr odometry_sub_;
+    rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_sub_;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_sub_;
     rclcpp::Publisher<argus_mapping::msg::EsdfGrid>::SharedPtr grid_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
