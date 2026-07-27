@@ -108,6 +108,14 @@ target_link_libraries(argus_esdf PUBLIC Eigen3::Eigen)
 add_executable(esdf_2d_demo examples/esdf_2d_demo.cpp)
 target_link_libraries(esdf_2d_demo PRIVATE argus_esdf)
 
+# Standalone (no ROS2, no Gazebo) validation of the depth-camera ->
+# point-cloud -> ESDF pipeline against a synthetic depth image of the same
+# box used in the SITL world — see examples/esdf_depth_pipeline_demo.cpp
+# for why this exists (regression-tests the depth-reprojection bug from
+# the top-level todo file without a full SITL launch).
+add_executable(esdf_depth_pipeline_demo examples/esdf_depth_pipeline_demo.cpp)
+target_link_libraries(esdf_depth_pipeline_demo PRIVATE argus_esdf)
+
 # ── Main executable (moving-target tracking demo) ────────────────────────────
 add_executable(argus_mpc
     src/mpc_controller.cpp
