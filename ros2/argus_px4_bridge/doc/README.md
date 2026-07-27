@@ -291,6 +291,33 @@ empty free space; only near-obstacle voxels are shown since those are what
 actually matter for avoidance. Included in `argus.rviz` by default ("ESDF
 (near-obstacle voxels)").
 
+Alpha fades linearly from `esdf_viz_max_alpha` (default `0.35`) at the
+obstacle surface to fully transparent at `esdf_viz_max_distance`, rather
+than a flat opacity — a flat ~0.8 alpha visually buried the drone,
+trajectory, and FOV frustum markers underneath the ESDF cloud. Points at or
+below `ground_filter_height` (default `0.2m`, world frame) are dropped
+before insertion (flat height threshold, not plane-fitting — this world's
+ground is genuinely flat), and points farther than `max_point_range`
+(default `8.0m`) from the sensor are dropped too (outside the grid's own
+~8.5m diagonal anyway). `mapping_start_delay` (default `3.0s`) ignores
+point clouds until this long after odometry first starts flowing, since
+`VoxelGrid` has no decay and a transient bad frame right at spawn — before
+the vehicle's pose has settled — would otherwise be baked into the
+occupancy grid permanently.
+
+**Known limitation:** the simulated `/depth_camera/points` topic
+(PX4-Autopilot's OakD-Lite `depth_camera` sensor) does not produce a
+standard optical-frame point cloud — its `z` field is consistently
+negative (should be positive/forward) and one lateral field varies
+reciprocally with pixel row instead of linearly, which is a bug in the
+sensor's own point-cloud generation, not in `argus_mapping_node`'s
+transform chain. In practice this means the occupancy grid can accumulate
+a large corrupted region unrelated to any real obstacle. See the top-level
+`todo` file for the full diagnosis; left unfixed for now — the mapping
+pipeline (profiling, coloring, filtering, distance transform) is still
+correct and demonstrable, it just isn't being fed clean sensor data in
+this SITL setup.
+
 ## Node: `argus_bridge_node`
 
 A single node, `argus/ros2/argus_px4_bridge/src/argus_bridge_node.cpp`, built

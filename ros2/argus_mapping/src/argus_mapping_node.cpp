@@ -73,7 +73,17 @@ const Eigen::Matrix3d kOpticalToBody = opticalToBodyRotation();
 // blue) — a standard "hot=dangerous" HSV sweep (hue 0deg to 240deg at full
 // saturation/value), not a perceptually-uniform colormap like viridis, but
 // simple to compute with no lookup table and reads intuitively in RViz.
-std_msgs::msg::ColorRGBA distanceToColor(double distance, double max_distance)
+//
+// Alpha fades linearly from max_alpha at the obstacle surface to fully
+// transparent at the threshold edge, rather than a flat opacity — a flat
+// ~0.8 alpha turned the whole near-obstacle volume into a near-solid block
+// that visually buried the drone, its trajectory, and the FOV frustum
+// underneath/inside it (RViz is real depth-buffered 3-D, not a 2-D
+// painter's-algorithm canvas, so those objects were still geometrically
+// "there," just invisible through opaque-looking cubes). Fading keeps the
+// dangerous-close voxels legible while letting everything else read
+// through the rest of the field.
+std_msgs::msg::ColorRGBA distanceToColor(double distance, double max_distance, double max_alpha)
 {
     const double t = std::clamp(distance / max_distance, 0.0, 1.0);
     const double h = t * 240.0;
@@ -88,7 +98,7 @@ std_msgs::msg::ColorRGBA distanceToColor(double distance, double max_distance)
     color.r = static_cast<float>(r);
     color.g = static_cast<float>(g);
     color.b = static_cast<float>(b);
-    color.a = 0.8f;
+    color.a = static_cast<float>((1.0 - t) * max_alpha);
     return color;
 }
 }  // namespace
@@ -114,6 +124,42 @@ public:
         // space nobody needs to see; near-obstacle voxels are what matters
         // for avoidance. 1.5m comfortably covers a plausible safety margin.
         esdf_viz_max_distance_ = this->declare_parameter<double>("esdf_viz_max_distance", 1.5);
+        // Peak opacity, right at the obstacle surface — fades to 0 at
+        // esdf_viz_max_distance (see distanceToColor()). Kept well under 1
+        // so the drone/trajectory/FOV frustum stay visible through it.
+        esdf_viz_max_alpha_ = this->declare_parameter<double>("esdf_viz_max_alpha", 0.35);
+        // Points at or below this world-frame Z are treated as ground, not
+        // an obstacle, and dropped before ever reaching insertPointCloud().
+        // A flat height threshold, not real plane fitting/RANSAC — this
+        // world's ground genuinely is a flat Z=0 plane (argus_box_world.sdf
+        // has no terrain), so anything more general would be solving a
+        // problem that doesn't exist here. Revisit with real plane fitting
+        // only if a non-flat world is ever added.
+        ground_filter_height_ = this->declare_parameter<double>("ground_filter_height", 0.2);
+        // Depth points farther than this from the sensor are dropped before
+        // insertPointCloud() — this grid's footprint is only ~6m x 6m
+        // (default grid_dims/voxel_size), so a point past its ~8.5m
+        // diagonal was always going to fall outside grid bounds and get
+        // silently discarded by insertPointCloud() anyway; no reason to pay
+        // for the DDA walk first.
+        max_point_range_ = this->declare_parameter<double>("max_point_range", 8.0);
+        // Point clouds are ignored entirely until this long after odometry
+        // first starts flowing. Root-caused via a real cluster of
+        // near-obstacle markers with no obstacle anywhere nearby: at spawn,
+        // before the vehicle's pose has settled (the default x500 spawn
+        // yaw is ~96 deg — see zyxEulerFromQuaternion's comment in
+        // argus_bridge_node.cpp), the camera briefly points somewhere
+        // unrelated to where it'll actually fly, and a handful of transient
+        // frames from that moment can compute real (non-ground,
+        // in-range) points anywhere. VoxelGrid has no decay/forgetting
+        // (see the "advanced ESDF" todo notes on map staleness), so even
+        // one bad frame's occupied voxels are permanent — confirmed by
+        // restarting the node mid-flight (skipping the bad startup window
+        // entirely) and seeing the contamination vanish. argus_bridge_node
+        // has the same underlying settling concern (see its own "Armed +
+        // offboard" 5s buffer) but the two nodes don't share state, so this
+        // needed its own delay.
+        mapping_start_delay_s_ = this->declare_parameter<double>("mapping_start_delay", 3.0);
         // Timing is cheap to accumulate but noisy to print every cycle —
         // report every N computeEsdf() cycles instead (~5s at the default
         // 0.5s esdf_update_period).
@@ -157,12 +203,14 @@ private:
     {
         pos_ned_ = {msg->position[0], msg->position[1], msg->position[2]};
         q_px4_ = ft::utils::quaternion::array_to_eigen_quat(msg->q);
+        if (!have_odometry_) first_odometry_time_ = this->now();
         have_odometry_ = true;
     }
 
     void cloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
     {
         if (!have_odometry_) return;
+        if ((this->now() - first_odometry_time_).seconds() < mapping_start_delay_s_) return;
 
         const Eigen::Vector3d pos_enu = ft::ned_to_enu_local_frame(pos_ned_);
         const Eigen::Matrix3d r_body_to_world = ft::px4_to_ros_orientation(q_px4_).toRotationMatrix();
@@ -182,8 +230,11 @@ private:
             if (i % point_stride_ != 0) continue;
             const float x = *it_x, y = *it_y, z = *it_z;
             if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) continue;  // no-return depth
-            points_world.push_back(
-                r_optical_to_world * Eigen::Vector3d(x, y, z) + sensor_origin_world);
+            const Eigen::Vector3d point_world =
+                r_optical_to_world * Eigen::Vector3d(x, y, z) + sensor_origin_world;
+            if ((point_world - sensor_origin_world).norm() > max_point_range_) continue;
+            if (point_world.z() <= ground_filter_height_) continue;  // ground hit, not an obstacle
+            points_world.push_back(point_world);
         }
 
         grid_->insertPointCloud(sensor_origin_world, points_world);
@@ -245,7 +296,7 @@ private:
                     geometry_msgs::msg::Point p;
                     p.x = c.x(); p.y = c.y(); p.z = c.z();
                     cubes.points.push_back(p);
-                    cubes.colors.push_back(distanceToColor(d, esdf_viz_max_distance_));
+                    cubes.colors.push_back(distanceToColor(d, esdf_viz_max_distance_, esdf_viz_max_alpha_));
                 }
             }
         }
@@ -272,10 +323,15 @@ private:
     std::unique_ptr<argus_esdf::VoxelGrid> grid_;
     int point_stride_ = 16;
     double esdf_viz_max_distance_ = 1.5;
+    double esdf_viz_max_alpha_ = 0.35;
+    double ground_filter_height_ = 0.2;
+    double max_point_range_ = 8.0;
+    double mapping_start_delay_s_ = 3.0;
     int timing_report_period_ = 10;
     int timing_report_counter_ = 0;
 
     bool have_odometry_ = false;
+    rclcpp::Time first_odometry_time_;
     Eigen::Vector3d pos_ned_{0.0, 0.0, 0.0};
     Eigen::Quaterniond q_px4_{1.0, 0.0, 0.0, 0.0};
 
