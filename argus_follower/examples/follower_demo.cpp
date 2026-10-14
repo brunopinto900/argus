@@ -12,6 +12,8 @@
 #include <stdexcept>
 #include <string>
 
+#include <yaml-cpp/yaml.h>
+
 #include <argus_follower/TargetMotionSimulator.hpp>
 #include <argus_follower/TrailerFollower.hpp>
 
@@ -20,20 +22,41 @@ using argus_follower::TrailerFollower;
 
 namespace {
 
-constexpr int kHorizonN = 20;
-constexpr double kDt = 0.05;
-constexpr double kDistanceToTarget = 1.0;
+// argus_follower itself has no yaml-cpp dependency (kept pure, like
+// quadrotor_mpc/argus_esdf) -- this loader is private to this demo, same
+// role as src/TargetSimulator.hpp's load_target_config() for argus_mpc.
+struct TrailerConfig
+{
+    double distance_to_target = 1.0;
+    double heading_gain       = 1.0;
+    int    N                  = 20;
+    double Ts                 = 0.05;
+};
 
-SplineXY buildTarget(const std::string& motion, double t_end)
+TrailerConfig loadTrailerConfig(const std::string& yaml_path)
+{
+    const YAML::Node root = YAML::LoadFile(yaml_path);
+    if (!root["trailer"]) throw std::runtime_error(yaml_path + ": missing 'trailer' section");
+    const YAML::Node n = root["trailer"];
+
+    TrailerConfig cfg;
+    if (n["distance_to_target"]) cfg.distance_to_target = n["distance_to_target"].as<double>();
+    if (n["heading_gain"])       cfg.heading_gain        = n["heading_gain"].as<double>();
+    if (n["N"])                  cfg.N                   = n["N"].as<int>();
+    if (n["Ts"])                 cfg.Ts                  = n["Ts"].as<double>();
+    return cfg;
+}
+
+SplineXY buildTarget(const std::string& motion, double t_end, double sample_dt)
 {
     if (motion == "line") {
-        return argus_follower::straightLineTarget(0.0, 0.0, 1.0, t_end, kDt);
+        return argus_follower::straightLineTarget(0.0, 0.0, 1.0, t_end, sample_dt);
     }
     if (motion == "circle") {
-        return argus_follower::circleTarget(0.0, 0.0, 5.0, 0.5, t_end, kDt);
+        return argus_follower::circleTarget(0.0, 0.0, 5.0, 0.5, t_end, sample_dt);
     }
     if (motion == "zigzag") {
-        return argus_follower::zigzagTarget(0.0, 0.0, 1.0, 1.0, 5.0, t_end, kDt);
+        return argus_follower::zigzagTarget(0.0, 0.0, 1.0, 1.0, 5.0, t_end, sample_dt);
     }
     throw std::invalid_argument("unknown motion '" + motion + "' (expected line|circle|zigzag)");
 }
@@ -45,10 +68,12 @@ int main(int argc, char** argv)
     const std::string motion = argc > 1 ? argv[1] : "circle";
     const double t_end = argc > 2 ? std::stod(argv[2]) : 20.0;
 
-    SplineXY target = buildTarget(motion, t_end);
-    TrailerFollower follower(kDistanceToTarget);
+    const TrailerConfig cfg = loadTrailerConfig(ARGUS_CONFIG_DIR "/quadrotor.yaml");
 
-    const int n_steps = static_cast<int>(std::round(t_end / kDt));
+    SplineXY target = buildTarget(motion, t_end, cfg.Ts);
+    TrailerFollower follower(cfg.distance_to_target, cfg.heading_gain);
+
+    const int n_steps = static_cast<int>(std::round(t_end / cfg.Ts));
 
     namespace fs = std::filesystem;
     fs::create_directories("logs");
@@ -58,7 +83,7 @@ int main(int argc, char** argv)
            "follower_x,follower_y,follower_vx,follower_vy\n";
 
     for (int step = 0; step < n_steps; ++step) {
-        const double t = step * kDt;
+        const double t = step * cfg.Ts;
 
         // Leader's own (position, velocity) at the current instant -- not
         // the horizon's predicted future taus, which computeGoalPoints()
@@ -70,7 +95,7 @@ int main(int argc, char** argv)
 
         // Index 0 of the N-step horizon is the follower's goal for this
         // same instant -- the one real step this call actually commits to.
-        const auto horizon = follower.computeGoalPoints(target.x, target.y, kHorizonN, t, kDt);
+        const auto horizon = follower.computeGoalPoints(target.x, target.y, cfg.N, t, cfg.Ts);
 
         csv << t << ',' << leader_x << ',' << leader_y << ',' << leader_vx << ',' << leader_vy
             << ',' << horizon.PDx[0] << ',' << horizon.PDy[0] << ',' << horizon.VFx[0] << ','

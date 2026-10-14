@@ -92,6 +92,11 @@ target_link_options(quadrotor_mpc INTERFACE
 # for this target only — the rest of argus has never needed vector math.
 find_package(Eigen3 REQUIRED)
 
+# Needed below by argus_mpc and the follower demos' own config loaders
+# (private YAML::LoadFile() readers, not a dependency of argus_follower
+# itself — see e.g. argus_follower/examples/follower_demo.cpp).
+find_package(yaml-cpp REQUIRED)
+
 add_library(argus_esdf STATIC
     src/argus_esdf/VoxelGrid.cpp
 )
@@ -121,7 +126,22 @@ target_include_directories(argus_follower PUBLIC
 # trajectory, logged to CSV for argus_follower/scripts/plot_follower.py --
 # same role as esdf_2d_demo above, for the leader-follower algorithm.
 add_executable(follower_demo argus_follower/examples/follower_demo.cpp)
-target_link_libraries(follower_demo PRIVATE argus_follower)
+target_compile_definitions(follower_demo PRIVATE
+    ARGUS_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config"
+)
+target_link_libraries(follower_demo PRIVATE argus_follower yaml-cpp)
+
+# Combines argus_esdf + argus_follower: a static obstacle/ESDF, a target
+# orbiting it, and the (still obstacle-unaware) TrailerFollower reference
+# tracking that target -- see examples/follower_obstacle_demo.cpp. Lives
+# here (not argus_follower's own executable list above) since it depends
+# on both libraries, like esdf_depth_pipeline_demo below depends only on
+# argus_esdf.
+add_executable(follower_obstacle_demo examples/follower_obstacle_demo.cpp)
+target_compile_definitions(follower_obstacle_demo PRIVATE
+    ARGUS_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config"
+)
+target_link_libraries(follower_obstacle_demo PRIVATE argus_esdf argus_follower yaml-cpp)
 
 # Standalone (no ROS2) visual sanity check: square obstacle in, ASCII art +
 # a PPM image out. See examples/esdf_2d_demo.cpp for why this is a useful
@@ -142,8 +162,6 @@ add_executable(argus_mpc
     src/mpc_controller.cpp
     src/plant_dynamics.cpp
 )
-
-find_package(yaml-cpp REQUIRED)
 
 target_compile_definitions(argus_mpc PRIVATE
     ARGUS_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config"

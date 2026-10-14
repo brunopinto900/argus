@@ -27,9 +27,12 @@ class TrailerFollower
 public:
     // distance_to_target: fixed hitch distance between the target (leader)
     // and the follower -- the Python prototype's DIST_2_TARGET.
+    // heading_gain: lambda, how fast the follower's heading tracks the
+    // target's velocity direction -- the prototype's hardcoded lambda_ = 1.0.
     // initial_heading: starting value of the persistent heading-angle
     // state (the prototype's global a_list), radians.
-    explicit TrailerFollower(double distance_to_target, double initial_heading = 0.0);
+    explicit TrailerFollower(double distance_to_target, double heading_gain = 1.0,
+                              double initial_heading = 0.0);
 
     // Predicts the follower's goal position/velocity over an N-step horizon
     // starting at time t with step dt, from the target's (x, y) splines
@@ -47,6 +50,7 @@ public:
 
 private:
     double distance_to_target_;
+    double heading_gain_;
     double heading_angle_;
 };
 

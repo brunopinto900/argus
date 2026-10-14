@@ -25,8 +25,10 @@ std::vector<double> linspaceInclusive(double start, double stop, int n)
 }
 }  // namespace
 
-TrailerFollower::TrailerFollower(double distance_to_target, double initial_heading)
-    : distance_to_target_(distance_to_target), heading_angle_(initial_heading)
+TrailerFollower::TrailerFollower(double distance_to_target, double heading_gain,
+                                  double initial_heading)
+    : distance_to_target_(distance_to_target), heading_gain_(heading_gain),
+      heading_angle_(initial_heading)
 {
 }
 
@@ -39,7 +41,6 @@ TrailerHorizon TrailerFollower::computeGoalPoints(const CubicSpline& splineX,
     }
 
     const double d = distance_to_target_;
-    constexpr double kLambda = 1.0;
 
     TrailerHorizon horizon;
     horizon.PDx.reserve(static_cast<std::size_t>(N));
@@ -69,7 +70,7 @@ TrailerHorizon TrailerFollower::computeGoalPoints(const CubicSpline& splineX,
         // to the follower's current heading -- the trailer's angular rate.
         const double WT = -sin_a * VTx + cos_a * VTy;
 
-        const double a_new = a + kLambda * WT * dt;
+        const double a_new = a + heading_gain_ * WT * dt;
 
         // e1 . R^T . VT + d*WT: component of the target's velocity along
         // the follower's current heading, i.e. forward speed in the

@@ -120,7 +120,7 @@ TEST(TrailerFollower, HeadingConvergesBehindAStraightLineLeader)
     const argus_follower::CubicSpline splineX(t, xs);
     const argus_follower::CubicSpline splineY(t, ys);
 
-    TrailerFollower follower(kDistToTarget, /*initial_heading=*/0.3);  // start off-equilibrium
+    TrailerFollower follower(kDistToTarget, /*heading_gain=*/1.0, /*initial_heading=*/0.3);  // off-equilibrium start
     double heading = follower.headingAngle();
     for (int step = 0; step < 400; ++step) {
         follower.computeGoalPoints(splineX, splineY, 10, step * kDt, kDt);
