@@ -128,3 +128,23 @@ TEST(TrailerFollower, HeadingConvergesBehindAStraightLineLeader)
     }
     EXPECT_NEAR(heading, 0.0, 1e-3);
 }
+
+// Once the heading has settled (previous test), the follower's own
+// commanded velocity (VFx/VFy) must match the leader's velocity, not
+// oppose it -- maintaining a constant hitch distance requires the
+// follower to move at the same velocity as the thing it's a fixed
+// distance behind. Regression test for a sign bug where the follower's
+// velocity converged to the leader's speed with the wrong sign.
+TEST(TrailerFollower, FollowerVelocityConvergesToLeaderVelocity)
+{
+    const double speed = 1.0;
+    const SplineXY target = argus_follower::straightLineTarget(0.0, 0.0, speed, 30.0, kDt);
+    TrailerFollower follower(kDistToTarget);
+
+    argus_follower::TrailerHorizon horizon;
+    for (int step = 0; step < 400; ++step) {
+        horizon = follower.computeGoalPoints(target.x, target.y, 10, step * kDt, kDt);
+    }
+    EXPECT_NEAR(horizon.VFx[0], 0.0, 1e-3);
+    EXPECT_NEAR(horizon.VFy[0], speed, 1e-3);
+}

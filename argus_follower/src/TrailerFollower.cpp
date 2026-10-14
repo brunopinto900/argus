@@ -71,8 +71,16 @@ TrailerHorizon TrailerFollower::computeGoalPoints(const CubicSpline& splineX,
 
         const double a_new = a + kLambda * WT * dt;
 
-        // e1 . R . VT + d*WT: follower speed along its own heading.
-        const double VF = cos_a * VTx - sin_a * VTy + d * WT;
+        // e1 . R^T . VT + d*WT: component of the target's velocity along
+        // the follower's current heading, i.e. forward speed in the
+        // follower's own frame -- same R^T (world-to-body) projection WT
+        // above already uses, so in steady state (WT == 0, heading no
+        // longer turning) this reduces to exactly the leader's own speed
+        // along the shared heading. Originally e1.R.VT (not R^T) here,
+        // which flips the sign of VTy's contribution and made the
+        // follower's commanded velocity converge opposite the leader's at
+        // steady state -- caught via argus_follower's demo/plots.
+        const double VF = cos_a * VTx + sin_a * VTy + d * WT;
 
         const double cos_a_new = std::cos(a_new);
         const double sin_a_new = std::sin(a_new);
