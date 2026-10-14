@@ -5,6 +5,7 @@
 
 using argus_follower::circleTarget;
 using argus_follower::straightLineTarget;
+using argus_follower::straightLineWithBypassTarget;
 using argus_follower::zigzagTarget;
 
 TEST(TargetMotionSimulator, StraightLineHasConstantXAndLinearY)
@@ -65,5 +66,35 @@ TEST(TargetMotionSimulator, ZigzagAdvancesMonotonicallyInXAndOscillatesBoundedIn
 
         const double y = target.y(t);
         EXPECT_LE(std::abs(y), kAmplitude + 1e-2) << "t=" << t;
+    }
+}
+
+// Outside the bypass window, x must sit exactly on the original line
+// (window == 0 there); at the window's center, x must reach the full
+// configured amplitude; y must keep advancing at the configured speed
+// throughout (the bypass only perturbs x, not the constant-vy assumption
+// shared with zigzagTarget).
+TEST(TargetMotionSimulator, StraightLineWithBypassReturnsToLineOutsideWindow)
+{
+    constexpr double kX0 = 0.0;
+    constexpr double kSpeed = 1.0;
+    constexpr double kAmplitude = 1.5;
+    constexpr double kBypassYCenter = 0.0;
+    constexpr double kHalfWidth = 2.5;
+    const auto target = straightLineWithBypassTarget(kX0, /*y_start=*/-6.0, kSpeed, kAmplitude,
+                                                       kBypassYCenter, kHalfWidth, /*t_end=*/14.0);
+
+    // Well before and well after the bypass window.
+    for (double t : {0.0, 1.0, 12.0, 13.9}) {
+        EXPECT_NEAR(target.x(t), kX0, 1e-6) << "t=" << t;
+    }
+
+    // At the window's center (y == bypass_y_center), x reaches the full
+    // configured amplitude.
+    const double t_center = (kBypassYCenter - (-6.0)) / kSpeed;
+    EXPECT_NEAR(target.x(t_center), kX0 + kAmplitude, 1e-6);
+
+    for (double t : {0.0, 3.5, 7.0, 10.5, 13.9}) {
+        EXPECT_NEAR(target.y.derivative(t), kSpeed, 1e-6) << "t=" << t;
     }
 }

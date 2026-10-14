@@ -56,4 +56,27 @@ SplineXY zigzagTarget(double x0, double y0, double speed, double amplitude,
     return SplineXY{CubicSpline(t, xs), CubicSpline(t, ys)};
 }
 
+SplineXY straightLineWithBypassTarget(double x0, double y_start, double speed, double amplitude,
+                                       double bypass_y_center, double bypass_half_width,
+                                       double t_end, double sample_dt)
+{
+    const std::vector<double> t = sampleTimes(t_end, sample_dt);
+    std::vector<double> xs(t.size()), ys(t.size());
+    for (std::size_t i = 0; i < t.size(); ++i) {
+        const double y = y_start + speed * t[i];
+        ys[i] = y;
+
+        const double dy = y - bypass_y_center;
+        double window = 0.0;
+        if (std::abs(dy) < bypass_half_width) {
+            // Raised-cosine (Hann) window: 0 at the edges of
+            // [-bypass_half_width, bypass_half_width], 1 at the center,
+            // zero slope at both edges -- joins the straight line smoothly.
+            window = 0.5 * (1.0 + std::cos(M_PI * dy / bypass_half_width));
+        }
+        xs[i] = x0 + amplitude * window;
+    }
+    return SplineXY{CubicSpline(t, xs), CubicSpline(t, ys)};
+}
+
 }  // namespace argus_follower

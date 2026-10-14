@@ -2,8 +2,8 @@
 Real-time animation: a static obstacle and its ESDF (background heatmap,
 red = close/occupied -> blue = far, same hue sweep as
 examples/esdf_2d_demo.cpp and argus_mapping_node's RViz marker coloring),
-with a target orbiting the obstacle and the (currently obstacle-unaware)
-TrailerFollower reference tracking it.
+with the target's path (straightLineWithBypassTarget) and the (currently
+obstacle-unaware) TrailerFollower reference tracking it.
 
 Run from the repo root after executing the C++ demo:
     ./build/follower_obstacle_demo
@@ -111,7 +111,7 @@ def update(frame):
                              traj["follower_y"].iloc[i0:frame + 1])
     leader_dot.set_data([traj["leader_x"].iloc[frame]], [traj["leader_y"].iloc[frame]])
     follower_dot.set_data([traj["follower_x"].iloc[frame]], [traj["follower_y"].iloc[frame]])
-    ax.set_title(f"Target orbiting an obstacle vs. follower reference  (t = {traj['t'].iloc[frame]:.1f}s)")
+    ax.set_title(f"Target bypassing an obstacle vs. follower reference  (t = {traj['t'].iloc[frame]:.1f}s)")
     return leader_trail, follower_trail, leader_dot, follower_dot
 
 

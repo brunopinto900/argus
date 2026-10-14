@@ -55,7 +55,7 @@ plant:
 # Independent of the quadrotor OCP above; N/Ts happen to match mpc.N/mpc.Ts
 # by default but are its own horizon, not read from the mpc: section.
 trailer:
-  distance_to_target: 1.5    # hitch distance between the target and the follower's goal point [m]
+  distance_to_target: 2.0    # hitch distance between the target and the follower's goal point [m]
   heading_gain:        1.0   # lambda: how fast the follower's heading tracks the target's velocity direction
   N:                   20    # prediction horizon steps
   Ts:                   0.05 # sample time [s]

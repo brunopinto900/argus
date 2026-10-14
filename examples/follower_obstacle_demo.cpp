@@ -1,18 +1,18 @@
-// Standalone (no ROS2, no Gazebo) obstacle-avoidance *test fixture*: a
-// static square obstacle and its ESDF (argus_esdf::VoxelGrid), a target
-// orbiting around it, and the (currently obstacle-unaware)
+// Standalone (no ROS2, no Gazebo) demo: a static square obstacle and its
+// ESDF (argus_esdf::VoxelGrid), a target following
+// straightLineWithBypassTarget, and the (currently obstacle-unaware)
 // argus_follower::TrailerFollower reference tracking that target -- logged
 // for argus_follower/scripts/plot_follower_obstacle.py to animate.
 //
-// There is deliberately no obstacle avoidance here yet (see the top-level
-// todo file) -- the point of this demo is to visualize whether/when the
-// trailer reference's own corner-cutting behaviour alone would carry the
-// follower's path through the obstacle, as a before/after baseline for
-// once avoidance is added to the OCP.
+// There is no obstacle avoidance here yet (see the top-level todo file) --
+// this is a before/after baseline for once avoidance is added to the OCP.
+// See the printed "closest approach" report at the end of a run.
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -33,8 +33,14 @@ constexpr int kGridN = 240;                                // 240*0.05 = 12m x 1
 constexpr double kHalfExtent = kGridN * kVoxelSize / 2.0;
 constexpr double kObstacleHalfSize = 0.8;                  // 1.6m x 1.6m square, centered at origin
 
-constexpr double kOrbitRadius = 4.0;     // m -- target's orbit around the obstacle
-constexpr double kAngularSpeed = 0.4;    // rad/s
+// Target path: straightLineWithBypassTarget along x=0, bypass centered on
+// the obstacle (y=0). amplitude > kObstacleHalfSize so the target itself
+// clears the obstacle.
+constexpr double kTargetSpeed = 1.0;         // m/s
+constexpr double kYStart = -6.0;             // m
+constexpr double kBypassAmplitude = 1.5;     // m
+constexpr double kBypassHalfWidth = 2.5;     // m -- half-width of the bypass window
+constexpr double kTEnd = 14.0;               // s
 
 // argus_follower itself has no yaml-cpp dependency (kept pure, like
 // quadrotor_mpc/argus_esdf) -- this loader is private to this demo, same
@@ -62,7 +68,7 @@ TrailerConfig loadTrailerConfig(const std::string& yaml_path)
 }
 
 // Same square-obstacle construction as examples/esdf_2d_demo.cpp, centered
-// at the origin so the target's circular orbit is concentric with it.
+// at the origin -- the target's straight approach runs directly at it.
 VoxelGrid buildObstacleGrid()
 {
     VoxelGrid grid(Eigen::Vector3d(-kHalfExtent, -kHalfExtent, 0.0),
@@ -99,6 +105,18 @@ void writeEsdfCsv(const VoxelGrid& grid, const std::string& path)
     }
 }
 
+// Nearest-voxel (no interpolation -- the grid is dims.z()==1, so query()'s
+// trilinear interpolation is always invalid on it, see VoxelGrid.hpp)
+// distance at a world-frame (x, y) point.
+double distanceAtPoint(const VoxelGrid& grid, double x, double y)
+{
+    const Eigen::Vector3i idx(
+        static_cast<int>(std::floor((x - grid.origin().x()) / grid.voxelSize())),
+        static_cast<int>(std::floor((y - grid.origin().y()) / grid.voxelSize())), 0);
+    if (!grid.inBounds(idx)) return std::numeric_limits<double>::infinity();
+    return grid.distanceAt(idx);
+}
+
 }  // namespace
 
 int main()
@@ -114,26 +132,40 @@ int main()
 
     const TrailerConfig cfg = loadTrailerConfig(ARGUS_CONFIG_DIR "/quadrotor.yaml");
 
-    const double t_end = 2.0 * (2.0 * M_PI / kAngularSpeed);  // two full orbits
-    const SplineXY target =
-        argus_follower::circleTarget(0.0, 0.0, kOrbitRadius, kAngularSpeed, t_end, cfg.Ts);
+    const SplineXY target = argus_follower::straightLineWithBypassTarget(
+        /*x0=*/0.0, kYStart, kTargetSpeed, kBypassAmplitude, /*bypass_y_center=*/0.0,
+        kBypassHalfWidth, kTEnd, cfg.Ts);
     TrailerFollower follower(cfg.distance_to_target, cfg.heading_gain);
 
-    const int n_steps = static_cast<int>(std::round(t_end / cfg.Ts));
+    const int n_steps = static_cast<int>(std::round(kTEnd / cfg.Ts));
     const std::string traj_path = "logs/follower_obstacle_trajectory.csv";
     std::ofstream traj(traj_path);
     traj << "t,leader_x,leader_y,follower_x,follower_y\n";
+
+    double min_follower_dist = std::numeric_limits<double>::infinity();
+    double min_leader_dist   = std::numeric_limits<double>::infinity();
 
     for (int step = 0; step < n_steps; ++step) {
         const double t = step * cfg.Ts;
         const double leader_x = target.x(t);
         const double leader_y = target.y(t);
         const auto horizon = follower.computeGoalPoints(target.x, target.y, cfg.N, t, cfg.Ts);
-        traj << t << ',' << leader_x << ',' << leader_y << ',' << horizon.PDx[0] << ','
-             << horizon.PDy[0] << '\n';
+        const double follower_x = horizon.PDx[0];
+        const double follower_y = horizon.PDy[0];
+
+        traj << t << ',' << leader_x << ',' << leader_y << ',' << follower_x << ','
+             << follower_y << '\n';
+
+        min_leader_dist   = std::min(min_leader_dist, distanceAtPoint(grid, leader_x, leader_y));
+        min_follower_dist = std::min(min_follower_dist, distanceAtPoint(grid, follower_x, follower_y));
     }
 
-    std::cout << "Logged " << n_steps << " steps to " << traj_path
-              << "\nAnimate with: python3 argus_follower/scripts/plot_follower_obstacle.py\n";
+    std::cout << "Logged " << n_steps << " steps to " << traj_path << "\n\n"
+              << "Closest approach to the obstacle:\n"
+              << "  leader (target): " << min_leader_dist << " m"
+              << (min_leader_dist <= kVoxelSize ? "  <-- COLLISION" : "") << "\n"
+              << "  follower (ref):  " << min_follower_dist << " m"
+              << (min_follower_dist <= kVoxelSize ? "  <-- COLLISION" : "")
+              << "\n\nAnimate with: python3 argus_follower/scripts/plot_follower_obstacle.py\n";
     return 0;
 }

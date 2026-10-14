@@ -32,4 +32,17 @@ SplineXY circleTarget(double cx, double cy, double radius, double angular_speed,
 SplineXY zigzagTarget(double x0, double y0, double speed, double amplitude,
                       double period_distance, double t_end, double sample_dt = 0.05);
 
+// Straight-line advance along +y at constant speed (same as
+// straightLineTarget), with one lateral offset bump added instead of a
+// periodic zigzag. x(t) = x0 + amplitude * w(y(t)), where w is a
+// raised-cosine ("Hann") window: 0 outside
+// [bypass_y_center - bypass_half_width, bypass_y_center + bypass_half_width],
+// rising smoothly to 1 at bypass_y_center and back to 0 -- zero slope at
+// both ends of the window, so the bump joins the straight line with no
+// heading discontinuity. Smaller bypass_half_width (relative to amplitude)
+// gives a tighter bump.
+SplineXY straightLineWithBypassTarget(double x0, double y_start, double speed, double amplitude,
+                                       double bypass_y_center, double bypass_half_width,
+                                       double t_end, double sample_dt = 0.05);
+
 }  // namespace argus_follower
