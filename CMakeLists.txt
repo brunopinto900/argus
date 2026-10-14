@@ -102,6 +102,27 @@ target_include_directories(argus_esdf PUBLIC
 
 target_link_libraries(argus_esdf PUBLIC Eigen3::Eigen)
 
+# ── argus_follower library — trailer-like leader-follower reference gen ────
+# Pure C++, no ROS/Gazebo dependency, same reasoning as quadrotor_mpc and
+# argus_esdf above: the leader-follower algorithm itself is validated here
+# against synthetic target motion first, before it's wired into the OCP and
+# the ROS2/PX4 bridge.
+add_library(argus_follower STATIC
+    argus_follower/src/CubicSpline.cpp
+    argus_follower/src/TrailerFollower.cpp
+    argus_follower/src/TargetMotionSimulator.cpp
+)
+
+target_include_directories(argus_follower PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/argus_follower/include
+)
+
+# Standalone (no ROS2, no Gazebo) run against a synthetic target
+# trajectory, logged to CSV for argus_follower/scripts/plot_follower.py --
+# same role as esdf_2d_demo above, for the leader-follower algorithm.
+add_executable(follower_demo argus_follower/examples/follower_demo.cpp)
+target_link_libraries(follower_demo PRIVATE argus_follower)
+
 # Standalone (no ROS2) visual sanity check: square obstacle in, ASCII art +
 # a PPM image out. See examples/esdf_2d_demo.cpp for why this is a useful
 # companion to tests/test_voxel_grid.cpp's exact-value assertions.
@@ -163,7 +184,18 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
         GTest::gtest_main
     )
 
+    add_executable(follower_tests
+        argus_follower/tests/test_cubic_spline.cpp
+        argus_follower/tests/test_target_motion_simulator.cpp
+        argus_follower/tests/test_trailer_follower.cpp
+    )
+    target_link_libraries(follower_tests PRIVATE
+        argus_follower
+        GTest::gtest_main
+    )
+
     include(GoogleTest)
     gtest_discover_tests(quadrotor_mpc_tests)
     gtest_discover_tests(voxel_grid_tests)
+    gtest_discover_tests(follower_tests)
 endif()
