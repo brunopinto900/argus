@@ -37,9 +37,15 @@ esac
 # ACADOS shared libs must be visible to both the Python generator and the binary
 export LD_LIBRARY_PATH="$HOME/acados/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
+# Prefer the project venv (has casadi/acados_template); fall back to system python3
+PYTHON="python3"
+if [ -x "$HOME/.venv/bin/python3" ]; then
+  PYTHON="$HOME/.venv/bin/python3"
+fi
+
 if [ "$SKIP_GEN" -eq 0 ]; then
   echo "==> Generating C solver (scripts/generate_mpc.py)..."
-  python3 scripts/generate_mpc.py
+  "$PYTHON" scripts/generate_mpc.py
 fi
 
 if [ "$SKIP_BUILD" -eq 0 ]; then
