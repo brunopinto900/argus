@@ -6,6 +6,8 @@
 #include <argus_perception/SyntheticLidar.hpp>
 
 using argus_esdf::VoxelGrid;
+using argus_esdf::VoxelState;
+using argus_perception::integrateLidarScan;
 using argus_perception::simulateLidarScan;
 
 namespace {
@@ -96,4 +98,51 @@ TEST(SyntheticLidar, NearerObstacleOccludesFartherOneBehindIt)
     for (const auto& p : points) {
         EXPECT_LT(p.y(), 9.0) << "a point from the occluded far square leaked through";
     }
+}
+
+// The gap simulateLidarScan() alone has: a ray reaching max_range without
+// hitting anything contributes nothing, so open space stays kUnknown even
+// after being "seen" as clear. integrateLidarScan() must resolve it --
+// every voxel within max_range of an all-empty ground truth should end up
+// kFree, not kUnknown, once integrated.
+TEST(SyntheticLidar, IntegrateLidarScanMarksEmptySpaceFreeNotUnknown)
+{
+    const VoxelGrid ground_truth(Eigen::Vector3d::Zero(), Eigen::Vector3i(21, 21, 1), 1.0);
+    VoxelGrid own_map(Eigen::Vector3d::Zero(), Eigen::Vector3i(21, 21, 1), 1.0);
+    const Eigen::Vector3d origin(10.5, 10.5, 0.5);
+    constexpr double kMaxRange = 5.0;
+
+    integrateLidarScan(ground_truth, own_map, origin, /*num_rays=*/360, kMaxRange);
+
+    // A small disk around origin, well within kMaxRange on every axis, must
+    // be resolved free -- not just the four cardinal directions a sparser
+    // check might miss gaps on.
+    for (int x = 8; x <= 13; ++x) {
+        for (int y = 8; y <= 13; ++y) {
+            EXPECT_EQ(own_map.stateAt({x, y, 0}), VoxelState::kFree) << "x=" << x << " y=" << y;
+        }
+    }
+}
+
+// A ray that does hit something must still integrate exactly like
+// insertPointCloud() would -- integrateLidarScan() isn't just the miss-ray
+// fix, it must preserve hit behaviour too (occupied hit, free path to it).
+TEST(SyntheticLidar, IntegrateLidarScanStillMarksHitsOccupied)
+{
+    const VoxelGrid ground_truth = buildSquareGroundTruth();
+    VoxelGrid own_map(Eigen::Vector3d::Zero(), Eigen::Vector3i(21, 21, 1), 1.0);
+    const Eigen::Vector3d origin(10.5, 2.5, 0.5);  // south of the square
+
+    integrateLidarScan(ground_truth, own_map, origin, /*num_rays=*/360, /*max_range=*/10.0);
+
+    EXPECT_EQ(own_map.stateAt({10, 9, 0}), VoxelState::kOccupied);  // square's near face
+    EXPECT_EQ(own_map.stateAt({10, 5, 0}), VoxelState::kFree);      // between origin and the square
+}
+
+TEST(SyntheticLidar, IntegrateLidarScanRejectsNonPositiveNumRays)
+{
+    const VoxelGrid ground_truth(Eigen::Vector3d::Zero(), Eigen::Vector3i(5, 5, 1), 1.0);
+    VoxelGrid own_map(Eigen::Vector3d::Zero(), Eigen::Vector3i(5, 5, 1), 1.0);
+    EXPECT_THROW(integrateLidarScan(ground_truth, own_map, Eigen::Vector3d(2.5, 2.5, 0.5), 0, 10.0),
+                 std::invalid_argument);
 }

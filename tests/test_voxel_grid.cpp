@@ -367,3 +367,41 @@ TEST(VoxelGrid, RaycastDoesNotMutateOccupancyOrDistance)
         EXPECT_DOUBLE_EQ(grid.distanceAt({x, 0, 0}), dist_before) << "x=" << x;
     }
 }
+
+TEST(VoxelGrid, MarkFreeRayMarksEveryVoxelUpToMaxRangeFree)
+{
+    VoxelGrid grid(Eigen::Vector3d::Zero(), Eigen::Vector3i(10, 1, 1), 1.0);
+    grid.markFreeRay(Eigen::Vector3d(0.5, 0.5, 0.5), Eigen::Vector3d(1.0, 0.0, 0.0),
+                      /*max_range=*/6.0);
+
+    for (int x = 0; x <= 6; ++x) {
+        EXPECT_EQ(grid.stateAt({x, 0, 0}), VoxelState::kFree) << "x=" << x;
+    }
+    EXPECT_EQ(grid.stateAt({7, 0, 0}), VoxelState::kUnknown);  // past max_range
+}
+
+// A miss ray passing through a voxel some earlier scan already confirmed
+// occupied must not downgrade it -- "found nothing new here" can't erase
+// prior positive evidence.
+TEST(VoxelGrid, MarkFreeRayDoesNotDowngradeAlreadyOccupiedVoxel)
+{
+    VoxelGrid grid(Eigen::Vector3d::Zero(), Eigen::Vector3i(10, 1, 1), 1.0);
+    grid.insertPointCloud(Eigen::Vector3d(0.5, 0.5, 0.5), {Eigen::Vector3d(3.5, 0.5, 0.5)});
+    ASSERT_EQ(grid.stateAt({3, 0, 0}), VoxelState::kOccupied);
+
+    grid.markFreeRay(Eigen::Vector3d(0.5, 0.5, 0.5), Eigen::Vector3d(1.0, 0.0, 0.0),
+                      /*max_range=*/6.0);
+
+    EXPECT_EQ(grid.stateAt({3, 0, 0}), VoxelState::kOccupied);
+}
+
+TEST(VoxelGrid, MarkFreeRayIsNoOpForDegenerateInputs)
+{
+    VoxelGrid grid(Eigen::Vector3d::Zero(), Eigen::Vector3i(10, 1, 1), 1.0);
+    grid.markFreeRay(Eigen::Vector3d(0.5, 0.5, 0.5), Eigen::Vector3d::Zero(), 6.0);
+    grid.markFreeRay(Eigen::Vector3d(0.5, 0.5, 0.5), Eigen::Vector3d(1.0, 0.0, 0.0), 0.0);
+
+    for (int x = 0; x < 10; ++x) {
+        EXPECT_EQ(grid.stateAt({x, 0, 0}), VoxelState::kUnknown) << "x=" << x;
+    }
+}

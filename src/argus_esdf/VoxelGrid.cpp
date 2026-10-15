@@ -172,6 +172,48 @@ void VoxelGrid::markRay(const Eigen::Vector3d& sensor_origin, const Eigen::Vecto
     }
 }
 
+void VoxelGrid::markFreeRay(const Eigen::Vector3d& origin, const Eigen::Vector3d& direction,
+                             double max_range)
+{
+    const double len = direction.norm();
+    if (len < 1e-9 || max_range <= 0.0) return;
+    const Eigen::Vector3d dir = direction / len;
+
+    Eigen::Vector3i voxel = worldToIndex(origin);
+
+    // Same DDA setup as markRay()/raycast() -- see markRay()'s comments.
+    Eigen::Vector3i step(0, 0, 0);
+    Eigen::Vector3d t_max(kInf, kInf, kInf);
+    Eigen::Vector3d t_delta(kInf, kInf, kInf);
+    for (int axis = 0; axis < 3; ++axis) {
+        if (dir[axis] > 0.0) {
+            step[axis] = 1;
+            const double next_boundary = origin_[axis] + (voxel[axis] + 1) * voxel_size_;
+            t_max[axis] = (next_boundary - origin[axis]) / dir[axis];
+            t_delta[axis] = voxel_size_ / dir[axis];
+        } else if (dir[axis] < 0.0) {
+            step[axis] = -1;
+            const double next_boundary = origin_[axis] + voxel[axis] * voxel_size_;
+            t_max[axis] = (next_boundary - origin[axis]) / dir[axis];
+            t_delta[axis] = voxel_size_ / -dir[axis];
+        }
+    }
+
+    double t = 0.0;
+    while (t <= max_range) {
+        if (inBounds(voxel)) {
+            VoxelState& state = occupancy_[linearIndex(voxel)];
+            if (state != VoxelState::kOccupied) state = VoxelState::kFree;
+        }
+        int axis = 0;
+        if (t_max[1] < t_max[axis]) axis = 1;
+        if (t_max[2] < t_max[axis]) axis = 2;
+        t = t_max[axis];
+        voxel[axis] += step[axis];
+        t_max[axis] += t_delta[axis];
+    }
+}
+
 std::optional<Eigen::Vector3d> VoxelGrid::raycast(const Eigen::Vector3d& origin,
                                                    const Eigen::Vector3d& direction,
                                                    double max_range) const

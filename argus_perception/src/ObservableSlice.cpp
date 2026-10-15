@@ -31,18 +31,26 @@ std::vector<Eigen::Vector3i> computeObservableSlice(const argus_esdf::VoxelGrid&
             const double angle = (2.0 * M_PI * i) / num_rays;
             const Eigen::Vector3d dir(std::cos(angle), std::sin(angle), 0.0);
 
-            // Matches simulateLidarScan(): nothing contributed on a miss.
             const auto hit = ground_truth.raycast(pose, dir, max_range);
-            if (!hit) continue;
-
-            // Trace pose->hit-point, not pose->full-max-range along dir --
-            // the same path markRay() derives once insertPointCloud()
-            // receives this hit point, which can differ from dir by
-            // enough to cross a voxel boundary differently (hit point is
-            // a voxel center, not the exact surface intersection).
-            const Eigen::Vector3d to_hit = *hit - pose;
-            for (const auto& idx : ground_truth.traceRay(pose, to_hit, to_hit.norm())) {
-                observed.insert(idx);
+            if (hit) {
+                // Trace pose->hit-point, not pose->full-max-range along dir
+                // -- the same path markRay() derives once
+                // insertPointCloud() receives this hit point, which can
+                // differ from dir by enough to cross a voxel boundary
+                // differently (hit point is a voxel center, not the exact
+                // surface intersection).
+                const Eigen::Vector3d to_hit = *hit - pose;
+                for (const auto& idx : ground_truth.traceRay(pose, to_hit, to_hit.norm())) {
+                    observed.insert(idx);
+                }
+            } else {
+                // Matches integrateLidarScan()'s miss branch: markFreeRay()
+                // walks pose->(pose + dir*max_range) directly (no hit point
+                // to aim at), so this traces the same path with the same
+                // dir/max_range, not just the hit-ray case above.
+                for (const auto& idx : ground_truth.traceRay(pose, dir, max_range)) {
+                    observed.insert(idx);
+                }
             }
         }
     }

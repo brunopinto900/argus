@@ -22,16 +22,13 @@ namespace argus_perception {
 // (pose/frame mismatches, grid misalignment, missed sensor ticks) rather
 // than re-testing raycast()/traceRay() themselves.
 //
-// Mirrors simulateLidarScan()+insertPointCloud()'s actual behaviour
-// exactly, including its current limitation: a ray that hits nothing
-// within max_range contributes no information at all (insertPointCloud()
-// is never even called for it) -- open space beyond/without any obstacle
-// stays kUnknown rather than being marked confirmed-clear. Tracing is
-// therefore done pose->hit-point (the same path markRay() derives from a
-// hit point), not pose->full-max-range along the original sampled
+// Mirrors integrateLidarScan()'s actual behaviour exactly: a hit ray's
+// traced path is pose->hit-point (the same path markRay() derives from a
+// hit point, not pose->full-max-range along the originally sampled
 // direction -- those two can disagree by a voxel near grazing/diagonal
 // rays since a hit point is a voxel *center*, not the exact ray/surface
-// intersection.
+// intersection); a miss ray's traced path is pose->(pose +
+// dir*max_range), matching markFreeRay()'s walk exactly.
 std::vector<Eigen::Vector3i> computeObservableSlice(const argus_esdf::VoxelGrid& ground_truth,
                                                      const std::vector<Eigen::Vector3d>& poses,
                                                      int num_rays, double max_range);

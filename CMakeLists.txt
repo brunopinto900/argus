@@ -159,6 +159,18 @@ target_compile_definitions(follower_obstacle_demo PRIVATE
 )
 target_link_libraries(follower_obstacle_demo PRIVATE argus_esdf argus_follower yaml-cpp)
 
+# Online/incremental mapping version of the same scenario: two decoupled
+# clocks (mapping_sensor.update_rate_hz for the sensor sweep + ESDF
+# recompute, trailer.Ts for the follower's own control update), own_map
+# built only from simulated sensor sweeps against ground truth -- see
+# examples/online_mapping_demo.cpp and design_decisions.md.
+add_executable(online_mapping_demo examples/online_mapping_demo.cpp)
+target_compile_definitions(online_mapping_demo PRIVATE
+    ARGUS_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config"
+)
+target_link_libraries(online_mapping_demo PRIVATE
+    argus_esdf argus_follower argus_perception yaml-cpp)
+
 # Standalone (no ROS2) visual sanity check: square obstacle in, ASCII art +
 # a PPM image out. See examples/esdf_2d_demo.cpp for why this is a useful
 # companion to tests/test_voxel_grid.cpp's exact-value assertions.

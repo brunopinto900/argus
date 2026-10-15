@@ -7,6 +7,7 @@
 using argus_esdf::VoxelGrid;
 using argus_esdf::VoxelState;
 using argus_perception::computeObservableSlice;
+using argus_perception::integrateLidarScan;
 using argus_perception::verifyAgainstGroundTruth;
 
 namespace {
@@ -26,11 +27,11 @@ VoxelGrid buildSquareGroundTruth()
 }
 }  // namespace
 
-// Runs the real pipeline (simulateLidarScan against ground truth,
-// insertPointCloud into own_map) from a small scripted set of poses, then
-// checks it with computeObservableSlice()/verifyAgainstGroundTruth() using
-// those same poses -- the "happy path": a correctly-built own_map must
-// match ground truth everywhere its sensor actually looked.
+// Runs the real pipeline (integrateLidarScan against ground truth, into
+// own_map) from a small scripted set of poses, then checks it with
+// computeObservableSlice()/verifyAgainstGroundTruth() using those same
+// poses -- the "happy path": a correctly-built own_map must match ground
+// truth everywhere its sensor actually looked, hits and misses alike.
 TEST(ObservableSlice, CorrectlyBuiltOwnMapMatchesEverywhereObserved)
 {
     const VoxelGrid ground_truth = buildSquareGroundTruth();
@@ -44,8 +45,7 @@ TEST(ObservableSlice, CorrectlyBuiltOwnMapMatchesEverywhereObserved)
     constexpr double kMaxRange = 15.0;
 
     for (const auto& pose : poses) {
-        own_map.insertPointCloud(pose, argus_perception::simulateLidarScan(ground_truth, pose,
-                                                                             kNumRays, kMaxRange));
+        integrateLidarScan(ground_truth, own_map, pose, kNumRays, kMaxRange);
     }
 
     const auto slice = computeObservableSlice(ground_truth, poses, kNumRays, kMaxRange);

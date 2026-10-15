@@ -65,6 +65,17 @@ public:
     void insertPointCloud(const Eigen::Vector3d& sensor_origin,
                            const std::vector<Eigen::Vector3d>& points);
 
+    // Marks every voxel from origin to max_range along direction free
+    // (unless already kOccupied, which is left untouched) -- the
+    // counterpart to insertPointCloud() for a ray that found nothing within
+    // sensor range. insertPointCloud() alone cannot represent this: it
+    // always marks its final point's voxel occupied, so a "miss" ray simply
+    // isn't callable through it. Without this, open space a sensor actually
+    // swept and found clear stays kUnknown forever -- see
+    // design_decisions.md's "Known limitation" entry this resolves.
+    void markFreeRay(const Eigen::Vector3d& origin, const Eigen::Vector3d& direction,
+                      double max_range);
+
     // Read-only counterpart to insertPointCloud()'s raycasting: walks from
     // origin along direction (need not be unit length) up to max_range
     // using the same Amanatides-Woo DDA markRay() uses for writing,

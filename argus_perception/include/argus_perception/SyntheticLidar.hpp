@@ -31,4 +31,19 @@ std::vector<Eigen::Vector3d> simulateLidarScan(const argus_esdf::VoxelGrid& grou
                                                 const Eigen::Vector3d& origin, int num_rays,
                                                 double max_range);
 
+// Sweeps the same num_rays/max_range scan as simulateLidarScan(), but
+// integrates it directly into own_map instead of returning hit points:
+// a ray that hits something is inserted via insertPointCloud() (marks the
+// hit occupied, the path to it free); a ray that finds nothing within
+// max_range is marked free along its whole length via markFreeRay().
+//
+// simulateLidarScan() alone only ever reports hits, so a caller using just
+// that + insertPointCloud() can't represent "swept this direction, found
+// it genuinely clear" -- that space stays kUnknown indefinitely even
+// though the sensor looked right at it. This is the real integration step
+// a sensor driver performs; see design_decisions.md's "Known limitation"
+// entry this resolves.
+void integrateLidarScan(const argus_esdf::VoxelGrid& ground_truth, argus_esdf::VoxelGrid& own_map,
+                         const Eigen::Vector3d& origin, int num_rays, double max_range);
+
 }  // namespace argus_perception
