@@ -43,6 +43,10 @@ def _parse_args():
     p.add_argument("--stride", type=int, default=1,
                    help="Take every Nth frame for --save-gif (reduces file size)")
     p.add_argument("--fps", type=int, default=15, help="Playback fps for --save-gif")
+    p.add_argument("--csv-path", default="logs/trajectory.csv",
+                   help="Trajectory CSV to animate (any producer using the same column layout "
+                        "as src/mpc_controller.cpp's log, e.g. examples/trailer_mpc_demo.cpp)")
+    p.add_argument("--xy-limit", type=float, default=5.0, help="Axis half-extent [m]")
     return p.parse_args()
 
 
@@ -59,19 +63,19 @@ import matplotlib.animation as animation
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 — registers 3-D projection
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
-CSV_PATH      = "logs/trajectory.csv"
+CSV_PATH      = _args.csv_path
 DRONE_Z_REF   = 1.5    # drone's z reference [m] — must match config/quadrotor.yaml mpc.hover_altitude
 TRAIL_SECONDS = 4.0
 FRUSTUM_LEN   = 0.70   # camera frustum length [m]
 FRUSTUM_H_FOV = np.deg2rad(40.0)  # horizontal half-angle
 FRUSTUM_V_FOV = np.deg2rad(30.0)  # vertical half-angle
-XY_LIMIT      = 5.0    # axis half-extent [m]
+XY_LIMIT      = _args.xy_limit    # axis half-extent [m]
 
 # ── Load data ────────────────────────────────────────────────────────────────
 try:
     df = pd.read_csv(CSV_PATH)
 except FileNotFoundError:
-    print(f"ERROR: {CSV_PATH} not found.\nRun ./build/argus_mpc first.")
+    print(f"ERROR: {CSV_PATH} not found.\nRun ./build/argus_mpc (or pass --csv-path) first.")
     sys.exit(1)
 
 t_arr     = df["t"].to_numpy()

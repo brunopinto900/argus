@@ -161,15 +161,22 @@ target_link_libraries(follower_obstacle_demo PRIVATE argus_esdf argus_follower y
 
 # Online/incremental mapping version of the same scenario: two decoupled
 # clocks (mapping_sensor.update_rate_hz for the sensor sweep + ESDF
-# recompute, trailer.Ts for the follower's own control update), own_map
-# built only from simulated sensor sweeps against ground truth -- see
-# examples/online_mapping_demo.cpp and design_decisions.md.
-add_executable(online_mapping_demo examples/online_mapping_demo.cpp)
+# recompute, trailer.Ts for the follower's own MPC control update),
+# own_map built only from simulated sensor sweeps against ground truth --
+# see examples/online_mapping_demo.cpp and design_decisions.md. Same
+# QuadrotorMpc + PlantDynamics closed-loop wiring as
+# examples/trailer_mpc_demo.cpp -- see that target's comment for why
+# src/ needs to be on its own include path.
+add_executable(online_mapping_demo
+    examples/online_mapping_demo.cpp
+    src/plant_dynamics.cpp
+)
+target_include_directories(online_mapping_demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_definitions(online_mapping_demo PRIVATE
     ARGUS_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config"
 )
 target_link_libraries(online_mapping_demo PRIVATE
-    argus_esdf argus_follower argus_perception yaml-cpp)
+    argus_esdf argus_follower argus_perception quadrotor_mpc yaml-cpp)
 
 # Standalone (no ROS2) visual sanity check: square obstacle in, ASCII art +
 # a PPM image out. See examples/esdf_2d_demo.cpp for why this is a useful
@@ -196,6 +203,24 @@ target_compile_definitions(argus_mpc PRIVATE
 )
 
 target_link_libraries(argus_mpc PRIVATE quadrotor_mpc yaml-cpp)
+
+# Wires QuadrotorMpc to TrailerFollower: the follower's goal-point horizon
+# becomes the MPC's own drone-position reference instead of the
+# hover-above/orbit-around references argus_mpc above uses. See
+# examples/trailer_mpc_demo.cpp. Shares src/plant_dynamics.cpp with
+# argus_mpc (same closed-loop realism, not open-loop goal points) --
+# needs src/ on its own include path for plant_dynamics.hpp's quote-include,
+# which argus_mpc gets "for free" only because mpc_controller.cpp already
+# lives in src/.
+add_executable(trailer_mpc_demo
+    examples/trailer_mpc_demo.cpp
+    src/plant_dynamics.cpp
+)
+target_include_directories(trailer_mpc_demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_compile_definitions(trailer_mpc_demo PRIVATE
+    ARGUS_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config"
+)
+target_link_libraries(trailer_mpc_demo PRIVATE quadrotor_mpc argus_follower yaml-cpp)
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 # Only when argus is configured standalone (top-level project) — when pulled

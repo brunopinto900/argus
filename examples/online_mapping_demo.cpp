@@ -1,15 +1,26 @@
 // Standalone (no ROS2, no Gazebo) demo of the online/incremental mapping
 // loop: two independent clocks -- mapping_sensor.update_rate_hz (60Hz) for
 // the synthetic 360-degree sensor sweep + VoxelGrid insertion/ESDF
-// recompute, and trailer.Ts (20Hz) for the follower's own control update --
-// against the same obstacle-bypass scenario as follower_obstacle_demo.cpp.
+// recompute, and trailer.Ts (20Hz) for the follower's own MPC control
+// update -- against the same obstacle-bypass scenario as
+// follower_obstacle_demo.cpp.
 //
 // Unlike follower_obstacle_demo.cpp (instant, full access to the ground
 // truth ESDF), the follower here only ever has its own incrementally-built
 // `own_map`, starting all-unknown and resolved solely through simulated
 // sensor sweeps -- see design_decisions.md for why the two clocks are
 // decoupled and why unknown space is seeded as not-free.
+//
+// The mapping sensor rides the actual closed-loop drone (QuadrotorMpc +
+// PlantDynamics, same wiring as examples/trailer_mpc_demo.cpp), not the
+// follower's open-loop reference directly -- the follower's goal-point
+// horizon is only ever the MPC's position reference, same as that demo.
+// The MPC itself still has no obstacle awareness (own_map is built but
+// never fed into it) -- see design_decisions.md's "Explicitly out of
+// scope" note; this only moves the mapping sensor onto a real
+// closed-loop platform.
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -25,8 +36,13 @@
 #include <argus_esdf/VoxelGrid.hpp>
 #include <argus_follower/TargetMotionSimulator.hpp>
 #include <argus_follower/TrailerFollower.hpp>
+#include <argus_mpc/QuadrotorMpc.hpp>
 #include <argus_perception/ObservableSlice.hpp>
 #include <argus_perception/SyntheticLidar.hpp>
+
+// Auto-generated from config/quadrotor.yaml -- re-run generate_mpc.py to update.
+#include "argus_params.h"
+#include "plant_dynamics.hpp"
 
 using argus_esdf::VoxelGrid;
 using argus_follower::SplineXY;
@@ -34,6 +50,8 @@ using argus_follower::TrailerFollower;
 using argus_perception::computeObservableSlice;
 using argus_perception::integrateLidarScan;
 using argus_perception::verifyAgainstGroundTruth;
+using PlantState = std::array<double, 12>;
+using PlantInput = std::array<double, 4>;
 
 namespace {
 
@@ -60,6 +78,13 @@ constexpr double kYStart = -6.0;             // m
 constexpr double kBypassAmplitude = 1.5;     // m
 constexpr double kBypassHalfWidth = 2.5;     // m
 constexpr double kTEnd = 14.0;               // s
+
+constexpr double kTs            = ARGUS_MPC_TS;
+constexpr double kTHover        = ARGUS_T_HOVER;
+constexpr double kHoverAltitude = ARGUS_HOVER_ALTITUDE;
+// Ground-level tracked leader, distinct from the drone's hover altitude
+// above it -- same reasoning as examples/trailer_mpc_demo.cpp.
+constexpr double kTargetZ = 0.0;
 
 // Snapshot logging rate for the own_map animation -- decoupled from both
 // the 60Hz sensor/map update and the 20Hz control loop (see
@@ -267,24 +292,38 @@ int main()
         kBypassHalfWidth, kTEnd, control_dt);
     TrailerFollower follower(trailer_cfg.distance_to_target, trailer_cfg.heading_gain);
 
+    argus_mpc::QuadrotorMpc mpc;
+    const int N = mpc.horizonLength();
+    if (trailer_cfg.N != N) {
+        throw std::runtime_error(
+            "config/quadrotor.yaml: trailer.N (" + std::to_string(trailer_cfg.N) +
+            ") must equal mpc.N (" + std::to_string(N) + ")");
+    }
+    if (std::abs(control_dt - kTs) > 1e-9) {
+        throw std::runtime_error("config/quadrotor.yaml: trailer.Ts must equal mpc.Ts");
+    }
+
     const int n_control_steps = static_cast<int>(std::round(kTEnd / control_dt));
     const std::string traj_path = "logs/online_mapping_trajectory.csv";
     std::ofstream traj(traj_path);
-    traj << "t,leader_x,leader_y,follower_x,follower_y\n";
+    traj << "t,leader_x,leader_y,follower_x,follower_y,mpc_x,mpc_y,mpc_psi\n";
 
     double min_follower_dist = std::numeric_limits<double>::infinity();
     double min_leader_dist   = std::numeric_limits<double>::infinity();
+    double min_mpc_dist      = std::numeric_limits<double>::infinity();
 
-    // Drone pose for the mapping sensor: held at the follower's previous
-    // control-step position and linearly interpolated across the
-    // steps_per_control sensor sub-ticks up to its new position -- the
-    // sensor clock is faster than the control clock, so it samples the
-    // platform's motion between control updates rather than re-observing
-    // a static point steps_per_control times over. No previous position
-    // exists yet on the first control step, so it holds at that step's own
-    // position instead of interpolating.
-    double prev_x = 0.0;
-    double prev_y = 0.0;
+    // First horizon call fixes the drone's initial position (and advances
+    // the follower's heading state by one step, same as every subsequent
+    // call) -- not recomputed again for step 0 below, see
+    // examples/trailer_mpc_demo.cpp's identical pattern.
+    const auto horizon0 = follower.computeGoalPoints(target.x, target.y, N, 0.0, control_dt);
+    PlantState x = {horizon0.PDx[0], horizon0.PDy[0], kHoverAltitude,
+                     0.0,            0.0,             0.0,
+                     0.0,            0.0,             0.0,
+                     0.0,            0.0,             0.0};
+    PlantDynamics plant(x, kTHover, ARGUS_MASS, ARGUS_PLANT_WN_RP, ARGUS_PLANT_ZETA_RP,
+                         ARGUS_PLANT_WN_YAW, ARGUS_PLANT_ZETA_YAW);
+    PlantInput u = {kTHover, 0.0, 0.0, 0.0};
 
     const int snapshot_decimation =
         static_cast<int>(std::round(sensor_cfg.update_rate_hz / kSnapshotRateHz));
@@ -297,25 +336,45 @@ int main()
         const double t = step * control_dt;
         const double leader_x = target.x(t);
         const double leader_y = target.y(t);
-        const auto horizon = follower.computeGoalPoints(target.x, target.y, trailer_cfg.N, t, control_dt);
-        const double cur_x = horizon.PDx[0];
-        const double cur_y = horizon.PDy[0];
 
-        if (step == 0) {
-            prev_x = cur_x;
-            prev_y = cur_y;
+        const auto horizon = (step == 0)
+            ? horizon0
+            : follower.computeGoalPoints(target.x, target.y, N, t, control_dt);
+        const double ref_x = horizon.PDx[0];
+        const double ref_y = horizon.PDy[0];
+
+        std::vector<argus_mpc::Reference> mpc_horizon(N);
+        for (int j = 0; j < N; ++j) {
+            mpc_horizon[j] = {horizon.PDx[j], horizon.PDy[j], kHoverAltitude};
         }
+        const argus_mpc::TargetState tgt{
+            leader_x, leader_y, kTargetZ,
+            target.x.derivative(t), target.y.derivative(t), 0.0,
+        };
+        const argus_mpc::State x0_mpc{
+            x[0], x[1], x[2], x[3],  x[4],  x[5],
+            x[6], x[7], x[8], x[9], x[10], x[11],
+        };
+        const argus_mpc::Command cmd = mpc.step(x0_mpc, mpc_horizon, tgt);
+        u = {cmd.thrust * kTHover, cmd.roll_rate, cmd.pitch_rate, cmd.yaw_rate};
 
+        // Plant (and therefore the mapping sensor riding it) integrates at
+        // the faster sensor rate, holding this control step's command
+        // constant across all steps_per_control sub-ticks -- MPC solves at
+        // control_dt, the inner loop/plant responds continuously, same
+        // zero-order-hold architecture a real flight controller uses.
         for (int sub = 0; sub < steps_per_control; ++sub) {
-            const double frac = static_cast<double>(sub) / steps_per_control;
-            const double pose_x = prev_x + frac * (cur_x - prev_x);
-            const double pose_y = prev_y + frac * (cur_y - prev_y);
-            const Eigen::Vector3d pose(pose_x, pose_y, kSensorZ);
+            plant.update(u, sensor_dt);
+            x = plant.state();
+
+            const Eigen::Vector3d pose(x[0], x[1], kSensorZ);
             sensor_poses.push_back(pose);
 
             integrateLidarScan(ground_truth, own_map, pose, sensor_cfg.num_rays,
                                 sensor_cfg.max_range_m);
             own_map.computeEsdf(/*treat_unknown_as_occupied=*/true);
+
+            min_mpc_dist = std::min(min_mpc_dist, distanceAtPoint(ground_truth, x[0], x[1]));
 
             if (sensor_tick % snapshot_decimation == 0) {
                 snapshots.push_back(captureSnapshot(own_map, sensor_tick * sensor_dt));
@@ -323,13 +382,11 @@ int main()
             ++sensor_tick;
         }
 
-        traj << t << ',' << leader_x << ',' << leader_y << ',' << cur_x << ',' << cur_y << '\n';
+        traj << t << ',' << leader_x << ',' << leader_y << ',' << ref_x << ',' << ref_y << ','
+             << x[0] << ',' << x[1] << ',' << x[8] << '\n';  // x[8] = psi (yaw)
 
         min_leader_dist   = std::min(min_leader_dist, distanceAtPoint(ground_truth, leader_x, leader_y));
-        min_follower_dist = std::min(min_follower_dist, distanceAtPoint(ground_truth, cur_x, cur_y));
-
-        prev_x = cur_x;
-        prev_y = cur_y;
+        min_follower_dist = std::min(min_follower_dist, distanceAtPoint(ground_truth, ref_x, ref_y));
     }
 
     const std::string snapshot_path = "logs/online_mapping_esdf_snapshots.bin";
@@ -359,10 +416,12 @@ int main()
               << "  mismatched:         " << verification.mismatched_count
               << (verification.allMatch() ? "" : "  <-- MISMATCH") << "\n\n"
               << "Closest approach to the obstacle (ground truth):\n"
-              << "  leader (target): " << min_leader_dist << " m"
+              << "  leader (target):     " << min_leader_dist << " m"
               << (min_leader_dist <= kVoxelSize ? "  <-- COLLISION" : "") << "\n"
-              << "  follower (ref):  " << min_follower_dist << " m"
-              << (min_follower_dist <= kVoxelSize ? "  <-- COLLISION" : "")
+              << "  follower (ref):      " << min_follower_dist << " m"
+              << (min_follower_dist <= kVoxelSize ? "  <-- COLLISION" : "") << "\n"
+              << "  drone (MPC actual):  " << min_mpc_dist << " m"
+              << (min_mpc_dist <= kVoxelSize ? "  <-- COLLISION" : "")
               << "\n\nAnimate with: python3 argus_follower/scripts/plot_online_mapping.py\n";
     return 0;
 }

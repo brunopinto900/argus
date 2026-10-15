@@ -1,8 +1,10 @@
 """
 Animates the online/incremental mapping demo: own_map's distance snapshot
 sequence (red->blue hue sweep by distance, same convention as
-examples/esdf_2d_demo.cpp), with the leader/target and follower reference
-trajectories overlaid.
+examples/esdf_2d_demo.cpp), with the leader/target, the follower's
+open-loop reference, and the MPC-controlled drone's actual closed-loop
+path all overlaid -- the mapping sensor rides the MPC path, not the
+reference directly (see online_mapping_demo.cpp).
 
 Run from the repo root after executing the C++ demo:
     ./build/online_mapping_demo
@@ -44,6 +46,11 @@ def _parse_args():
                     help="How much trailing path history to draw behind each marker")
     p.add_argument("--max-distance", type=float, default=2.0,
                     help="Distance (m) at which the ESDF colormap reaches pure blue")
+    p.add_argument("--fov-half-angle-deg", type=float, default=40.0,
+                    help="Camera FOV cone half-angle (deg) -- must match "
+                         "config/quadrotor.yaml's camera.fov_half_angle_deg")
+    p.add_argument("--frustum-length", type=float, default=3.0,
+                    help="2-D camera frustum wedge length (m)")
     return p.parse_args()
 
 
@@ -56,6 +63,7 @@ if _args.save_png or _args.save_gif:
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 from matplotlib.colors import hsv_to_rgb
+from matplotlib.patches import Wedge
 
 
 def load_snapshot_log(path):
@@ -132,8 +140,21 @@ ax.set_ylim(extent[2] - margin, extent[3] + margin)
 (leader_trail,) = ax.plot([], [], "-", color="red", linewidth=2, label="leader (target)")
 (follower_trail,) = ax.plot([], [], "-", color="deepskyblue", linewidth=2,
                              label="follower (reference)")
+(mpc_trail,) = ax.plot([], [], "--", color="lime", linewidth=2, label="MPC path (actual)")
 (leader_dot,) = ax.plot([], [], "o", color="red", markersize=8)
 (follower_dot,) = ax.plot([], [], "o", color="deepskyblue", markersize=8)
+(mpc_dot,) = ax.plot([], [], "o", color="lime", markersize=8)
+
+# Top-down camera yaw frustum -- forward-facing (body +x), same
+# fov_half_angle_deg as config/quadrotor.yaml's camera cost, drawn from
+# the actual MPC/drone position and yaw (psi). Purely a visual check of
+# where the camera is pointing -- the FOV cost has no obstacle awareness
+# yet (see design_decisions.md), so this frustum sweeping through the
+# obstacle is expected, not validated against anything here.
+frustum = Wedge((0, 0), _args.frustum_length, 0, 0, color="orange", alpha=0.3,
+                 label="camera FOV (yaw only)")
+ax.add_patch(frustum)
+
 ax.legend(loc="upper right")
 
 
@@ -144,11 +165,23 @@ def update(frame):
     i0 = max(0, ci - trail_steps)
     leader_trail.set_data(traj["leader_x"].iloc[i0:ci + 1], traj["leader_y"].iloc[i0:ci + 1])
     follower_trail.set_data(traj["follower_x"].iloc[i0:ci + 1], traj["follower_y"].iloc[i0:ci + 1])
+    mpc_trail.set_data(traj["mpc_x"].iloc[i0:ci + 1], traj["mpc_y"].iloc[i0:ci + 1])
     leader_dot.set_data([traj["leader_x"].iloc[ci]], [traj["leader_y"].iloc[ci]])
     follower_dot.set_data([traj["follower_x"].iloc[ci]], [traj["follower_y"].iloc[ci]])
-    sensor_circle.center = (traj["follower_x"].iloc[ci], traj["follower_y"].iloc[ci])
+    mpc_dot.set_data([traj["mpc_x"].iloc[ci]], [traj["mpc_y"].iloc[ci]])
+    # Sensor rides the actual closed-loop drone position, not the
+    # open-loop follower reference -- see online_mapping_demo.cpp.
+    mpc_x, mpc_y = traj["mpc_x"].iloc[ci], traj["mpc_y"].iloc[ci]
+    sensor_circle.center = (mpc_x, mpc_y)
+
+    yaw_deg = np.degrees(traj["mpc_psi"].iloc[ci])
+    frustum.set_center((mpc_x, mpc_y))
+    frustum.set_theta1(yaw_deg - _args.fov_half_angle_deg)
+    frustum.set_theta2(yaw_deg + _args.fov_half_angle_deg)
+
     ax.set_title(f"Online mapping: own_map ESDF  (t = {times[frame]:.1f}s)")
-    return im, sensor_circle, leader_trail, follower_trail, leader_dot, follower_dot
+    return (im, sensor_circle, frustum, leader_trail, follower_trail, mpc_trail,
+            leader_dot, follower_dot, mpc_dot)
 
 
 if _args.save_png:
