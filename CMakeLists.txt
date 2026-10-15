@@ -114,6 +114,7 @@ target_link_libraries(argus_esdf PUBLIC Eigen3::Eigen)
 # mapping, as opposed to the earlier demos' instant full-map access).
 add_library(argus_perception STATIC
     argus_perception/src/SyntheticLidar.cpp
+    argus_perception/src/ObservableSlice.cpp
 )
 
 target_include_directories(argus_perception PUBLIC
@@ -229,6 +230,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 
     add_executable(perception_tests
         argus_perception/tests/test_synthetic_lidar.cpp
+        argus_perception/tests/test_observable_slice.cpp
     )
     target_link_libraries(perception_tests PRIVATE
         argus_perception

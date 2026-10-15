@@ -314,6 +314,44 @@ TEST(VoxelGrid, ConservativeModeDoesNotChangeStateAt)
     EXPECT_EQ(grid.stateAt({2, 2, 2}), VoxelState::kUnknown);  // still reports kUnknown, not kOccupied
 }
 
+// Same 1-D-line grid as the raycast tests above. traceRay() must return
+// every traversed voxel (0..6 free, then 7 occupied) -- not just the final
+// hit like raycast() does.
+TEST(VoxelGrid, TraceRayReturnsFullPathIncludingHit)
+{
+    VoxelGrid grid(Eigen::Vector3d::Zero(), Eigen::Vector3i(10, 1, 1), 1.0);
+    const Eigen::Vector3d sensor(0.5, 0.5, 0.5);
+    grid.insertPointCloud(sensor, {Eigen::Vector3d(7.5, 0.5, 0.5)});
+
+    const auto path = grid.traceRay(sensor, Eigen::Vector3d(1.0, 0.0, 0.0), 20.0);
+    ASSERT_EQ(path.size(), 8u);  // voxels 0..7
+    for (int x = 0; x <= 7; ++x) {
+        EXPECT_EQ(path[static_cast<std::size_t>(x)], Eigen::Vector3i(x, 0, 0)) << "x=" << x;
+    }
+}
+
+TEST(VoxelGrid, TraceRayStopsAtMaxRangeWhenNothingHit)
+{
+    VoxelGrid grid(Eigen::Vector3d::Zero(), Eigen::Vector3i(10, 1, 1), 1.0);
+    // Nothing inserted -- every traversed voxel is kUnknown, no hit ever.
+    // Boundary-inclusive like markRay()'s own `t <= max_range`: voxel 4 is
+    // entered at exactly t=4.0, still included.
+    const auto path = grid.traceRay(Eigen::Vector3d(0.5, 0.5, 0.5), Eigen::Vector3d(1.0, 0.0, 0.0),
+                                     /*max_range=*/4.0);
+    ASSERT_EQ(path.size(), 5u);  // voxels 0,1,2,3,4
+    for (int x = 0; x <= 4; ++x) {
+        EXPECT_EQ(path[static_cast<std::size_t>(x)], Eigen::Vector3i(x, 0, 0)) << "x=" << x;
+    }
+}
+
+TEST(VoxelGrid, TraceRayEmptyForDegenerateInputs)
+{
+    VoxelGrid grid(Eigen::Vector3d::Zero(), Eigen::Vector3i(10, 1, 1), 1.0);
+    EXPECT_TRUE(grid.traceRay(Eigen::Vector3d(0.5, 0.5, 0.5), Eigen::Vector3d::Zero(), 10.0).empty());
+    EXPECT_TRUE(
+        grid.traceRay(Eigen::Vector3d(0.5, 0.5, 0.5), Eigen::Vector3d(1.0, 0.0, 0.0), 0.0).empty());
+}
+
 TEST(VoxelGrid, RaycastDoesNotMutateOccupancyOrDistance)
 {
     VoxelGrid grid(Eigen::Vector3d::Zero(), Eigen::Vector3i(10, 1, 1), 1.0);

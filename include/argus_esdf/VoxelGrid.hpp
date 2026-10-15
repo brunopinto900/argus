@@ -77,6 +77,19 @@ public:
                                             const Eigen::Vector3d& direction,
                                             double max_range) const;
 
+    // Like raycast(), but returns every in-bounds voxel index the ray
+    // actually traverses (not just the final hit) -- stopping at and
+    // including the first occupied voxel if one is hit before max_range,
+    // otherwise everything up to max_range. For verification use (see
+    // argus_perception's observable-slice check): what did a sensor sweep
+    // actually have a chance to resolve, not just what it hit. Not used
+    // by raycast()/insertPointCloud() themselves — those stay allocation-
+    // free for the 60Hz sensor path; this is the slower, verification-only
+    // sibling.
+    std::vector<Eigen::Vector3i> traceRay(const Eigen::Vector3d& origin,
+                                           const Eigen::Vector3d& direction,
+                                           double max_range) const;
+
     // Recomputes the exact Euclidean distance field from the current
     // occupancy grid: unsigned distance from every voxel center to the
     // nearest seed voxel center, where "seed" is kOccupied alone by

@@ -59,3 +59,14 @@ trailer:
   heading_gain:        1.0   # lambda: how fast the follower's heading tracks the target's velocity direction
   N:                   20    # prediction horizon steps
   Ts:                   0.05 # sample time [s]
+
+# argus_perception::simulateLidarScan — synthetic 360° mapping sensor
+# ("a bunch of cameras + lidars"), separate from camera: above, which
+# stays dedicated to target-pointing only and does not feed the map — see
+# design_decisions.md's "Two-camera model". Not yet read by any demo
+# (argus_perception has no yaml-cpp dependency itself, same as
+# argus_follower) — wire this up when the online-mapping sim loop lands.
+mapping_sensor:
+  max_range_m:    8.0    # realistic dense-depth range for the OAK-D-Lite referenced in ros2/argus_px4_bridge
+  num_rays:       1006   # ceil(2*pi * max_range_m / voxel_size), voxel_size=0.05m — see design_decisions.md
+  update_rate_hz: 60.0   # matches real camera fps; decoupled from mpc.Ts (the 20Hz control loop)
