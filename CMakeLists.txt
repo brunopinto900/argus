@@ -107,6 +107,21 @@ target_include_directories(argus_esdf PUBLIC
 
 target_link_libraries(argus_esdf PUBLIC Eigen3::Eigen)
 
+# ── argus_perception library — synthetic 360° sensor for online mapping ────
+# Pure C++, no ROS/Gazebo dependency, same reasoning as argus_esdf above.
+# Depends on argus_esdf (sweeps VoxelGrid::raycast() against a ground-truth
+# grid) -- see design_decisions.md for why this exists (online/incremental
+# mapping, as opposed to the earlier demos' instant full-map access).
+add_library(argus_perception STATIC
+    argus_perception/src/SyntheticLidar.cpp
+)
+
+target_include_directories(argus_perception PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/argus_perception/include
+)
+
+target_link_libraries(argus_perception PUBLIC argus_esdf)
+
 # ── argus_follower library — trailer-like leader-follower reference gen ────
 # Pure C++, no ROS/Gazebo dependency, same reasoning as quadrotor_mpc and
 # argus_esdf above: the leader-follower algorithm itself is validated here
@@ -212,8 +227,17 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
         GTest::gtest_main
     )
 
+    add_executable(perception_tests
+        argus_perception/tests/test_synthetic_lidar.cpp
+    )
+    target_link_libraries(perception_tests PRIVATE
+        argus_perception
+        GTest::gtest_main
+    )
+
     include(GoogleTest)
     gtest_discover_tests(quadrotor_mpc_tests)
     gtest_discover_tests(voxel_grid_tests)
     gtest_discover_tests(follower_tests)
+    gtest_discover_tests(perception_tests)
 endif()

@@ -216,3 +216,116 @@ TEST(VoxelGrid, QueryOutOfBoundsIsInvalid)
     EXPECT_FALSE(grid.query(Eigen::Vector3d(-5, -5, -5)).valid);
     EXPECT_FALSE(grid.query(Eigen::Vector3d(100, 100, 100)).valid);
 }
+
+// Same 1-D-line grid as InsertPointCloudMarksRayFreeAndHitOccupied above —
+// simplest case to hand-verify the DDA raycast against.
+TEST(VoxelGrid, RaycastHitsOccupiedVoxelAndReturnsItsCenter)
+{
+    VoxelGrid grid(Eigen::Vector3d::Zero(), Eigen::Vector3i(10, 1, 1), 1.0);
+    const Eigen::Vector3d sensor(0.5, 0.5, 0.5);
+    grid.insertPointCloud(sensor, {Eigen::Vector3d(7.5, 0.5, 0.5)});  // occupies voxel (7,0,0)
+
+    const auto hit = grid.raycast(sensor, Eigen::Vector3d(1.0, 0.0, 0.0), /*max_range=*/20.0);
+    ASSERT_TRUE(hit.has_value());
+    EXPECT_EQ(*hit, grid.voxelCenter({7, 0, 0}));
+}
+
+TEST(VoxelGrid, RaycastMissesWhenNothingOccupiedAlongTheRay)
+{
+    VoxelGrid grid(Eigen::Vector3d::Zero(), Eigen::Vector3i(10, 1, 1), 1.0);
+    // Nothing inserted -- grid is all-unknown, no occupied voxels anywhere.
+    const auto hit = grid.raycast(Eigen::Vector3d(0.5, 0.5, 0.5), Eigen::Vector3d(1.0, 0.0, 0.0),
+                                   /*max_range=*/20.0);
+    EXPECT_FALSE(hit.has_value());
+}
+
+TEST(VoxelGrid, RaycastRespectsMaxRange)
+{
+    VoxelGrid grid(Eigen::Vector3d::Zero(), Eigen::Vector3i(10, 1, 1), 1.0);
+    const Eigen::Vector3d sensor(0.5, 0.5, 0.5);
+    grid.insertPointCloud(sensor, {Eigen::Vector3d(7.5, 0.5, 0.5)});  // 7m away
+
+    EXPECT_FALSE(grid.raycast(sensor, Eigen::Vector3d(1.0, 0.0, 0.0), /*max_range=*/5.0)
+                     .has_value());
+    EXPECT_TRUE(grid.raycast(sensor, Eigen::Vector3d(1.0, 0.0, 0.0), /*max_range=*/10.0)
+                    .has_value());
+}
+
+// A ray that would hit two obstacles along the same line must report the
+// nearer one -- occlusion, not just "any occupied voxel along the ray".
+TEST(VoxelGrid, RaycastReturnsNearestObstacleNotFarthest)
+{
+    VoxelGrid grid(Eigen::Vector3d::Zero(), Eigen::Vector3i(10, 1, 1), 1.0);
+    const Eigen::Vector3d sensor(0.5, 0.5, 0.5);
+    grid.insertPointCloud(sensor, {Eigen::Vector3d(3.5, 0.5, 0.5), Eigen::Vector3d(7.5, 0.5, 0.5)});
+
+    const auto hit = grid.raycast(sensor, Eigen::Vector3d(1.0, 0.0, 0.0), /*max_range=*/20.0);
+    ASSERT_TRUE(hit.has_value());
+    EXPECT_EQ(*hit, grid.voxelCenter({3, 0, 0}));
+}
+
+// Default computeEsdf() (treat_unknown_as_occupied=false, the existing
+// behaviour) leaves an all-unknown grid reporting large distances
+// everywhere -- no seed voxels at all.
+TEST(VoxelGrid, DefaultComputeEsdfTreatsUnknownAsFree)
+{
+    VoxelGrid grid(Eigen::Vector3d::Zero(), Eigen::Vector3i(5, 5, 5), 1.0);
+    grid.computeEsdf();
+    EXPECT_GT(grid.distanceAt({2, 2, 2}), 100.0);  // no seeds -> effectively "infinite"
+}
+
+// Conservative mode seeds from kUnknown too -- an all-unknown grid (no
+// insertPointCloud() calls at all) must report distance 0 everywhere,
+// since nothing has actually been observed.
+TEST(VoxelGrid, ConservativeComputeEsdfTreatsUnknownAsObstacle)
+{
+    VoxelGrid grid(Eigen::Vector3d::Zero(), Eigen::Vector3i(5, 5, 5), 1.0);
+    grid.computeEsdf(/*treat_unknown_as_occupied=*/true);
+    for (int x = 0; x < 5; ++x)
+        for (int y = 0; y < 5; ++y)
+            for (int z = 0; z < 5; ++z)
+                EXPECT_DOUBLE_EQ(grid.distanceAt({x, y, z}), 0.0);
+}
+
+// Voxels actually observed free (via insertPointCloud()'s raycast) must
+// still read a real positive distance in conservative mode -- only the
+// genuinely unobserved remainder collapses to 0, not free space too.
+TEST(VoxelGrid, ConservativeComputeEsdfStillTreatsObservedFreeAsFree)
+{
+    VoxelGrid grid(Eigen::Vector3d::Zero(), Eigen::Vector3i(10, 1, 1), 1.0);
+    const Eigen::Vector3d sensor(0.5, 0.5, 0.5);
+    grid.insertPointCloud(sensor, {Eigen::Vector3d(7.5, 0.5, 0.5)});  // frees voxels 0..6, occupies 7
+
+    grid.computeEsdf(/*treat_unknown_as_occupied=*/true);
+    EXPECT_EQ(grid.stateAt({3, 0, 0}), VoxelState::kFree);
+    EXPECT_NEAR(grid.distanceAt({3, 0, 0}), 4.0, 1e-9);  // 4 voxels from the occupied one at x=7
+
+    // Never reached by the ray (voxels 8-9) stay kUnknown and read 0.
+    EXPECT_EQ(grid.stateAt({9, 0, 0}), VoxelState::kUnknown);
+    EXPECT_DOUBLE_EQ(grid.distanceAt({9, 0, 0}), 0.0);
+}
+
+// stateAt() must stay unaffected by which computeEsdf() mode was used --
+// it reports raw occupancy, not anything derived from the distance field.
+TEST(VoxelGrid, ConservativeModeDoesNotChangeStateAt)
+{
+    VoxelGrid grid(Eigen::Vector3d::Zero(), Eigen::Vector3i(5, 5, 5), 1.0);
+    grid.computeEsdf(/*treat_unknown_as_occupied=*/true);
+    EXPECT_EQ(grid.stateAt({2, 2, 2}), VoxelState::kUnknown);  // still reports kUnknown, not kOccupied
+}
+
+TEST(VoxelGrid, RaycastDoesNotMutateOccupancyOrDistance)
+{
+    VoxelGrid grid(Eigen::Vector3d::Zero(), Eigen::Vector3i(10, 1, 1), 1.0);
+    const Eigen::Vector3d sensor(0.5, 0.5, 0.5);
+    grid.insertPointCloud(sensor, {Eigen::Vector3d(7.5, 0.5, 0.5)});
+    grid.computeEsdf();
+
+    for (int x = 0; x < 10; ++x) {
+        const VoxelState before = grid.stateAt({x, 0, 0});
+        const double dist_before = grid.distanceAt({x, 0, 0});
+        grid.raycast(sensor, Eigen::Vector3d(1.0, 0.0, 0.0), 20.0);
+        EXPECT_EQ(grid.stateAt({x, 0, 0}), before) << "x=" << x;
+        EXPECT_DOUBLE_EQ(grid.distanceAt({x, 0, 0}), dist_before) << "x=" << x;
+    }
+}

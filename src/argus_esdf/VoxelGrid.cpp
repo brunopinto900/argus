@@ -172,6 +172,50 @@ void VoxelGrid::markRay(const Eigen::Vector3d& sensor_origin, const Eigen::Vecto
     }
 }
 
+std::optional<Eigen::Vector3d> VoxelGrid::raycast(const Eigen::Vector3d& origin,
+                                                   const Eigen::Vector3d& direction,
+                                                   double max_range) const
+{
+    const double len = direction.norm();
+    if (len < 1e-9 || max_range <= 0.0) return std::nullopt;
+    const Eigen::Vector3d dir = direction / len;
+
+    Eigen::Vector3i voxel = worldToIndex(origin);
+
+    // Same DDA setup as markRay() (origin in place of sensor_origin, no
+    // known endpoint) -- see its comments for the stepping scheme itself.
+    Eigen::Vector3i step(0, 0, 0);
+    Eigen::Vector3d t_max(kInf, kInf, kInf);
+    Eigen::Vector3d t_delta(kInf, kInf, kInf);
+    for (int axis = 0; axis < 3; ++axis) {
+        if (dir[axis] > 0.0) {
+            step[axis] = 1;
+            const double next_boundary = origin_[axis] + (voxel[axis] + 1) * voxel_size_;
+            t_max[axis] = (next_boundary - origin[axis]) / dir[axis];
+            t_delta[axis] = voxel_size_ / dir[axis];
+        } else if (dir[axis] < 0.0) {
+            step[axis] = -1;
+            const double next_boundary = origin_[axis] + voxel[axis] * voxel_size_;
+            t_max[axis] = (next_boundary - origin[axis]) / dir[axis];
+            t_delta[axis] = voxel_size_ / -dir[axis];
+        }
+    }
+
+    double t = 0.0;
+    while (t <= max_range) {
+        if (inBounds(voxel) && occupancy_[linearIndex(voxel)] == VoxelState::kOccupied) {
+            return voxelCenter(voxel);
+        }
+        int axis = 0;
+        if (t_max[1] < t_max[axis]) axis = 1;
+        if (t_max[2] < t_max[axis]) axis = 2;
+        t = t_max[axis];
+        voxel[axis] += step[axis];
+        t_max[axis] += t_delta[axis];
+    }
+    return std::nullopt;
+}
+
 void VoxelGrid::insertPointCloud(const Eigen::Vector3d& sensor_origin,
                                   const std::vector<Eigen::Vector3d>& points)
 {
@@ -189,13 +233,15 @@ void VoxelGrid::insertPointCloud(const Eigen::Vector3d& sensor_origin,
     ++insert_count_;
 }
 
-void VoxelGrid::computeEsdf()
+void VoxelGrid::computeEsdf(bool treat_unknown_as_occupied)
 {
     const auto start = std::chrono::steady_clock::now();
 
     std::vector<double> sq(occupancy_.size());
     for (std::size_t i = 0; i < occupancy_.size(); ++i) {
-        sq[i] = (occupancy_[i] == VoxelState::kOccupied) ? 0.0 : kNoObstacleSq;
+        const bool is_seed = occupancy_[i] == VoxelState::kOccupied ||
+                              (treat_unknown_as_occupied && occupancy_[i] == VoxelState::kUnknown);
+        sq[i] = is_seed ? 0.0 : kNoObstacleSq;
     }
 
     // Separable exact EDT: transform every scanline along x, then every

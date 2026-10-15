@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 #include <Eigen/Dense>
@@ -64,11 +65,35 @@ public:
     void insertPointCloud(const Eigen::Vector3d& sensor_origin,
                            const std::vector<Eigen::Vector3d>& points);
 
+    // Read-only counterpart to insertPointCloud()'s raycasting: walks from
+    // origin along direction (need not be unit length) up to max_range
+    // using the same Amanatides-Woo DDA markRay() uses for writing,
+    // returning the first occupied voxel's center, or nullopt if nothing
+    // occupied is found within max_range. Tolerates origin starting
+    // outside the grid (same as markRay() — a ray that enters later still
+    // gets a chance to hit something). Queries current occupancy only;
+    // does not touch it.
+    std::optional<Eigen::Vector3d> raycast(const Eigen::Vector3d& origin,
+                                            const Eigen::Vector3d& direction,
+                                            double max_range) const;
+
     // Recomputes the exact Euclidean distance field from the current
     // occupancy grid: unsigned distance from every voxel center to the
-    // nearest occupied voxel center. Unknown and free voxels are treated
-    // identically as "not an obstacle" for this pass — occupancy state
-    // still matters for insertPointCloud()'s raycasting, just not here.
+    // nearest seed voxel center, where "seed" is kOccupied alone by
+    // default (kFree and kUnknown both "not an obstacle" for this pass —
+    // occupancy state still matters for insertPointCloud()'s raycasting,
+    // just not here), or kOccupied-or-kUnknown when
+    // treat_unknown_as_occupied is true.
+    //
+    // The latter is the conservative mode an online-mapping consumer
+    // should use: unexplored space reads as distance 0 (unsafe), same as
+    // a confirmed obstacle, rather than the default's "unknown is free
+    // until proven otherwise" — a planner reading unknown space as having
+    // infinite clearance is a known real-world hazard. This flag changes
+    // only what distanceAt()/query() report; stateAt() is unaffected and
+    // still distinguishes kUnknown from kOccupied — callers that need to
+    // tell "confirmed obstacle" apart from "unexplored" (e.g. for
+    // visualization) must still use stateAt(), not infer it from distance.
     //
     // Implementation: the exact 1-D distance transform (Felzenszwalb &
     // Huttenlocher, "Distance Transforms of Sampled Functions") applied
@@ -76,7 +101,7 @@ public:
     // standard separable extension to N dimensions, O(total voxels) per
     // axis pass, exact (not an approximation via chamfer/manhattan
     // distance or repeated dilation).
-    void computeEsdf();
+    void computeEsdf(bool treat_unknown_as_occupied = false);
 
     // Trilinear-interpolated distance + gradient at an arbitrary
     // world-frame point (not required to land on a voxel center). Gradient

@@ -3,6 +3,7 @@ c_generated_code/
 quadrotor_ocp.json
 quadrotor_sim.json
 todo
+design_decisions.md
 
 # CMake build output
 build/
