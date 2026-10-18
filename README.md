@@ -253,6 +253,69 @@ which single frame `--save-png` renders.
 
 ---
 
+## Other demos
+
+Beyond the circle-tracking demo above (`./run.sh` / `./build/argus_mpc`), two
+more executables build on the same `QuadrotorMpc` solver:
+
+| Demo | What it adds | Log | Scenario |
+|---|---|---|---|
+| `./build/argus_mpc` | baseline circle-tracking | `logs/trajectory.csv` | `config/target.yaml`'s circle/static target |
+| `./build/trailer_mpc_demo [line\|circle\|zigzag] [t_end_s]` | `argus_follower::TrailerFollower` (hitch-lag leader-follower reference) drives the position reference instead of hover/orbit | `logs/trailer_mpc_trajectory.csv` | pick a leader motion pattern as the first CLI arg |
+| `./build/online_mapping_demo` | incremental ESDF mapping (`argus_esdf`/`argus_perception`) + the collision-avoidance hinge cost, both live | `logs/online_mapping_trajectory.csv` + `logs/online_mapping_esdf_snapshots.bin` + `logs/staleness_log.csv` | fixed straight-line-with-bypass scenario around one square obstacle |
+
+All three write the same canonical trajectory-CSV columns (full 12-state,
+inputs, position reference, FOV target, solve status) — `online_mapping_demo`
+adds one trailing `dist_obstacle` column — specifically so one dashboard
+script works on any of them (see below). See `design_decisions.md` (local,
+gitignored) for the reasoning behind the ESDF/MPC integration.
+
+```bash
+./build/trailer_mpc_demo zigzag 10.0
+./build/online_mapping_demo
+```
+
+### Telemetry dashboard
+
+One figure, all state over time — works on any of the three logs above,
+auto-adding an obstacle-distance panel when the log has one:
+
+```bash
+python3 scripts/plot_telemetry_dashboard.py --csv-path logs/trailer_mpc_trajectory.csv
+python3 scripts/plot_telemetry_dashboard.py --csv-path logs/online_mapping_trajectory.csv --real-target-m 0.27
+python3 scripts/plot_telemetry_dashboard.py --csv-path logs/trajectory.csv   # argus_mpc, the default --csv-path
+```
+
+Panels: XY path (with the obstacle outline, when present), position,
+velocity, attitude, body rates, XY tracking error, distance to the FOV
+target, and (only when the log has a `dist_obstacle` column) distance to
+the obstacle with the `d_safe` config knob, the actual physical safety
+target (`--real-target-m`), and the run's closest approach marked. Add
+`--save-png PATH` for a headless export instead of an interactive window;
+`--keepaway-m` draws a constant reference line on the distance-to-target
+panel (e.g. `trailer.distance_to_target`).
+
+### Animations
+
+3-D trajectory view (`argus_mpc`/`trailer_mpc_demo`, already covered by
+`--save-gif`/`--save-png` above):
+
+```bash
+python3 scripts/animate_xy.py --csv-path logs/trailer_mpc_trajectory.csv
+```
+
+2-D ESDF map animation (`online_mapping_demo` only) — own_map's distance
+field sweeping over time, the ground-truth obstacle outline, sensor-range
+circle, camera FOV wedge, and all three paths (leader/follower/MPC actual)
+overlaid:
+
+```bash
+python3 argus_follower/scripts/plot_online_mapping.py
+python3 argus_follower/scripts/plot_online_mapping.py --save-gif docs/online_mapping.gif --fps 10
+```
+
+---
+
 ## How to tune
 
 All tunable parameters live in **[`config/quadrotor.yaml`](config/quadrotor.yaml)**. Edit that file, then re-run Step 1 to regenerate the solver.

@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -345,13 +346,27 @@ int main()
     const int n_control_steps = static_cast<int>(std::round(kTEnd / control_dt));
     const std::string traj_path = "logs/online_mapping_trajectory.csv";
     std::ofstream traj(traj_path);
-    traj << "t,leader_x,leader_y,follower_x,follower_y,mpc_x,mpc_y,mpc_psi\n";
+    traj << std::fixed << std::setprecision(6);
+    // Same canonical layout as src/mpc_controller.cpp / trailer_mpc_demo.cpp
+    // (step,t,full 12-state,u,xt/yt/zt=drone position reference,
+    // fx/fy/fz=FOV target,solve_status) so scripts/plot_telemetry_dashboard.py
+    // works unchanged on any of the three logs -- plus dist_obstacle, which
+    // only this demo has (own_map's belief, not ground truth; see
+    // design_decisions.md's "Ground truth vs. the drone's own map").
+    // xt/yt/zt here = the follower's goal point; fx/fy/fz = the leader.
+    traj << "step,t,"
+            "x,y,z,vx,vy,vz,phi,theta,psi,p,q,r,"
+            "T,p_cmd,q_cmd,r_cmd,"
+            "xt,yt,zt,"
+            "fx,fy,fz,"
+            "solve_status,"
+            "dist_obstacle\n";
 
-    // Staleness measurement: NOT wired into the MPC's cost (own_map is still
-    // not read by QuadrotorMpc at all here) -- this purely measures, per
-    // control tick, how wrong a frozen tangent-plane approximation built at
-    // the step's starting position (p0) would have been by the time the
-    // drone actually reached its end-of-step position (p1). See
+    // Staleness measurement -- a separate concern from the hinge cost
+    // actually wired into step() above: this measures, per control tick,
+    // how wrong a frozen tangent-plane approximation built at the step's
+    // starting position (p0) would have been by the time the drone
+    // actually reached its end-of-step position (p1). See
     // design_decisions.md's "Staleness error -- formula and which sign is
     // dangerous".
     const std::string staleness_path = "logs/staleness_log.csv";
@@ -454,15 +469,25 @@ int main()
             ++sensor_tick;
         }
 
-        traj << t << ',' << leader_x << ',' << leader_y << ',' << ref_x << ',' << ref_y << ','
-             << x[0] << ',' << x[1] << ',' << x[8] << '\n';  // x[8] = psi (yaw)
-
         // p1: drone's actual position one control tick later, after own_map
         // has kept being updated underneath it (same map object, further
         // along). Comparing d_lin_p1 (built from the stale p0/d0/grad0) to
-        // a fresh query at p1 is the staleness error itself.
+        // a fresh query at p1 is the staleness error itself; q1.distance
+        // (own_map's own belief, not ground truth) also doubles as the
+        // dist_obstacle column below, for the dashboard's closest-approach
+        // panel.
         const Eigen::Vector2d p1(x[0], x[1]);
         const auto q1 = queryPlanar(own_map, p1.x(), p1.y());
+
+        traj << step << ',' << t;
+        for (double v : x) traj << ',' << v;
+        for (double v : u) traj << ',' << v;
+        traj << ',' << ref_x << ',' << ref_y << ',' << kHoverAltitude  // xt,yt,zt: follower goal point
+             << ',' << leader_x << ',' << leader_y << ',' << kTargetZ  // fx,fy,fz: the leader
+             << ',' << cmd.solve_status << ',';
+        if (q1.valid) traj << q1.distance; else traj << "nan";
+        traj << '\n';
+
         if (q0.valid && q1.valid) {
             const double step_dist = (p1 - p0).norm();
             const double d_lin_p1 = q0.distance + q0.grad_x * (p1.x() - p0.x()) +

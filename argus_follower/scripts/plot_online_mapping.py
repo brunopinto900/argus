@@ -105,6 +105,16 @@ times, distances, extent, ground_truth_state, sensor_max_range = load_snapshot_l
     _args.snapshot_log)
 n_frames = len(times)
 traj = pd.read_csv(_args.traj_csv)
+# Canonical schema (same as mpc_controller.cpp/trailer_mpc_demo.cpp, see
+# design_decisions.md): fx,fy=FOV target (the leader), xt,yt=drone position
+# reference (the follower's goal point), x,y,psi=drone actual. Aliased here
+# instead of renaming every reference below, to keep this script's own
+# leader/follower/mpc naming self-explanatory.
+traj = traj.rename(columns={
+    "fx": "leader_x", "fy": "leader_y",
+    "xt": "follower_x", "yt": "follower_y",
+    "x": "mpc_x", "y": "mpc_y", "psi": "mpc_psi",
+})
 control_dt = traj["t"].iloc[1] - traj["t"].iloc[0]
 trail_steps = max(1, int(_args.trail_seconds / control_dt))
 
