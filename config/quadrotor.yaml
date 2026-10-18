@@ -34,8 +34,8 @@ inner_loop:
 # r_fov = softplus(cos(alpha) - cos(gamma)) — zero inside the FOV cone, grows outside.
 # r_obs = max(0, d_safe - d_lin) — see obstacle_avoidance: below.
 cost:
-  W_stage:    [100.0, 100.0, 100.0,  10.0, 10.0, 10.0,  5.0, 5.0,  25.0, 50.0,  0.1, 0.1, 0.1, 0.1]
-  W_terminal: [200.0, 200.0, 200.0,  20.0, 20.0, 20.0,  10.0, 10.0,  50.0, 50.0]
+  W_stage:    [100.0, 100.0, 100.0,  10.0, 10.0, 10.0,  5.0, 5.0,  25.0, 100.0,  0.1, 0.1, 0.1, 0.1]
+  W_terminal: [200.0, 200.0, 200.0,  20.0, 20.0, 20.0,  10.0, 10.0,  50.0, 100.0]
 
 # Camera model: forward-facing (body +x axis), circular FOV cone
 camera:
@@ -81,10 +81,21 @@ mapping_sensor:
 # W_terminal above (the r_obs entry), same convention as r_fov's weight --
 # not duplicated here.
 #
-# PLACEHOLDER VALUE -- exists to get the mechanism wired and compiling,
-# not a derived number. Needs: collision distance + drone radius + voxel
-# size + a staleness margin covering one RTI step's worth of linearization
-# error (see whiteboard.md's "staleness" session). Do not trust it, or the
-# r_obs weight above, until that session is done.
+# Base value: d_safe_m = r_drone + delta_voxel + delta_stale =
+# 0.15 + 0.05 + 0.07 = 0.27 -- see design_decisions.md's "d_safe -- first
+# derived value" for how delta_stale was measured (logs/staleness_log.csv,
+# one bypass scenario) and delta_voxel's reasoning. r_drone=0.15 is a
+# placeholder (no actual drone physical size is defined anywhere in this
+# repo) -- swap it for the real value.
+#
+# Inflated by 2.7x (= 0.27 / observed closest-approach at weight=100 from
+# the r_obs weight sweep) to compensate for the squared-hinge cost's
+# known undershoot: a finite soft-cost weight asymptotically approaches
+# but never guarantees d_safe is actually respected (the penalty near
+# the threshold stays small, unlike e.g. an exponential barrier) -- see
+# design_decisions.md's "r_obs weight" sweep and its "cost vs constraint"
+# discussion. This compensation is an empirical fit at weight=100 for ONE
+# scenario, not a general correction -- needs a Monte Carlo sweep before
+# trusting this in deployment, same as delta_stale above.
 obstacle_avoidance:
-  d_safe_m: 0.3
+  d_safe_m: 0.729

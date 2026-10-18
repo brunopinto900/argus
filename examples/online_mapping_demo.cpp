@@ -15,10 +15,11 @@
 // PlantDynamics, same wiring as examples/trailer_mpc_demo.cpp), not the
 // follower's open-loop reference directly -- the follower's goal-point
 // horizon is only ever the MPC's position reference, same as that demo.
-// The MPC itself still has no obstacle awareness (own_map is built but
-// never fed into it) -- see design_decisions.md's "Explicitly out of
-// scope" note; this only moves the mapping sensor onto a real
-// closed-loop platform.
+// The MPC's collision-avoidance hinge cost is now live too: own_map is
+// queried once per control tick at the drone's current position and that
+// single (p0, d0, grad) linearization is reused for every horizon stage
+// -- see design_decisions.md's "ESDF collision cost" and "d_safe" notes
+// for why, and its caveats (d_safe is still an unvalidated placeholder).
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -407,14 +408,27 @@ int main()
             x[0], x[1], x[2], x[3],  x[4],  x[5],
             x[6], x[7], x[8], x[9], x[10], x[11],
         };
-        const argus_mpc::Command cmd = mpc.step(x0_mpc, mpc_horizon, tgt);
-        u = {cmd.thrust * kTHover, cmd.roll_rate, cmd.pitch_rate, cmd.yaw_rate};
 
         // p0: drone's position as of this solve, queried against own_map as
-        // it stood right now -- the (d0, grad0) a hypothetical hinge cost
-        // would have frozen for this entire step.
+        // it stands right now -- the one ESDF evaluation this whole solve
+        // gets (see design_decisions.md's "ESDF collision cost" section).
+        // Simplest-possible per-stage choice: reuse the same (p0, d0, grad)
+        // linearization for every horizon stage rather than querying at
+        // each stage's predicted position -- QuadrotorMpc doesn't expose
+        // the previous solve's predicted trajectory to build a better p0
+        // from. An invalid query (own_map not yet resolved there) falls
+        // back to the no-op default so an unresolved point never fabricates
+        // a spurious obstacle cost.
         const Eigen::Vector2d p0(x[0], x[1]);
         const auto q0 = queryPlanar(own_map, p0.x(), p0.y());
+        argus_mpc::ObstacleLinearization obs_stage;
+        if (q0.valid) {
+            obs_stage = {p0.x(), p0.y(), q0.distance, q0.grad_x, q0.grad_y};
+        }
+        const std::vector<argus_mpc::ObstacleLinearization> obstacle(N, obs_stage);
+
+        const argus_mpc::Command cmd = mpc.step(x0_mpc, mpc_horizon, tgt, obstacle);
+        u = {cmd.thrust * kTHover, cmd.roll_rate, cmd.pitch_rate, cmd.yaw_rate};
 
         // Plant (and therefore the mapping sensor riding it) integrates at
         // the faster sensor rate, holding this control step's command
