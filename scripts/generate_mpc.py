@@ -9,10 +9,20 @@ Output: c_generated_code/   (C solver + CMakeLists, ready to link from C++)
 
 State vector  (nx = 12):  [x, y, z, vx, vy, vz, phi, theta, psi, p, q, r]
 Input vector  (nu =  4):  [T, p_cmd, q_cmd, r_cmd]
-Runtime param (np =  3):  [p_target_x, p_target_y, p_target_z]  — injected before every solve
+Runtime param (np =  8):  [p_target_x, p_target_y, p_target_z,
+                           obs_p0_x, obs_p0_y, obs_d0, obs_grad_x, obs_grad_y]
+  — injected before every solve. The obs_* block is a per-stage local
+  affine reconstruction of own_map's ESDF around a linearization point
+  p0 (own_map.query() can't enter the OCP symbolically -- it's runtime
+  voxel data, not a closed-form expression CasADi can differentiate at
+  code-gen time; see whiteboard.md). Unlike p_target (same value every
+  stage today), obs_* is expected to differ per stage -- the caller
+  queries the ESDF at each stage's predicted position separately.
 
-Cost output   (ny = 13):  [x, y, z, vx, vy, vz, phi, theta, r_fov, T, p_cmd, q_cmd, r_cmd]
+Cost output   (ny = 14):  [x, y, z, vx, vy, vz, phi, theta, r_fov, r_obs, T, p_cmd, q_cmd, r_cmd]
   - r_fov = softplus(cos(alpha_fov) - cos(gamma)) — zero inside FOV cone, grows outside
+  - r_obs = max(0, d_safe - d_lin) — squared-hinge collision cost (NLS squares every
+    residual automatically); d_lin = obs_d0 + obs_grad . (p - obs_p0)
   - phi, theta penalised to keep the drone roughly level
   - rate commands penalised to limit aggressiveness
 
@@ -44,6 +54,7 @@ _con_cfg    = _cfg['constraints']
 _cost_cfg   = _cfg['cost']
 _plant_cfg  = _cfg['plant']
 _cam_cfg    = _cfg['camera']
+_obs_cfg    = _cfg['obstacle_avoidance']
 
 # ── Target trajectory (config/target.yaml) — only the circle radius/period/
 #    height are needed at codegen time; waypoints are loaded at runtime.
@@ -70,15 +81,24 @@ FOV_ALPHA = float(np.deg2rad(_cam_cfg['fov_half_angle_deg']))
 FOV_BETA  = float(_cam_cfg['softplus_beta'])
 COS_ALPHA = float(np.cos(FOV_ALPHA))
 
+D_SAFE = float(_obs_cfg['d_safe_m'])
+
 
 
 
 def generate_mpc():
     ocp   = AcadosOcp()
     model = export_quadrotor_ode_model()
-    model.p = ca.SX.sym('p_target', 3)   # runtime: target position [x, y, z]
+    # Runtime parameters: FOV target position (3) + per-stage obstacle
+    # ESDF linearization (5: p0_x, p0_y, d0, grad_x, grad_y) -- see the
+    # module docstring's "Runtime param" section for what obs_* means.
+    model.p = ca.SX.sym('p_runtime', 8)
+    p_target   = model.p[0:3]
+    obs_p0     = model.p[3:5]
+    obs_d0     = model.p[5]
+    obs_grad   = model.p[6:8]
     ocp.model = model
-    ocp.parameter_values = np.zeros(3)   # nominal; overwritten before every solve
+    ocp.parameter_values = np.zeros(8)   # nominal; overwritten before every solve
 
     nx = model.x.rows()   # 12
     nu = model.u.rows()   #  4
@@ -104,7 +124,7 @@ def generate_mpc():
     R_bw   = ca.horzcat(R_col0, R_col1, R_col2)
 
     # Bearing vector to target in body frame.
-    d_world = model.p - x_sym[:3]
+    d_world = p_target - x_sym[:3]
     range_  = ca.sqrt(ca.dot(d_world, d_world) + 1e-12)  # smooth norm: C∞ at δ=0
     d_body  = ca.mtimes(R_bw.T, d_world)
 
@@ -120,8 +140,19 @@ def generate_mpc():
     soft  = (1.0 / FOV_BETA) * (ca.fmax(_u, 0) + ca.log(1.0 + ca.exp(-ca.fabs(_u))))
     r_fov = soft
 
-    cost_y_expr   = ca.vertcat(x_sym[:8], r_fov, u_sym)  # ny   = 13
-    cost_y_expr_e = ca.vertcat(x_sym[:8], r_fov)          # ny_e =  9
+    # ── Collision-avoidance hinge: r_obs = max(0, d_safe - d_lin) ───────────
+    # d_lin is the local affine reconstruction of own_map's ESDF around the
+    # per-stage linearization point obs_p0, built from (obs_d0, obs_grad)
+    # supplied as runtime parameters by the caller (own_map.query(), done
+    # in C++ -- the ESDF itself can't be expressed symbolically here, see
+    # the module docstring and whiteboard.md). NLS squares this residual
+    # automatically, same as r_fov -- this is the "squared" in squared
+    # hinge, not something done explicitly here.
+    d_lin = obs_d0 + ca.dot(obs_grad, x_sym[:2] - obs_p0)
+    r_obs = ca.fmax(0.0, D_SAFE - d_lin)
+
+    cost_y_expr   = ca.vertcat(x_sym[:8], r_fov, r_obs, u_sym)  # ny   = 14
+    cost_y_expr_e = ca.vertcat(x_sym[:8], r_fov, r_obs)          # ny_e = 10
 
     ocp.cost.cost_type   = 'NONLINEAR_LS'
     ocp.cost.cost_type_e = 'NONLINEAR_LS'
@@ -131,14 +162,17 @@ def generate_mpc():
     ocp.cost.W   = W_STAGE
     ocp.cost.W_e = W_TERMINAL
 
-    # Nominal yref: hover at origin, level, target inside FOV (r_fov reference = 0).
-    # C++ overwrites this every step with the actual reference.
+    # Nominal yref: hover at origin, level, target inside FOV (r_fov
+    # reference = 0), clear of any obstacle (r_obs reference = 0 -- the
+    # hinge's "no violation" state). C++ overwrites this every step with
+    # the actual reference.
     yref_hover   = np.array([0.0, 0.0, HOVER_ALTITUDE,  # x, y, z
                               0.0, 0.0, 0.0,           # vx, vy, vz
                               0.0, 0.0,                # phi, theta
                               0.0,                     # r_fov  (target inside cone)
+                              0.0,                     # r_obs  (clear of any obstacle)
                               T_HOVER, 0.0, 0.0, 0.0]) # T, rates
-    yref_hover_e = yref_hover[:9]
+    yref_hover_e = yref_hover[:10]
 
     ocp.cost.yref   = yref_hover
     ocp.cost.yref_e = yref_hover_e

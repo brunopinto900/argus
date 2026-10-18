@@ -29,12 +29,13 @@ inner_loop:
   tau_yaw: 0.25   # yaw rate time constant [s]
 
 # Cost weights (NONLINEAR_LS: min Σ ‖h(x,u) − yref‖²_W)
-# W_stage layout:    [x, y, z,  vx, vy, vz,  phi, theta,  r_fov,  T, p_cmd, q_cmd, r_cmd]
-# W_terminal layout: [x, y, z,  vx, vy, vz,  phi, theta,  r_fov_e]
+# W_stage layout:    [x, y, z,  vx, vy, vz,  phi, theta,  r_fov, r_obs,  T, p_cmd, q_cmd, r_cmd]
+# W_terminal layout: [x, y, z,  vx, vy, vz,  phi, theta,  r_fov_e, r_obs_e]
 # r_fov = softplus(cos(alpha) - cos(gamma)) — zero inside the FOV cone, grows outside.
+# r_obs = max(0, d_safe - d_lin) — see obstacle_avoidance: below.
 cost:
-  W_stage:    [100.0, 100.0, 100.0,  10.0, 10.0, 10.0,  5.0, 5.0,  25.0,  0.1, 0.1, 0.1, 0.1]
-  W_terminal: [200.0, 200.0, 200.0,  20.0, 20.0, 20.0,  10.0, 10.0,  50.0]
+  W_stage:    [100.0, 100.0, 100.0,  10.0, 10.0, 10.0,  5.0, 5.0,  25.0, 50.0,  0.1, 0.1, 0.1, 0.1]
+  W_terminal: [200.0, 200.0, 200.0,  20.0, 20.0, 20.0,  10.0, 10.0,  50.0, 50.0]
 
 # Camera model: forward-facing (body +x axis), circular FOV cone
 camera:
@@ -70,3 +71,20 @@ mapping_sensor:
   max_range_m:    8.0    # realistic dense-depth range for the OAK-D-Lite referenced in ros2/argus_px4_bridge
   num_rays:       1006   # ceil(2*pi * max_range_m / voxel_size), voxel_size=0.05m — see design_decisions.md
   update_rate_hz: 60.0   # matches real camera fps; decoupled from mpc.Ts (the 20Hz control loop)
+
+# Collision-avoidance hinge cost: r_obs = max(0, d_safe - d_lin), where
+# d_lin is a per-stage local affine reconstruction of own_map's ESDF
+# (own_map.query() can't enter the OCP symbolically -- see whiteboard.md),
+# injected as a runtime parameter alongside the FOV target. d_safe here is
+# baked in at code-generation time (not a runtime parameter) since it's
+# not expected to vary per solve. Its weight lives in cost.W_stage/
+# W_terminal above (the r_obs entry), same convention as r_fov's weight --
+# not duplicated here.
+#
+# PLACEHOLDER VALUE -- exists to get the mechanism wired and compiling,
+# not a derived number. Needs: collision distance + drone radius + voxel
+# size + a staleness margin covering one RTI step's worth of linearization
+# error (see whiteboard.md's "staleness" session). Do not trust it, or the
+# r_obs weight above, until that session is done.
+obstacle_avoidance:
+  d_safe_m: 0.3

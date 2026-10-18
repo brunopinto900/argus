@@ -37,6 +37,25 @@ struct TargetState
     double vx = 0.0, vy = 0.0, vz = 0.0;
 };
 
+// One horizon stage's local affine approximation of an ESDF around a
+// linearization point p0 (planar: x,y only): distance(p) ~= distance +
+// grad . (p - p0). This can't be the real nonlinear ESDF lookup itself --
+// that's runtime voxel-grid data with no closed form the OCP code
+// generator can differentiate at build time (see whiteboard.md). The
+// caller computes this from e.g. argus_esdf::VoxelGrid::query() once per
+// stage, before every solve.
+//
+// Default (huge distance, zero gradient) is a no-op: the collision hinge
+// cost never activates, so passing no obstacle info at all (or leaving
+// any particular stage at its default) is always safe, never spuriously
+// penalized.
+struct ObstacleLinearization
+{
+    double p0_x = 0.0, p0_y = 0.0;
+    double distance = 1.0e6;
+    double grad_x = 0.0, grad_y = 0.0;
+};
+
 // First-stage optimal input, ready to command a PX4-style body-rate
 // interface. thrust is normalised so 1.0 == hover (already divided by
 // T_hover) — callers never need the solver's internal hover-thrust constant.
@@ -77,8 +96,13 @@ public:
     // Solve one MPC step (SQP-RTI: one iteration).
     // horizon.size() must equal horizonLength(); throws std::invalid_argument otherwise.
     // target.{x,y,z} → model.p (FOV cost).  target.{vx,vy,vz} → velocity yref.
+    // obstacle: one ObstacleLinearization per horizon stage (same size as
+    // horizon), or empty to disable collision avoidance entirely (every
+    // stage uses the no-op default). obstacle.size() must equal
+    // horizonLength() if non-empty.
     Command step(const State& x0, const std::vector<Reference>& horizon,
-                 const TargetState& target);
+                 const TargetState& target,
+                 const std::vector<ObstacleLinearization>& obstacle = {});
 
     // Accumulated acados solve-time stats since construction (or since the
     // last resetSolverTiming() call).

@@ -28,9 +28,9 @@ constexpr int kNp  = QUADROTOR_NP;
 // loudly instead of silently mis-packing state/yref arrays below.
 static_assert(kNx == 12, "State/step() packing assumes NX == 12 ([x,y,z,vx,vy,vz,phi,theta,psi,p,q,r])");
 static_assert(kNu == 4,  "Command/step() packing assumes NU == 4 ([T,p_cmd,q_cmd,r_cmd])");
-static_assert(kNy == 13, "step() yref packing assumes NY == 13 ([x,y,z,vx,vy,vz,phi,theta,r_fov,T,p_cmd,q_cmd,r_cmd])");
-static_assert(kNyN == 9, "step() terminal yref packing assumes NYN == 9 ([x,y,z,vx,vy,vz,phi,theta,r_fov])");
-static_assert(kNp == 3,  "step() parameter packing assumes NP == 3 ([p_target_x, p_target_y, p_target_z]); run generate_mpc.py");
+static_assert(kNy == 14, "step() yref packing assumes NY == 14 ([x,y,z,vx,vy,vz,phi,theta,r_fov,r_obs,T,p_cmd,q_cmd,r_cmd])");
+static_assert(kNyN == 10, "step() terminal yref packing assumes NYN == 10 ([x,y,z,vx,vy,vz,phi,theta,r_fov,r_obs])");
+static_assert(kNp == 8,  "step() parameter packing assumes NP == 8 ([p_target_x,y,z, obs_p0_x,y, obs_d0, obs_grad_x,y]); run generate_mpc.py");
 
 using RawState = std::array<double, kNx>;
 using RawInput = std::array<double, kNu>;
@@ -77,12 +77,22 @@ QuadrotorMpc::~QuadrotorMpc() = default;
 int QuadrotorMpc::horizonLength() const { return kN; }
 
 Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizon,
-                           const TargetState& target)
+                           const TargetState& target,
+                           const std::vector<ObstacleLinearization>& obstacle)
 {
     if (static_cast<int>(horizon.size()) != kN)
         throw std::invalid_argument(
             "QuadrotorMpc::step(): horizon.size() must equal horizonLength() (" +
             std::to_string(kN) + ")");
+    if (!obstacle.empty() && static_cast<int>(obstacle.size()) != kN)
+        throw std::invalid_argument(
+            "QuadrotorMpc::step(): obstacle.size() must equal horizonLength() (" +
+            std::to_string(kN) + ") or be empty");
+
+    // Empty obstacle input -> every stage uses the no-op default (huge
+    // distance, zero gradient), same as not having avoidance wired in.
+    static const std::vector<ObstacleLinearization> kNoObstacle(kN);
+    const std::vector<ObstacleLinearization>& obs = obstacle.empty() ? kNoObstacle : obstacle;
 
     Impl& impl = *impl_;
 
@@ -105,10 +115,22 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
         impl.warm_started = true;
     }
 
-    // ── Inject target position into model.p for every stage ─────────────────
-    double p_target[kNp] = {target.x, target.y, target.z};
-    for (int i = 0; i <= kN; ++i)
-        quadrotor_acados_update_params(impl.capsule, i, p_target, kNp);
+    // ── Inject target position + per-stage obstacle linearization into
+    // model.p ─────────────────────────────────────────────────────────────
+    // Unlike target (same value at every stage), obstacle info varies per
+    // stage -- each stage's predicted position can be near a different
+    // part of (or distance from) the ESDF. Terminal stage reuses the last
+    // running stage's obstacle info, same convention as yref_e below
+    // reusing horizon[kN-1].
+    auto set_params = [&](int stage, const ObstacleLinearization& o) {
+        double p_param[kNp] = {
+            target.x, target.y, target.z,
+            o.p0_x, o.p0_y, o.distance, o.grad_x, o.grad_y,
+        };
+        quadrotor_acados_update_params(impl.capsule, stage, p_param, kNp);
+    };
+    for (int i = 0; i < kN; ++i) set_params(i, obs[i]);
+    set_params(kN, obs[kN - 1]);
 
     // ── Pin the measured state as the initial-stage equality constraint ─────
     ocp_nlp_constraints_model_set(impl.config, impl.dims, impl.nlp_in, impl.nlp_out, 0, "lbx",
@@ -117,8 +139,10 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
                                    const_cast<double*>(x0_raw.data()));
 
     // ── Per-stage horizon reference ───────────────────────────────────────────
-    // yref layout: [x,y,z, vx,vy,vz, phi,theta, r_fov, T, p_cmd,q_cmd,r_cmd]
+    // yref layout: [x,y,z, vx,vy,vz, phi,theta, r_fov, r_obs, T, p_cmd,q_cmd,r_cmd]
     // Velocity yref is the target's velocity — incentivises the drone to match speed.
+    // r_obs reference is always 0 — "no hinge violation" is the only
+    // sensible target for a residual that's already 0 whenever safe.
     for (int j = 0; j < kN; ++j) {
         const Reference& ref = horizon[j];
         double yref[kNy] = {
@@ -126,6 +150,7 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
             target.vx,  target.vy,  target.vz,
             0.0, 0.0,             // phi, theta reference: level
             0.0,                  // r_fov reference: target inside the FOV cone
+            0.0,                  // r_obs reference: clear of any obstacle
             ARGUS_T_HOVER, 0.0, 0.0, 0.0,
         };
         ocp_nlp_cost_model_set(impl.config, impl.dims, impl.nlp_in, j, "yref", yref);
@@ -136,6 +161,7 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
             ref.x,     ref.y,     ref.z,
             target.vx, target.vy, target.vz,
             0.0, 0.0,
+            0.0,
             0.0,
         };
         ocp_nlp_cost_model_set(impl.config, impl.dims, impl.nlp_in, kN, "yref", yref_e);
