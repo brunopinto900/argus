@@ -18,19 +18,28 @@ Headless export (no display required):
 
 Panels (one figure, always 2 columns):
   - XY path:             drone (actual) vs. position reference vs. FOV target
-  - Yaw error:             MPC yaw vs. bearing to the FOV target
-  - Pitch error:           MPC pitch vs. level reference (0 rad -- unlike
-                            yaw, the MPC has no FOV-bearing pitch reference)
+  - Yaw bearing error:     target's azimuth offset from dead-center of the
+                            camera boresight (0 = target centered)
+  - Pitch bearing error:   target's elevation offset from dead-center of the
+                            camera boresight (0 = target centered) -- both
+                            computed via the full ZYX rotation (not psi/theta
+                            against a flat/approximate reference), same
+                            convention as scripts/animate_xy.py's
+                            bearing_errors_deg(); the FOV cone's
+                            fov_half_angle_deg is drawn as a reference band
+                            when --config-path's camera section has it
   - Velocity:              vx, vy, vz vs. time
   - Attitude:              roll, pitch, yaw vs. time (deg)
   - Body rates:            p, q, r vs. time (deg/s)
+  - Height tracking:       MPC height (z, actual) vs. reference height (zt)
   - XY tracking error:      |drone - reference| vs. time
   - Distance to FOV target:  |drone - target| vs. time, always shown
                             (--keepaway-m draws a constant-distance
                             reference line, e.g. trailer.distance_to_target)
   - Distance to obstacle:    only if the CSV has a dist_obstacle column
                             (online_mapping_demo only) -- d_safe knob,
-                            optional --real-target-m, closest-approach marker
+                            --real-target-m (default 0.27, the physically
+                            derived margin), closest-approach marker
 """
 
 import argparse
@@ -55,11 +64,13 @@ def _parse_args():
     p.add_argument("--config-path", default="config/quadrotor.yaml",
                     help="Source of obstacle_avoidance.d_safe_m, used only when "
                          "the CSV has a dist_obstacle column")
-    p.add_argument("--real-target-m", type=float, default=None,
+    p.add_argument("--real-target-m", type=float, default=0.27,
                     help="Actual physical safety requirement, distinct from "
                          "--config-path's d_safe_m knob -- see "
-                         "design_decisions.md's 'd_safe inflation' section. "
-                         "Only used when the CSV has a dist_obstacle column.")
+                         "design_decisions.md's 'd_safe inflation' section "
+                         "(default: 0.27, the drone-size + voxel + lidar-"
+                         "noise derived margin from that section). Only "
+                         "drawn when the CSV has a dist_obstacle column.")
     p.add_argument("--scenario-config", default="config/forest.yaml",
                     help="Scenario file (online_mapping_demo's obstacles: "
                          "section -- same file passed as that demo's CLI arg) "
@@ -108,29 +119,67 @@ def _xy_path(a):
     a.legend()
 
 
+def _target_bearing_errors():
+    """Signed yaw/pitch offset of the FOV target from dead-center of the
+    camera boresight (body +x axis), via the full ZYX rotation -- same
+    convention as scripts/animate_xy.py's bearing_errors_deg(), just
+    vectorized over the whole trajectory instead of one frame at a time.
+
+    Deliberately NOT "theta/psi vs. a flat/approximate reference": the MPC
+    has no decomposed per-axis FOV reference (r_fov only penalizes the
+    combined boresight-cone residual, see generate_mpc.py), so the only
+    reference that actually means "target is centered in frame" is the
+    target's own bearing projected into the body frame -- 0 in both axes
+    means the target sits exactly on the boresight, regardless of what phi/
+    theta/psi individually are doing to get it there.
+    """
+    cp, sp = np.cos(df["phi"]), np.sin(df["phi"])
+    ct, st = np.cos(df["theta"]), np.sin(df["theta"])
+    cy, sy = np.cos(df["psi"]), np.sin(df["psi"])
+    dx = df["fx"] - df["x"]
+    dy = df["fy"] - df["y"]
+    dz = df["fz"] - df["z"]
+    # d_body = R_zyx(phi,theta,psi)^T @ [dx,dy,dz]
+    db_x = cy * ct * dx + sy * ct * dy - st * dz
+    db_y = (cy * st * sp - sy * cp) * dx + (sy * st * sp + cy * cp) * dy + ct * sp * dz
+    db_z = (cy * st * cp + sy * sp) * dx + (sy * st * cp - cy * sp) * dy + ct * cp * dz
+    yaw_err = np.degrees(np.arctan2(db_y, db_x))
+    pitch_err = np.degrees(np.arctan2(-db_z, db_x))
+    return yaw_err, pitch_err
+
+
+def _fov_half_angle_deg():
+    try:
+        return yaml.safe_load(open(_args.config_path))["camera"]["fov_half_angle_deg"]
+    except (FileNotFoundError, KeyError):
+        return None
+
+
+def _draw_fov_band(a):
+    half_angle = _fov_half_angle_deg()
+    if half_angle is not None:
+        a.axhline(half_angle, color="tab:red", linestyle=":", linewidth=1,
+                   label=f"FOV edge (±{half_angle:.0f}°)")
+        a.axhline(-half_angle, color="tab:red", linestyle=":", linewidth=1)
+        a.legend()
+
+
 def _yaw_error(a):
-    # Reference yaw = bearing from the drone's actual position to the FOV
-    # target (fx,fy) -- same convention as the circle demo's
-    # psi_ref = atan2(-y_ref, -x_ref) in README.md, generalized off-origin.
-    ref_psi = np.arctan2(df["fy"] - df["y"], df["fx"] - df["x"])
-    err = np.degrees(np.mod(df["psi"] - ref_psi + np.pi, 2 * np.pi) - np.pi)
-    a.plot(df["t"], err, color="tab:orange")
+    yaw_err, _ = _target_bearing_errors()
+    a.plot(df["t"], yaw_err, color="tab:orange")
+    _draw_fov_band(a)
     a.set_xlabel("t [s]")
-    a.set_ylabel("yaw error [deg]")
-    a.set_title("Yaw error (MPC vs. reference)")
+    a.set_ylabel("yaw bearing error [deg]")
+    a.set_title("Yaw bearing error (target vs. boresight)")
 
 
 def _pitch_error(a):
-    # Unlike yaw, pitch has no FOV-bearing reference in the MPC cost --
-    # generate_mpc.py's yref holds theta at a constant 0 rad (level), the FOV
-    # target only enters through the coupled boresight-cone residual r_fov,
-    # not a decomposed pitch angle. So the reference here is that literal
-    # level set point, not a bearing to (fx,fy,fz).
-    err = np.degrees(df["theta"])
-    a.plot(df["t"], err, color="tab:orange")
+    _, pitch_err = _target_bearing_errors()
+    a.plot(df["t"], pitch_err, color="tab:orange")
+    _draw_fov_band(a)
     a.set_xlabel("t [s]")
-    a.set_ylabel("pitch error [deg]")
-    a.set_title("Pitch error (MPC vs. level reference)")
+    a.set_ylabel("pitch bearing error [deg]")
+    a.set_title("Pitch bearing error (target vs. boresight)")
 
 
 def _velocity(a):
@@ -160,6 +209,15 @@ def _body_rates(a):
     a.set_xlabel("t [s]")
     a.set_ylabel("rate [deg/s]")
     a.set_title("Body rates")
+    a.legend()
+
+
+def _height(a):
+    a.plot(df["t"], df["zt"], "--", color="tab:green", label="reference height (zt)")
+    a.plot(df["t"], df["z"], color="tab:blue", label="MPC height (actual)")
+    a.set_xlabel("t [s]")
+    a.set_ylabel("z [m]")
+    a.set_title("Height tracking")
     a.legend()
 
 
@@ -205,7 +263,7 @@ def _obstacle_distance(a):
 
 
 panels = [_xy_path, _yaw_error, _pitch_error, _velocity, _attitude, _body_rates,
-          _tracking_error, _target_distance]
+          _height, _tracking_error, _target_distance]
 if has_obstacle:
     panels.append(_obstacle_distance)
 

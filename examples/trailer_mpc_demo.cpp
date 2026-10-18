@@ -30,6 +30,10 @@
 #include "argus_params.h"
 #include "plant_dynamics.hpp"
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 using argus_follower::SplineXY;
 using argus_follower::TrailerFollower;
 using PlantState = std::array<double, 12>;
@@ -39,9 +43,18 @@ namespace {
 
 constexpr double kTs             = ARGUS_MPC_TS;
 constexpr double kTHover         = ARGUS_T_HOVER;
-constexpr double kHoverAltitude  = ARGUS_HOVER_ALTITUDE;
+// Static FOV-aware z reference, NOT the circle demo's ARGUS_HOVER_ALTITUDE
+// -- that 1.5m comes from a different derivation tied to circular motion's
+// own banking requirement (tan(theta) = r*omega^2/g), which doesn't apply
+// to this scenario's arbitrary leader path. Here z_ref is instead derived
+// from tan(theta_FOV) = z_ref / distance_to_target, solved for z_ref at a
+// chosen target bearing angle -- see design_decisions.md's "Static
+// FOV-aware z_ref" for the full derivation and why this is computed once
+// from the configured standoff rather than recomputed online every
+// control cycle (oscillation risk).
+constexpr double kTargetBearingDeg = 30.0;  // headroom under the 40 deg FOV half-angle
 // The tracked leader's own altitude for the FOV cost -- a ground-level
-// target (person/vehicle), distinct from the drone's hover_altitude above
+// target (person/vehicle), distinct from the drone's z reference above
 // it. TrailerFollower/TargetMotionSimulator are 2-D (x, y only), so this
 // is fixed here, not sourced from either of those.
 constexpr double kTargetZ = 0.0;
@@ -93,6 +106,10 @@ int main(int argc, char** argv)
     const double t_end = argc > 2 ? std::stod(argv[2]) : 20.0;
 
     const TrailerConfig trailer_cfg = loadTrailerConfig(ARGUS_CONFIG_DIR "/quadrotor.yaml");
+    // z_ref = distance_to_target * tan(kTargetBearingDeg) -- see the
+    // kTargetBearingDeg comment above.
+    const double kFovZRef = trailer_cfg.distance_to_target *
+                             std::tan(kTargetBearingDeg * M_PI / 180.0);
 
     argus_mpc::QuadrotorMpc mpc;
     const int N = mpc.horizonLength();
@@ -117,7 +134,7 @@ int main(int argc, char** argv)
     // online_mapping_demo.cpp's identical pattern for why calling it twice
     // would double-advance that state.
     const auto horizon0 = follower.computeGoalPoints(target.x, target.y, N, 0.0, trailer_cfg.Ts);
-    PlantState x = {horizon0.PDx[0], horizon0.PDy[0], kHoverAltitude,
+    PlantState x = {horizon0.PDx[0], horizon0.PDy[0], kFovZRef,
                      0.0,            0.0,             0.0,
                      0.0,            0.0,             0.0,
                      0.0,            0.0,             0.0};
@@ -150,7 +167,7 @@ int main(int argc, char** argv)
 
         std::vector<argus_mpc::Reference> mpc_horizon(N);
         for (int j = 0; j < N; ++j) {
-            mpc_horizon[j] = {horizon.PDx[j], horizon.PDy[j], kHoverAltitude};
+            mpc_horizon[j] = {horizon.PDx[j], horizon.PDy[j], kFovZRef};
         }
 
         const argus_mpc::TargetState tgt{

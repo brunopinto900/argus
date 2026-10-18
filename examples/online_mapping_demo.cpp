@@ -46,6 +46,10 @@
 #include "argus_params.h"
 #include "plant_dynamics.hpp"
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 using argus_esdf::VoxelGrid;
 using argus_follower::SplineXY;
 using argus_follower::TrailerFollower;
@@ -73,8 +77,17 @@ constexpr double kSensorZ = kVoxelSize / 2.0;
 
 constexpr double kTs            = ARGUS_MPC_TS;
 constexpr double kTHover        = ARGUS_T_HOVER;
-constexpr double kHoverAltitude = ARGUS_HOVER_ALTITUDE;
-// Ground-level tracked leader, distinct from the drone's hover altitude
+// Static FOV-aware z reference, NOT the circle demo's ARGUS_HOVER_ALTITUDE
+// -- that 1.5m comes from a different derivation tied to circular motion's
+// own banking requirement (tan(theta) = r*omega^2/g), which doesn't apply
+// to this scenario's threaded leader path. Here z_ref is instead derived
+// from tan(theta_FOV) = z_ref / distance_to_target, solved for z_ref at a
+// chosen target bearing angle -- see design_decisions.md's "Static
+// FOV-aware z_ref" for the full derivation and why this is computed once
+// from the configured standoff rather than recomputed online every
+// control cycle (oscillation risk).
+constexpr double kTargetBearingDeg = 30.0;  // headroom under the 40 deg FOV half-angle
+// Ground-level tracked leader, distinct from the drone's z reference
 // above it -- same reasoning as examples/trailer_mpc_demo.cpp.
 constexpr double kTargetZ = 0.0;
 
@@ -378,6 +391,10 @@ int main(int argc, char** argv)
 
     const YAML::Node config_root = YAML::LoadFile(ARGUS_CONFIG_DIR "/quadrotor.yaml");
     const TrailerConfig trailer_cfg = loadTrailerConfig(config_root, ARGUS_CONFIG_DIR "/quadrotor.yaml");
+    // z_ref = distance_to_target * tan(kTargetBearingDeg) -- see the
+    // kTargetBearingDeg comment above.
+    const double kFovZRef = trailer_cfg.distance_to_target *
+                             std::tan(kTargetBearingDeg * M_PI / 180.0);
     const MappingSensorConfig sensor_cfg =
         loadMappingSensorConfig(config_root, ARGUS_CONFIG_DIR "/quadrotor.yaml");
 
@@ -448,7 +465,7 @@ int main(int argc, char** argv)
     // call) -- not recomputed again for step 0 below, see
     // examples/trailer_mpc_demo.cpp's identical pattern.
     const auto horizon0 = follower.computeGoalPoints(target.x, target.y, N, 0.0, control_dt);
-    PlantState x = {horizon0.PDx[0], horizon0.PDy[0], kHoverAltitude,
+    PlantState x = {horizon0.PDx[0], horizon0.PDy[0], kFovZRef,
                      0.0,            0.0,             0.0,
                      0.0,            0.0,             0.0,
                      0.0,            0.0,             0.0};
@@ -476,7 +493,7 @@ int main(int argc, char** argv)
 
         std::vector<argus_mpc::Reference> mpc_horizon(N);
         for (int j = 0; j < N; ++j) {
-            mpc_horizon[j] = {horizon.PDx[j], horizon.PDy[j], kHoverAltitude};
+            mpc_horizon[j] = {horizon.PDx[j], horizon.PDy[j], kFovZRef};
         }
         const argus_mpc::TargetState tgt{
             leader_x, leader_y, kTargetZ,
@@ -545,7 +562,7 @@ int main(int argc, char** argv)
         traj << step << ',' << t;
         for (double v : x) traj << ',' << v;
         for (double v : u) traj << ',' << v;
-        traj << ',' << ref_x << ',' << ref_y << ',' << kHoverAltitude  // xt,yt,zt: follower goal point
+        traj << ',' << ref_x << ',' << ref_y << ',' << kFovZRef  // xt,yt,zt: follower goal point
              << ',' << leader_x << ',' << leader_y << ',' << kTargetZ  // fx,fy,fz: the leader
              << ',' << cmd.solve_status << ',';
         if (q1.valid) traj << q1.distance; else traj << "nan";

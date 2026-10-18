@@ -98,7 +98,7 @@ CSV_PATH      = _args.csv_path
 DRONE_Z_REF   = 1.5    # drone's z reference [m] — must match config/quadrotor.yaml mpc.hover_altitude
 TRAIL_SECONDS = 4.0
 FRUSTUM_LEN   = 0.70   # camera frustum length [m]
-FRUSTUM_H_FOV = np.deg2rad(40.0)  # horizontal half-angle
+FRUSTUM_H_FOV = np.deg2rad(40.0)  # horizontal half-angle -- must match config/quadrotor.yaml's camera.fov_half_angle_deg
 FRUSTUM_V_FOV = np.deg2rad(30.0)  # vertical half-angle
 # XY_LIMIT resolved further down, after the optional snapshot log is loaded
 # (its own grid extent becomes the default when one is found).
