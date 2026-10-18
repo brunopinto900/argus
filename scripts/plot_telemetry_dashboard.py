@@ -58,15 +58,12 @@ def _parse_args():
                          "--config-path's d_safe_m knob -- see "
                          "design_decisions.md's 'd_safe inflation' section. "
                          "Only used when the CSV has a dist_obstacle column.")
-    p.add_argument("--obstacle-center", type=float, nargs=2, default=(0.0, 0.0),
-                    metavar=("X", "Y"),
-                    help="Obstacle center for the XY path panel's outline -- "
-                         "only drawn when the CSV has a dist_obstacle column. "
-                         "Default matches online_mapping_demo.cpp's scenario.")
-    p.add_argument("--obstacle-half-size", type=float, default=0.8,
-                    help="Obstacle half-width [m] -- matches "
-                         "online_mapping_demo.cpp's kObstacleHalfSize. Only "
-                         "used when the CSV has a dist_obstacle column.")
+    p.add_argument("--scenario-config", default="config/forest.yaml",
+                    help="Scenario file (online_mapping_demo's obstacles: "
+                         "section -- same file passed as that demo's CLI arg) "
+                         "to draw on the XY path panel -- only used when the "
+                         "CSV has a dist_obstacle column. Missing file is not "
+                         "an error, the outline is just skipped.")
     return p.parse_args()
 
 
@@ -87,11 +84,21 @@ def _xy_path(a):
     a.plot(df["xt"], df["yt"], ":", color="tab:green", label="position reference")
     a.plot(df["x"], df["y"], "-", color="tab:blue", label="drone (actual)")
     if has_obstacle:
-        cx, cy = _args.obstacle_center
-        h = _args.obstacle_half_size
-        a.add_patch(plt.Rectangle((cx - h, cy - h), 2 * h, 2 * h,
-                                   facecolor="black", alpha=0.3,
-                                   edgecolor="black", label="obstacle"))
+        try:
+            obstacles = yaml.safe_load(open(_args.scenario_config))["obstacles"]
+        except (FileNotFoundError, KeyError, TypeError):
+            obstacles = []
+        for i, o in enumerate(obstacles):
+            cx, cy = o["center"]
+            label = "obstacle" if i == 0 else None
+            if o["shape"] == "circle":
+                a.add_patch(plt.Circle((cx, cy), o["radius"], facecolor="black",
+                                        alpha=0.3, edgecolor="black", label=label))
+            else:
+                h = o["half_size"]
+                a.add_patch(plt.Rectangle((cx - h, cy - h), 2 * h, 2 * h,
+                                           facecolor="black", alpha=0.3,
+                                           edgecolor="black", label=label))
     a.set_xlabel("x [m]")
     a.set_ylabel("y [m]")
     a.set_title("XY path")

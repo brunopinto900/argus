@@ -1,5 +1,6 @@
 #include <argus_follower/TargetMotionSimulator.hpp>
 
+#include <algorithm>
 #include <cmath>
 
 namespace argus_follower {
@@ -75,6 +76,74 @@ SplineXY straightLineWithBypassTarget(double x0, double y_start, double speed, d
             window = 0.5 * (1.0 + std::cos(M_PI * dy / bypass_half_width));
         }
         xs[i] = x0 + amplitude * window;
+    }
+    return SplineXY{CubicSpline(t, xs), CubicSpline(t, ys)};
+}
+
+namespace {
+
+double interpolateSpeed(const SpeedKeyframes& kf, double t)
+{
+    if (kf.empty()) return 0.0;
+    if (t <= kf.front().first) return kf.front().second;
+    if (t >= kf.back().first) return kf.back().second;
+    for (std::size_t i = 0; i + 1 < kf.size(); ++i) {
+        const double t0 = kf[i].first,     v0 = kf[i].second;
+        const double t1 = kf[i + 1].first, v1 = kf[i + 1].second;
+        if (t <= t1) {
+            const double frac = (t1 > t0) ? (t - t0) / (t1 - t0) : 0.0;
+            return v0 + frac * (v1 - v0);
+        }
+    }
+    return kf.back().second;
+}
+
+// Point at arc-length `s` along the polyline through `wp`, clamped to the
+// endpoints outside [0, total length].
+std::pair<double, double> pointAtArcLength(const std::vector<std::pair<double, double>>& wp,
+                                            double s)
+{
+    if (wp.empty()) return {0.0, 0.0};
+    if (wp.size() == 1 || s <= 0.0) return wp.front();
+
+    double remaining = s;
+    for (std::size_t i = 0; i + 1 < wp.size(); ++i) {
+        const double dx = wp[i + 1].first  - wp[i].first;
+        const double dy = wp[i + 1].second - wp[i].second;
+        const double seg_len = std::hypot(dx, dy);
+        const bool last_segment = (i + 2 == wp.size());
+        if (remaining <= seg_len || last_segment) {
+            const double frac = seg_len > 0.0 ? std::min(1.0, remaining / seg_len) : 0.0;
+            return {wp[i].first + frac * dx, wp[i].second + frac * dy};
+        }
+        remaining -= seg_len;
+    }
+    return wp.back();
+}
+
+}  // namespace
+
+SplineXY waypointTarget(const std::vector<std::pair<double, double>>& waypoints,
+                        const SpeedKeyframes& speed_keyframes, double t_end, double sample_dt)
+{
+    const std::vector<double> t = sampleTimes(t_end, sample_dt);
+    std::vector<double> xs(t.size()), ys(t.size());
+
+    double s = 0.0;
+    for (std::size_t i = 0; i < t.size(); ++i) {
+        if (i > 0) {
+            // Trapezoidal integration of speed(t) -- consistent with
+            // sampling speed(t) densely and accumulating arc-length, same
+            // spirit as this file's other generators sampling position
+            // densely before fitting a spline.
+            const double dt     = t[i] - t[i - 1];
+            const double v_prev = interpolateSpeed(speed_keyframes, t[i - 1]);
+            const double v_cur  = interpolateSpeed(speed_keyframes, t[i]);
+            s += 0.5 * (v_prev + v_cur) * dt;
+        }
+        const auto [x, y] = pointAtArcLength(waypoints, s);
+        xs[i] = x;
+        ys[i] = y;
     }
     return SplineXY{CubicSpline(t, xs), CubicSpline(t, ys)};
 }

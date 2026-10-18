@@ -1,0 +1,19 @@
+# Scenario for examples/online_mapping_demo.cpp: the original single-square
+# bypass scenario (before config/forest.yaml), kept as a second selectable
+# scenario -- pass this file as the demo's first CLI arg to run it instead
+# of the forest. Simpler case for isolating behavior without multiple
+# obstacles interacting.
+obstacles:
+  - shape: square
+    center: [0.0, 0.0]
+    half_size: 0.8   # 1.6m x 1.6m, centered at origin
+
+leader:
+  t_end: 14.0
+  waypoints:
+    - [0.0, -6.0]
+    - [1.5, 0.0]   # bypass the obstacle
+    - [0.0, 8.0]
+  speed_profile:
+    - [0.0, 1.0]   # constant speed throughout
+    - [14.0, 1.0]

@@ -262,7 +262,7 @@ more executables build on the same `QuadrotorMpc` solver:
 |---|---|---|---|
 | `./build/argus_mpc` | baseline circle-tracking | `logs/trajectory.csv` | `config/target.yaml`'s circle/static target |
 | `./build/trailer_mpc_demo [line\|circle\|zigzag] [t_end_s]` | `argus_follower::TrailerFollower` (hitch-lag leader-follower reference) drives the position reference instead of hover/orbit | `logs/trailer_mpc_trajectory.csv` | pick a leader motion pattern as the first CLI arg |
-| `./build/online_mapping_demo` | incremental ESDF mapping (`argus_esdf`/`argus_perception`) + the collision-avoidance hinge cost, both live | `logs/online_mapping_trajectory.csv` + `logs/online_mapping_esdf_snapshots.bin` + `logs/staleness_log.csv` | fixed straight-line-with-bypass scenario around one square obstacle |
+| `./build/online_mapping_demo [scenario.yaml]` | incremental ESDF mapping (`argus_esdf`/`argus_perception`) + the collision-avoidance hinge cost, both live | `logs/online_mapping_trajectory.csv` + `logs/online_mapping_esdf_snapshots.bin` + `logs/staleness_log.csv` | pick a scenario file as the first CLI arg (default `config/forest.yaml`) |
 
 All three write the same canonical trajectory-CSV columns (full 12-state,
 inputs, position reference, FOV target, solve status) — `online_mapping_demo`
@@ -270,9 +270,16 @@ adds one trailing `dist_obstacle` column — specifically so one dashboard
 script works on any of them (see below). See `design_decisions.md` (local,
 gitignored) for the reasoning behind the ESDF/MPC integration.
 
+A scenario file (`config/forest.yaml`, `config/scenario_single_obstacle.yaml`)
+bundles the ground-truth obstacle layout (`obstacles:` — circles/squares) and
+the leader's path through it (`leader:` — waypoints + a piecewise-linear
+`speed_profile`, so pacing and path shape are designed independently — see
+`design_decisions.md`). Hand-authored, not procedural/Monte Carlo generated.
+
 ```bash
 ./build/trailer_mpc_demo zigzag 10.0
-./build/online_mapping_demo
+./build/online_mapping_demo                                    # config/forest.yaml
+./build/online_mapping_demo config/scenario_single_obstacle.yaml
 ```
 
 ### Telemetry dashboard
@@ -286,14 +293,16 @@ python3 scripts/plot_telemetry_dashboard.py --csv-path logs/online_mapping_traje
 python3 scripts/plot_telemetry_dashboard.py --csv-path logs/trajectory.csv   # argus_mpc, the default --csv-path
 ```
 
-Panels: XY path (with the obstacle outline, when present), position,
-velocity, attitude, body rates, XY tracking error, distance to the FOV
-target, and (only when the log has a `dist_obstacle` column) distance to
-the obstacle with the `d_safe` config knob, the actual physical safety
-target (`--real-target-m`), and the run's closest approach marked. Add
-`--save-png PATH` for a headless export instead of an interactive window;
-`--keepaway-m` draws a constant reference line on the distance-to-target
-panel (e.g. `trailer.distance_to_target`).
+Panels: XY path (with every obstacle outline, when present — pass
+`--scenario-config` if plotting a non-default scenario file), yaw error
+(MPC vs. bearing to the FOV target), velocity, attitude, body rates, XY
+tracking error, distance to the FOV target, and (only when the log has a
+`dist_obstacle` column) distance to the obstacle with the `d_safe` config
+knob, the actual physical safety target (`--real-target-m`), and the run's
+closest approach marked. Add `--save-png PATH` for a headless export
+instead of an interactive window; `--keepaway-m` draws a constant
+reference line on the distance-to-target panel (e.g.
+`trailer.distance_to_target`).
 
 ### Animations
 

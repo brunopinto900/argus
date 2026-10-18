@@ -65,21 +65,11 @@ constexpr double kVoxelSize = 0.05;                        // m
 // (what a tighter, e.g. 12x12m, footprint does here).
 constexpr int kGridN = 300;
 constexpr double kHalfExtent = kGridN * kVoxelSize / 2.0;
-constexpr double kObstacleHalfSize = 0.8;                  // 1.6m x 1.6m square, centered at origin
 
 // Sensor pose z: the grid is a single z-layer (dims.z()==1) covering
 // world z in [0, kVoxelSize) -- any pose/point outside that lands out of
 // bounds. Mid-layer keeps raycast()/traceRay() comfortably inside it.
 constexpr double kSensorZ = kVoxelSize / 2.0;
-
-// Same scenario as follower_obstacle_demo.cpp: a straight approach with a
-// bypass large enough for the leader to clear the obstacle but tight
-// enough that the (obstacle-unaware) follower's hitch-lag does not.
-constexpr double kTargetSpeed = 1.0;         // m/s
-constexpr double kYStart = -6.0;             // m
-constexpr double kBypassAmplitude = 1.5;     // m
-constexpr double kBypassHalfWidth = 2.5;     // m
-constexpr double kTEnd = 14.0;               // s
 
 constexpr double kTs            = ARGUS_MPC_TS;
 constexpr double kTHover        = ARGUS_T_HOVER;
@@ -137,18 +127,88 @@ MappingSensorConfig loadMappingSensorConfig(const YAML::Node& root, const std::s
     return cfg;
 }
 
-// Same square-obstacle construction as follower_obstacle_demo.cpp -- this
-// is the privileged ground truth; the follower itself never queries it
-// directly, only through simulateLidarScan().
-VoxelGrid buildGroundTruthGrid()
+// One obstacle from config/forest.yaml -- either a circle (center + radius)
+// or a square (center + half_size). Matches the project's existing
+// shape-query conventions (queryPlanar()'s own bilinear math, circle/square
+// distance checks) rather than inventing a third representation.
+struct ObstacleSpec
+{
+    enum class Shape { kCircle, kSquare } shape = Shape::kCircle;
+    double center_x = 0.0, center_y = 0.0;
+    double size = 0.2;  // radius (circle) or half_size (square)
+};
+
+// Full scenario: obstacles + the leader's path/pacing through them, both
+// from one YAML file -- see config/forest.yaml / config/scenario_single_
+// obstacle.yaml. Pass a different file as the demo's first CLI arg to
+// switch scenarios without rebuilding.
+struct ScenarioConfig
+{
+    std::vector<ObstacleSpec> obstacles;
+    std::vector<std::pair<double, double>> leader_waypoints;
+    argus_follower::SpeedKeyframes leader_speed_profile;
+    double t_end = 14.0;
+};
+
+ScenarioConfig loadScenarioConfig(const std::string& yaml_path)
+{
+    const YAML::Node root = YAML::LoadFile(yaml_path);
+    if (!root["obstacles"]) throw std::runtime_error(yaml_path + ": missing 'obstacles' section");
+    if (!root["leader"])    throw std::runtime_error(yaml_path + ": missing 'leader' section");
+
+    ScenarioConfig cfg;
+    for (const YAML::Node& n : root["obstacles"]) {
+        ObstacleSpec spec;
+        const std::string shape = n["shape"].as<std::string>();
+        spec.center_x = n["center"][0].as<double>();
+        spec.center_y = n["center"][1].as<double>();
+        if (shape == "circle") {
+            spec.shape = ObstacleSpec::Shape::kCircle;
+            spec.size  = n["radius"].as<double>();
+        } else if (shape == "square") {
+            spec.shape = ObstacleSpec::Shape::kSquare;
+            spec.size  = n["half_size"].as<double>();
+        } else {
+            throw std::runtime_error(yaml_path + ": unknown obstacle shape '" + shape + "'");
+        }
+        cfg.obstacles.push_back(spec);
+    }
+
+    const YAML::Node leader = root["leader"];
+    if (!leader["waypoints"])     throw std::runtime_error(yaml_path + ": leader: missing 'waypoints'");
+    if (!leader["speed_profile"]) throw std::runtime_error(yaml_path + ": leader: missing 'speed_profile'");
+    cfg.t_end = leader["t_end"].as<double>();
+    for (const YAML::Node& wp : leader["waypoints"]) {
+        cfg.leader_waypoints.emplace_back(wp[0].as<double>(), wp[1].as<double>());
+    }
+    for (const YAML::Node& kf : leader["speed_profile"]) {
+        cfg.leader_speed_profile.emplace_back(kf[0].as<double>(), kf[1].as<double>());
+    }
+    return cfg;
+}
+
+bool insideObstacle(const ObstacleSpec& o, double x, double y)
+{
+    if (o.shape == ObstacleSpec::Shape::kCircle) {
+        return std::hypot(x - o.center_x, y - o.center_y) <= o.size;
+    }
+    return std::abs(x - o.center_x) <= o.size && std::abs(y - o.center_y) <= o.size;
+}
+
+// Forest-like multi-obstacle ground truth, built from config/forest.yaml --
+// this is the privileged ground truth; the follower itself never queries it
+// directly, only through integrateLidarScan().
+VoxelGrid buildGroundTruthGrid(const std::vector<ObstacleSpec>& obstacles)
 {
     VoxelGrid grid(Eigen::Vector3d(-kHalfExtent, -kHalfExtent, 0.0),
                    Eigen::Vector3i(kGridN, kGridN, 1), kVoxelSize);
     for (int x = 0; x < kGridN; ++x) {
         for (int y = 0; y < kGridN; ++y) {
             const Eigen::Vector3d center = grid.voxelCenter({x, y, 0});
-            if (std::abs(center.x()) <= kObstacleHalfSize &&
-                std::abs(center.y()) <= kObstacleHalfSize) {
+            const bool occupied = std::any_of(
+                obstacles.begin(), obstacles.end(),
+                [&](const ObstacleSpec& o) { return insideObstacle(o, center.x(), center.y()); });
+            if (occupied) {
                 const Eigen::Vector3d sensor = center + Eigen::Vector3d(0.0, 0.0, 10.0 * kVoxelSize);
                 grid.insertPointCloud(sensor, {center});
             }
@@ -302,12 +362,16 @@ void writeSnapshotLog(const std::string& path, const VoxelGrid& grid,
 
 }  // namespace
 
-int main()
+int main(int argc, char** argv)
 {
     namespace fs = std::filesystem;
     fs::create_directories("logs");
 
-    VoxelGrid ground_truth = buildGroundTruthGrid();
+    const std::string scenario_path = argc > 1 ? argv[1] : ARGUS_CONFIG_DIR "/forest.yaml";
+    const ScenarioConfig scenario = loadScenarioConfig(scenario_path);
+    std::cout << "Scenario: " << scenario_path << " (" << scenario.obstacles.size()
+              << " obstacles)\n";
+    VoxelGrid ground_truth = buildGroundTruthGrid(scenario.obstacles);
     ground_truth.computeEsdf();  // for the closest-approach report below only -- own_map
                                   // never queries ground_truth directly, see design_decisions.md
     VoxelGrid own_map(ground_truth.origin(), ground_truth.dims(), ground_truth.voxelSize());
@@ -327,9 +391,8 @@ int main()
             "(control_dt must be an integer multiple of sensor_dt)");
     }
 
-    const SplineXY target = argus_follower::straightLineWithBypassTarget(
-        /*x0=*/0.0, kYStart, kTargetSpeed, kBypassAmplitude, /*bypass_y_center=*/0.0,
-        kBypassHalfWidth, kTEnd, control_dt);
+    const SplineXY target = argus_follower::waypointTarget(
+        scenario.leader_waypoints, scenario.leader_speed_profile, scenario.t_end, control_dt);
     TrailerFollower follower(trailer_cfg.distance_to_target, trailer_cfg.heading_gain);
 
     argus_mpc::QuadrotorMpc mpc;
@@ -343,7 +406,7 @@ int main()
         throw std::runtime_error("config/quadrotor.yaml: trailer.Ts must equal mpc.Ts");
     }
 
-    const int n_control_steps = static_cast<int>(std::round(kTEnd / control_dt));
+    const int n_control_steps = static_cast<int>(std::round(scenario.t_end / control_dt));
     const std::string traj_path = "logs/online_mapping_trajectory.csv";
     std::ofstream traj(traj_path);
     traj << std::fixed << std::setprecision(6);

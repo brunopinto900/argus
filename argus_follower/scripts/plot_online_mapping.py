@@ -18,9 +18,11 @@ Headless export (no display required):
 Unlike plot_follower_obstacle.py (instant full access to the ground-truth
 ESDF, background never changes), the background here evolves over the
 run as the sensor sweep resolves voxels. own_map's conservative ESDF mode
-(computeEsdf(treat_unknown_as_occupied=true)) already renders kUnknown as
-distance 0, same red as a real obstacle -- a separate grey overlay for it
-was tried and dropped as not adding information beyond that.
+(computeEsdf(treat_unknown_as_occupied=true)) renders kUnknown as distance
+0, same red as a real obstacle -- so a grey ground-truth overlay (every
+true obstacle cell, regardless of whether own_map has observed it yet) is
+drawn on top, faded enough to still show the ESDF colour underneath once
+a cell is both truly occupied and already mapped.
 """
 import argparse
 import struct
@@ -63,7 +65,7 @@ if _args.save_png or _args.save_gif:
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 from matplotlib.colors import hsv_to_rgb
-from matplotlib.patches import Wedge
+from matplotlib.patches import Patch, Wedge
 
 
 def load_snapshot_log(path):
@@ -94,10 +96,14 @@ def load_snapshot_log(path):
 
 def esdf_to_rgb(distance, max_distance):
     # Same red(close/occupied)->blue(far) hue sweep as plot_follower_obstacle.py's
-    # esdf_to_rgb() / examples/esdf_2d_demo.cpp's distanceToColor().
+    # esdf_to_rgb() / examples/esdf_2d_demo.cpp's distanceToColor(), but
+    # desaturated ("faded") so it reads as a soft backdrop the grey
+    # ground-truth overlay and the path/obstacle lines stay legible against,
+    # not a competing saturated layer.
     t = np.clip(distance / max_distance, 0.0, 1.0)
     hue = t * (240.0 / 360.0)
-    hsv = np.stack([hue, np.ones_like(hue), np.ones_like(hue)], axis=-1)
+    saturation = 0.55
+    hsv = np.stack([hue, np.full_like(t, saturation), np.ones_like(t)], axis=-1)
     return hsv_to_rgb(hsv)
 
 
@@ -124,17 +130,24 @@ def nearest_control_index(t):
 
 
 fig, ax = plt.subplots(figsize=(7, 7))
+# alpha<1 + bilinear interpolation: a soft, faded backdrop (not a competing
+# saturated/blocky-voxel layer) that the grey ground-truth overlay and
+# path/obstacle lines stay legible against.
 im = ax.imshow(esdf_to_rgb(distances[0], _args.max_distance),
-                origin="lower", extent=extent, interpolation="nearest")
+                origin="lower", extent=extent, interpolation="bilinear", alpha=0.75)
 
-# Ground truth (privileged, simulator-only) obstacle outline, for comparison
-# against what own_map currently believes -- own_map's own occupied cells
-# are already shown via the hue sweep above, this is the actual geometry,
-# independent of how much of it has been observed yet.
+# Ground truth (privileged, simulator-only) obstacle shape -- drawn
+# unconditionally for every true obstacle cell, regardless of whether
+# own_map has observed it yet (own_map's belief is the ESDF hue sweep
+# above; this is what's actually there). Low alpha so both layers stay
+# visible where they overlap -- grey tints the ESDF colour rather than
+# hiding it once a cell is both truly occupied and already mapped.
 ax.contour(ground_truth_state == K_OCCUPIED, levels=[0.5], extent=extent, origin="lower",
-           colors="black", linewidths=3.0, linestyles="--")
+           colors="dimgray", linewidths=2.0, linestyles="--")
 ax.contourf(ground_truth_state == K_OCCUPIED, levels=[0.5, 1.5], extent=extent, origin="lower",
-            colors="black", alpha=0.35)
+            colors="grey", alpha=0.3)
+obstacle_proxy = Patch(facecolor="grey", alpha=0.3, edgecolor="dimgray",
+                        linestyle="--", label="obstacle (unobserved)")
 
 sensor_circle = plt.Circle((0, 0), sensor_max_range, fill=False, color="deepskyblue",
                             linestyle=":", linewidth=1.2, label=f"sensor range ({sensor_max_range:.0f}m)")
@@ -165,7 +178,9 @@ frustum = Wedge((0, 0), _args.frustum_length, 0, 0, color="orange", alpha=0.3,
                  label="camera FOV (yaw only)")
 ax.add_patch(frustum)
 
-ax.legend(loc="upper right")
+handles, labels = ax.get_legend_handles_labels()
+ax.legend(handles=handles + [obstacle_proxy], labels=labels + [obstacle_proxy.get_label()],
+          loc="upper right")
 
 
 def update(frame):

@@ -4,8 +4,10 @@
 #include <argus_follower/TargetMotionSimulator.hpp>
 
 using argus_follower::circleTarget;
+using argus_follower::SpeedKeyframes;
 using argus_follower::straightLineTarget;
 using argus_follower::straightLineWithBypassTarget;
+using argus_follower::waypointTarget;
 using argus_follower::zigzagTarget;
 
 TEST(TargetMotionSimulator, StraightLineHasConstantXAndLinearY)
@@ -97,4 +99,44 @@ TEST(TargetMotionSimulator, StraightLineWithBypassReturnsToLineOutsideWindow)
     for (double t : {0.0, 3.5, 7.0, 10.5, 13.9}) {
         EXPECT_NEAR(target.y.derivative(t), kSpeed, 1e-6) << "t=" << t;
     }
+}
+
+TEST(TargetMotionSimulator, WaypointTargetStartsAtRestAtFirstWaypoint)
+{
+    const std::vector<std::pair<double, double>> waypoints = {{0.0, 0.0}, {0.0, 10.0}};
+    const SpeedKeyframes speed = {{0.0, 0.0}, {2.0, 1.0}, {10.0, 1.0}};
+    const auto target = waypointTarget(waypoints, speed, /*t_end=*/10.0);
+
+    EXPECT_NEAR(target.x(0.0), 0.0, 1e-6);
+    EXPECT_NEAR(target.y(0.0), 0.0, 1e-6);
+    EXPECT_NEAR(target.y.derivative(0.0), 0.0, 1e-2);
+}
+
+// A straight-line two-waypoint path with a constant-speed middle segment:
+// distance covered by time t (for t in the constant-speed window) must
+// equal speed * t, same closed-form check as StraightLineHasConstantXAndLinearY.
+TEST(TargetMotionSimulator, WaypointTargetCoversExpectedDistanceAtConstantSpeed)
+{
+    constexpr double kSpeed = 2.0;
+    const std::vector<std::pair<double, double>> waypoints = {{0.0, 0.0}, {0.0, 100.0}};
+    const SpeedKeyframes speed = {{0.0, kSpeed}, {20.0, kSpeed}};
+    const auto target = waypointTarget(waypoints, speed, /*t_end=*/20.0, /*sample_dt=*/0.01);
+
+    for (double t : {0.0, 2.0, 7.5, 15.0, 19.9}) {
+        EXPECT_NEAR(target.y(t), kSpeed * t, 1e-2) << "t=" << t;
+        EXPECT_NEAR(target.x(t), 0.0, 1e-6) << "t=" << t;
+    }
+}
+
+// If the speed profile's cumulative distance exceeds the polyline's total
+// length well before t_end, position must hold at the final waypoint, not
+// extrapolate past it.
+TEST(TargetMotionSimulator, WaypointTargetHoldsAtFinalWaypointIfProfileOutrunsPath)
+{
+    const std::vector<std::pair<double, double>> waypoints = {{0.0, 0.0}, {0.0, 5.0}};
+    const SpeedKeyframes speed = {{0.0, 10.0}, {10.0, 10.0}};  // would cover 50m on a 5m path
+    const auto target = waypointTarget(waypoints, speed, /*t_end=*/10.0, /*sample_dt=*/0.01);
+
+    EXPECT_NEAR(target.y(1.0), 5.0, 1e-2);
+    EXPECT_NEAR(target.y(9.9), 5.0, 1e-2);
 }

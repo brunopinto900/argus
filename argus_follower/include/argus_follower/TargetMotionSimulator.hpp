@@ -1,5 +1,7 @@
 #pragma once
 
+#include <utility>
+
 #include <argus_follower/CubicSpline.hpp>
 
 // Synthetic target-motion generators for exercising TrailerFollower without
@@ -44,5 +46,23 @@ SplineXY zigzagTarget(double x0, double y0, double speed, double amplitude,
 SplineXY straightLineWithBypassTarget(double x0, double y_start, double speed, double amplitude,
                                        double bypass_y_center, double bypass_half_width,
                                        double t_end, double sample_dt = 0.05);
+
+// (t, speed) keyframes -- speed is linearly interpolated between
+// consecutive keyframes (so each segment's acceleration is just its
+// slope), the same "specify key values, interpolate" philosophy as the
+// rest of this file, applied to speed instead of position directly. Must
+// start at t=0 and be sorted by t.
+using SpeedKeyframes = std::vector<std::pair<double, double>>;
+
+// Piecewise-linear path through `waypoints` ((x,y) corners, world frame),
+// traversed at a speed given by `speed_keyframes` -- distance covered by
+// time t is the integral of speed(t) from 0 to t. Lets a path's shape and
+// its pacing (accelerate/cruise/decelerate/stop, slow through a tight
+// passage, etc.) be designed independently, unlike the constant-speed
+// generators above. Holds at the final waypoint if the speed profile
+// would outrun the path's total length before t_end.
+SplineXY waypointTarget(const std::vector<std::pair<double, double>>& waypoints,
+                        const SpeedKeyframes& speed_keyframes, double t_end,
+                        double sample_dt = 0.05);
 
 }  // namespace argus_follower
