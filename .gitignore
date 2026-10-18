@@ -5,6 +5,7 @@ quadrotor_sim.json
 todo
 design_decisions.md
 whiteboard.md
+interview.md
 
 # CMake build output
 build/

@@ -164,6 +164,44 @@ double distanceAtPoint(const VoxelGrid& grid, double x, double y)
     return grid.distanceAt(idx);
 }
 
+// Planar counterpart of VoxelGrid::query() -- same bilinear interpolant and
+// the same analytic-derivative math, restricted to the z=0 layer. Needed
+// because query() itself requires both z and z+1 neighbors to be in bounds
+// for its trilinear interpolation, which is never true on this demo's
+// single-layer (dims.z()==1) grids -- every query() call here would report
+// valid=false. Scoped to this file rather than changing VoxelGrid's shared
+// 3D query(), which other demos/tests rely on as-is.
+struct PlanarQuery
+{
+    double distance = 0.0;
+    double grad_x = 0.0, grad_y = 0.0;
+    bool valid = false;
+};
+
+PlanarQuery queryPlanar(const VoxelGrid& grid, double x, double y)
+{
+    PlanarQuery result;
+    const double rx = (x - grid.origin().x()) / grid.voxelSize() - 0.5;
+    const double ry = (y - grid.origin().y()) / grid.voxelSize() - 0.5;
+    const int ix0 = static_cast<int>(std::floor(rx));
+    const int iy0 = static_cast<int>(std::floor(ry));
+    const Eigen::Vector3i i00(ix0, iy0, 0), i11(ix0 + 1, iy0 + 1, 0);
+    if (!grid.inBounds(i00) || !grid.inBounds(i11)) return result;  // valid=false
+
+    const double wx = rx - ix0, wy = ry - iy0;
+    const double c00 = grid.distanceAt({ix0, iy0, 0});
+    const double c10 = grid.distanceAt({ix0 + 1, iy0, 0});
+    const double c01 = grid.distanceAt({ix0, iy0 + 1, 0});
+    const double c11 = grid.distanceAt({ix0 + 1, iy0 + 1, 0});
+
+    const auto lerp = [](double a, double b, double t) { return a + (b - a) * t; };
+    result.distance = lerp(lerp(c00, c10, wx), lerp(c01, c11, wx), wy);
+    result.grad_x = lerp(c10 - c00, c11 - c01, wy) / grid.voxelSize();
+    result.grad_y = lerp(c01 - c00, c11 - c10, wx) / grid.voxelSize();
+    result.valid = true;
+    return result;
+}
+
 // Fraction of voxels own_map has actually resolved (kFree or kOccupied) --
 // a quick sanity signal that the sensor loop is making progress, not the
 // full observable-slice coverage report (that belongs to step 9's console
@@ -308,6 +346,20 @@ int main()
     std::ofstream traj(traj_path);
     traj << "t,leader_x,leader_y,follower_x,follower_y,mpc_x,mpc_y,mpc_psi\n";
 
+    // Staleness measurement: NOT wired into the MPC's cost (own_map is still
+    // not read by QuadrotorMpc at all here) -- this purely measures, per
+    // control tick, how wrong a frozen tangent-plane approximation built at
+    // the step's starting position (p0) would have been by the time the
+    // drone actually reached its end-of-step position (p1). See
+    // design_decisions.md's "Staleness error -- formula and which sign is
+    // dangerous".
+    const std::string staleness_path = "logs/staleness_log.csv";
+    std::ofstream staleness(staleness_path);
+    staleness << "t,p0_x,p0_y,p1_x,p1_y,step_dist,"
+                 "d0,grad0_x,grad0_y,"
+                 "true_dist_p1,grad1_x,grad1_y,"
+                 "d_lin_p1,error\n";
+
     double min_follower_dist = std::numeric_limits<double>::infinity();
     double min_leader_dist   = std::numeric_limits<double>::infinity();
     double min_mpc_dist      = std::numeric_limits<double>::infinity();
@@ -358,6 +410,12 @@ int main()
         const argus_mpc::Command cmd = mpc.step(x0_mpc, mpc_horizon, tgt);
         u = {cmd.thrust * kTHover, cmd.roll_rate, cmd.pitch_rate, cmd.yaw_rate};
 
+        // p0: drone's position as of this solve, queried against own_map as
+        // it stood right now -- the (d0, grad0) a hypothetical hinge cost
+        // would have frozen for this entire step.
+        const Eigen::Vector2d p0(x[0], x[1]);
+        const auto q0 = queryPlanar(own_map, p0.x(), p0.y());
+
         // Plant (and therefore the mapping sensor riding it) integrates at
         // the faster sensor rate, holding this control step's command
         // constant across all steps_per_control sub-ticks -- MPC solves at
@@ -385,6 +443,23 @@ int main()
         traj << t << ',' << leader_x << ',' << leader_y << ',' << ref_x << ',' << ref_y << ','
              << x[0] << ',' << x[1] << ',' << x[8] << '\n';  // x[8] = psi (yaw)
 
+        // p1: drone's actual position one control tick later, after own_map
+        // has kept being updated underneath it (same map object, further
+        // along). Comparing d_lin_p1 (built from the stale p0/d0/grad0) to
+        // a fresh query at p1 is the staleness error itself.
+        const Eigen::Vector2d p1(x[0], x[1]);
+        const auto q1 = queryPlanar(own_map, p1.x(), p1.y());
+        if (q0.valid && q1.valid) {
+            const double step_dist = (p1 - p0).norm();
+            const double d_lin_p1 = q0.distance + q0.grad_x * (p1.x() - p0.x()) +
+                                     q0.grad_y * (p1.y() - p0.y());
+            const double error = d_lin_p1 - q1.distance;
+            staleness << t << ',' << p0.x() << ',' << p0.y() << ',' << p1.x() << ',' << p1.y() << ','
+                      << step_dist << ',' << q0.distance << ',' << q0.grad_x << ','
+                      << q0.grad_y << ',' << q1.distance << ',' << q1.grad_x << ','
+                      << q1.grad_y << ',' << d_lin_p1 << ',' << error << '\n';
+        }
+
         min_leader_dist   = std::min(min_leader_dist, distanceAtPoint(ground_truth, leader_x, leader_y));
         min_follower_dist = std::min(min_follower_dist, distanceAtPoint(ground_truth, ref_x, ref_y));
     }
@@ -405,6 +480,7 @@ int main()
     std::cout << "Ran " << n_control_steps << " control steps (" << control_dt << "s) x "
               << steps_per_control << " sensor sub-ticks (" << sensor_dt << "s) each.\n"
               << "Logged trajectory to " << traj_path << "\n"
+              << "Logged per-tick staleness measurements to " << staleness_path << "\n"
               << "Logged " << snapshots.size() << " own_map snapshots (" << kSnapshotRateHz
               << "Hz) to " << snapshot_path << "\n\n"
               << "own_map resolved fraction: " << resolvedFraction(own_map) * 100.0 << "%\n\n"
