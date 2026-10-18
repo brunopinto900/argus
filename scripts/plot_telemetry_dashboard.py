@@ -19,6 +19,8 @@ Headless export (no display required):
 Panels (one figure, always 2 columns):
   - XY path:             drone (actual) vs. position reference vs. FOV target
   - Yaw error:             MPC yaw vs. bearing to the FOV target
+  - Pitch error:           MPC pitch vs. level reference (0 rad -- unlike
+                            yaw, the MPC has no FOV-bearing pitch reference)
   - Velocity:              vx, vy, vz vs. time
   - Attitude:              roll, pitch, yaw vs. time (deg)
   - Body rates:            p, q, r vs. time (deg/s)
@@ -118,6 +120,19 @@ def _yaw_error(a):
     a.set_title("Yaw error (MPC vs. reference)")
 
 
+def _pitch_error(a):
+    # Unlike yaw, pitch has no FOV-bearing reference in the MPC cost --
+    # generate_mpc.py's yref holds theta at a constant 0 rad (level), the FOV
+    # target only enters through the coupled boresight-cone residual r_fov,
+    # not a decomposed pitch angle. So the reference here is that literal
+    # level set point, not a bearing to (fx,fy,fz).
+    err = np.degrees(df["theta"])
+    a.plot(df["t"], err, color="tab:orange")
+    a.set_xlabel("t [s]")
+    a.set_ylabel("pitch error [deg]")
+    a.set_title("Pitch error (MPC vs. level reference)")
+
+
 def _velocity(a):
     a.plot(df["t"], df["vx"], label="vx")
     a.plot(df["t"], df["vy"], label="vy")
@@ -189,8 +204,8 @@ def _obstacle_distance(a):
     a.legend()
 
 
-panels = [_xy_path, _yaw_error, _velocity, _attitude, _body_rates, _tracking_error,
-          _target_distance]
+panels = [_xy_path, _yaw_error, _pitch_error, _velocity, _attitude, _body_rates,
+          _tracking_error, _target_distance]
 if has_obstacle:
     panels.append(_obstacle_distance)
 

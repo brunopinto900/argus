@@ -313,10 +313,22 @@ reference line on the distance-to-target panel (e.g.
 python3 scripts/animate_xy.py --csv-path logs/trailer_mpc_trajectory.csv
 ```
 
+Same 3-D view also works on `online_mapping_demo`'s log — no extra flags
+needed, the ESDF snapshot log is auto-detected next to `--csv-path` (by
+`online_mapping_demo`'s fixed `*_trajectory.csv`/`*_esdf_snapshots.bin`
+naming) and draws two extra layers: every ground-truth obstacle as an
+extruded shape (cosmetic height only — `own_map` is still a single
+z-layer, no real height data to draw instead), and `own_map`'s ESDF as a
+faded textured plane at z=0:
+
+```bash
+python3 scripts/animate_xy.py --csv-path logs/online_mapping_trajectory.csv
+```
+
 2-D ESDF map animation (`online_mapping_demo` only) — own_map's distance
-field sweeping over time, the ground-truth obstacle outline, sensor-range
-circle, camera FOV wedge, and all three paths (leader/follower/MPC actual)
-overlaid:
+field sweeping over time, every ground-truth obstacle shown in grey
+(regardless of observed state), sensor-range circle, camera FOV wedge, and
+all three paths (leader/follower/MPC actual) overlaid:
 
 ```bash
 python3 argus_follower/scripts/plot_online_mapping.py

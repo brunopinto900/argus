@@ -10,6 +10,11 @@ Headless export (e.g. for docs/README assets), no display required:
     python3 scripts/animate_xy.py --save-gif docs/tracking.gif \
         --start-frame 20 --num-frames 160 --stride 2 --fps 15
 
+Online-mapping/forest scenario -- the snapshot log (ESDF + obstacles) is
+auto-detected next to --csv-path, no extra flags needed:
+    ./build/online_mapping_demo
+    python3 scripts/animate_xy.py --csv-path logs/online_mapping_trajectory.csv
+
 What is shown:
   - Grey dashed path    : complete logged target trajectory (ground plane)
   - Red star            : current ground target position (moves)
@@ -20,9 +25,19 @@ What is shown:
   - Dashed green frustum: ideal frustum (yaw + pitch required to see target)
   - Amber polygon       : camera footprint projected onto the ground plane (z=0)
   - Text                : XY tracking error, z error, yaw/pitch bearing errors
+  - Grey extrusions      : every ground-truth-occupied cell (from the
+                          auto-detected snapshot log), cosmetic height --
+                          own_map is still a single z-layer, see
+                          design_decisions.md's "Terrain / varying height"
+  - Faded red/blue plane : own_map's ESDF at z=0, re-rendered (not updated
+                          in place) every frame -- the honest-data-only
+                          tier described in the 3-D visualization planning
+                          notes
 """
 
 import argparse
+import os
+import struct
 import sys
 
 import numpy as np
@@ -46,7 +61,23 @@ def _parse_args():
     p.add_argument("--csv-path", default="logs/trajectory.csv",
                    help="Trajectory CSV to animate (any producer using the same column layout "
                         "as src/mpc_controller.cpp's log, e.g. examples/trailer_mpc_demo.cpp)")
-    p.add_argument("--xy-limit", type=float, default=5.0, help="Axis half-extent [m]")
+    p.add_argument("--xy-limit", type=float, default=None,
+                   help="Axis half-extent [m] (default: 5.0, or the snapshot log's own grid "
+                        "extent when one is found/given)")
+    p.add_argument("--snapshot-log", default=None,
+                   help="online_mapping_demo's ESDF snapshot log -- draws own_map's distance "
+                        "field as a faded textured plane at z=0, and every ground-truth "
+                        "obstacle as a cosmetic-height extrusion (same grid, no separate scenario "
+                        "file needed). Default: auto-detected next to --csv-path (matches "
+                        "online_mapping_demo's *_trajectory.csv / *_esdf_snapshots.bin naming); "
+                        "silently skipped if none is found (e.g. for argus_mpc/trailer_mpc_demo "
+                        "logs, which have no such file).")
+    p.add_argument("--esdf-stride", type=int, default=6,
+                   help="Downsample factor for the ESDF plane and obstacle extrusion (every Nth "
+                        "voxel per axis) -- the full 300x300 grid is too many facecolor quads/"
+                        "boxes to animate smoothly")
+    p.add_argument("--obstacle-height", type=float, default=1.2,
+                   help="Cosmetic extrusion height [m] for ground-truth obstacles")
     return p.parse_args()
 
 
@@ -69,7 +100,8 @@ TRAIL_SECONDS = 4.0
 FRUSTUM_LEN   = 0.70   # camera frustum length [m]
 FRUSTUM_H_FOV = np.deg2rad(40.0)  # horizontal half-angle
 FRUSTUM_V_FOV = np.deg2rad(30.0)  # vertical half-angle
-XY_LIMIT      = _args.xy_limit    # axis half-extent [m]
+# XY_LIMIT resolved further down, after the optional snapshot log is loaded
+# (its own grid extent becomes the default when one is found).
 
 # ── Load data ────────────────────────────────────────────────────────────────
 try:
@@ -180,6 +212,81 @@ def frustum_ground_footprint(pos, R):
     return np.array(hits)
 
 
+K_OCCUPIED = 2  # argus_esdf::VoxelState::kOccupied -- see VoxelGrid.hpp
+
+
+def load_snapshot_log(path):
+    """Same binary layout as argus_follower/scripts/plot_online_mapping.py's
+    loader -- duplicated here (not imported) to keep each plot script
+    standalone, same pattern as the rest of this repo's scripts. Unlike
+    that loader, this one keeps ground_truth_state (for the obstacle
+    extrusion below -- no separate scenario YAML needed, same grid)."""
+    with open(path, "rb") as f:
+        nx, ny = struct.unpack("<ii", f.read(8))
+        voxel_size, origin_x, origin_y = struct.unpack("<ddd", f.read(24))
+        (sensor_max_range,) = struct.unpack("<d", f.read(8))
+        n_voxels = nx * ny
+        ground_truth_state = np.frombuffer(f.read(n_voxels), dtype=np.uint8).reshape(ny, nx)
+        (num_snapshots,) = struct.unpack("<i", f.read(4))
+        times = np.empty(num_snapshots)
+        distances = np.empty((num_snapshots, ny, nx), dtype=np.float32)
+        voxel_dtype = np.dtype([("distance", "<f4"), ("state", "u1")])
+        for i in range(num_snapshots):
+            (times[i],) = struct.unpack("<d", f.read(8))
+            voxels = np.frombuffer(f.read(n_voxels * voxel_dtype.itemsize), dtype=voxel_dtype)
+            distances[i] = voxels["distance"].reshape(ny, nx)
+    xs = origin_x + (np.arange(nx) + 0.5) * voxel_size
+    ys = origin_y + (np.arange(ny) + 0.5) * voxel_size
+    return times, distances, xs, ys, ground_truth_state, voxel_size
+
+
+def find_snapshot_log(csv_path):
+    """Auto-detect online_mapping_demo's snapshot log next to a trajectory
+    CSV, by its fixed naming convention (see online_mapping_demo.cpp:
+    logs/online_mapping_trajectory.csv -> logs/online_mapping_esdf_snapshots.bin).
+    Returns None (silently) for any other log, e.g. argus_mpc/trailer_mpc_demo's,
+    which have no such file."""
+    guess = os.path.join(os.path.dirname(csv_path) or ".",
+                         "online_mapping_esdf_snapshots.bin")
+    return guess if os.path.exists(guess) else None
+
+
+def esdf_to_rgba(distance, max_distance, alpha):
+    # Same desaturated red(close)->blue(far) hue sweep as
+    # argus_follower/scripts/plot_online_mapping.py's esdf_to_rgb().
+    t = np.clip(distance / max_distance, 0.0, 1.0)
+    hue = t * (240.0 / 360.0)
+    from matplotlib.colors import hsv_to_rgb
+    hsv = np.stack([hue, np.full_like(t, 0.55), np.ones_like(t)], axis=-1)
+    rgb = hsv_to_rgb(hsv)
+    return np.concatenate([rgb, np.full(rgb.shape[:-1] + (1,), alpha)], axis=-1)
+
+
+def build_obstacle_extrusions(ground_truth_state, xs, ys, voxel_size, height, stride):
+    """Every ground-truth-occupied cell (downsampled by `stride`, same as
+    the ESDF plane) as a small extruded box -- side faces + top cap. No
+    scenario YAML needed: same snapshot-log grid the ESDF plane already
+    reads, so it can never drift out of sync with what a given run
+    actually used. Height is cosmetic (see --obstacle-height's help), not
+    from real grid data -- see design_decisions.md's "Terrain / varying
+    height". Blocky/pixelated by construction (one box per downsampled
+    cell, not a fitted shape) -- an honest reflection of the grid's own
+    resolution, same spirit as the 2-D script's grey overlay."""
+    occupied = ground_truth_state[::stride, ::stride] == K_OCCUPIED
+    half = stride * voxel_size / 2.0
+    polys = []
+    for iy, ix in zip(*np.nonzero(occupied)):
+        cx, cy = xs[::stride][ix], ys[::stride][iy]
+        ring = np.array([[cx - half, cy - half], [cx + half, cy - half],
+                          [cx + half, cy + half], [cx - half, cy + half]])
+        for i in range(4):
+            p0, p1 = ring[i], ring[(i + 1) % 4]
+            polys.append([[p0[0], p0[1], 0.0], [p1[0], p1[1], 0.0],
+                          [p1[0], p1[1], height], [p0[0], p0[1], height]])
+        polys.append([[p[0], p[1], height] for p in ring])  # top cap
+    return polys
+
+
 def bearing_errors_deg(drone_pos, phi, theta, psi, target_pos):
     """Yaw and pitch bearing errors to target_pos in degrees.
 
@@ -195,6 +302,39 @@ def bearing_errors_deg(drone_pos, phi, theta, psi, target_pos):
     return (np.degrees(np.arctan2(db[1],  db[0])),
             np.degrees(np.arctan2(-db[2], db[0])))
 
+
+# ── Online-mapping snapshot log (auto-detected unless --snapshot-log given) ──
+snapshot_path = _args.snapshot_log or find_snapshot_log(CSV_PATH)
+esdf_times = esdf_distances = esdf_xs = esdf_ys = obstacle_polys = None
+if snapshot_path:
+    esdf_times, esdf_distances, esdf_xs, esdf_ys, ground_truth_state, voxel_size = \
+        load_snapshot_log(snapshot_path)
+    esdf_X, esdf_Y = np.meshgrid(esdf_xs[::_args.esdf_stride], esdf_ys[::_args.esdf_stride])
+    obstacle_polys = build_obstacle_extrusions(
+        ground_truth_state, esdf_xs, esdf_ys, voxel_size, _args.obstacle_height,
+        _args.esdf_stride)
+    grid_half_extent = max(esdf_xs[-1] - esdf_xs[0], esdf_ys[-1] - esdf_ys[0]) / 2.0
+
+XY_LIMIT = _args.xy_limit if _args.xy_limit is not None else (
+    grid_half_extent if snapshot_path else 5.0)
+
+
+def esdf_surface_frame_index(t):
+    return int(np.argmin(np.abs(esdf_times - t)))
+
+
+def draw_esdf_surface(t):
+    if esdf_surface_artist[0] is not None:
+        esdf_surface_artist[0].remove()
+    frame = esdf_surface_frame_index(t)
+    d = esdf_distances[frame, ::_args.esdf_stride, ::_args.esdf_stride]
+    rgba = esdf_to_rgba(d, max_distance=2.0, alpha=0.6)
+    esdf_surface_artist[0] = ax.plot_surface(
+        esdf_X, esdf_Y, np.zeros_like(esdf_X), facecolors=rgba,
+        rstride=1, cstride=1, shade=False, zorder=0)
+
+
+esdf_surface_artist = [None]  # mutable box so update() can replace it
 
 # ── Figure setup ─────────────────────────────────────────────────────────────
 fig = plt.figure(figsize=(10, 8))
@@ -223,6 +363,17 @@ ax.view_init(elev=25, azim=-60)
 # Full target trajectory (logged ground path) — shown as a faint dashed line
 ax.plot(xt_arr, yt_arr, zt_arr,
         "--", color="#555577", linewidth=1.2, label="Reference trajectory")
+
+# Obstacles: every ground-truth-occupied cell from the auto-detected
+# snapshot log, static extruded boxes, cosmetic height — see
+# build_obstacle_extrusions()'s docstring and design_decisions.md
+# ("Terrain / varying height" todo item -- own_map is still a single
+# z-layer, there's no real height data to draw instead).
+if obstacle_polys:
+    ax.add_collection3d(Poly3DCollection(
+        obstacle_polys, facecolor="grey", edgecolor="dimgray",
+        linewidth=0.5, alpha=0.5))
+    ax.set_zlim(0.0, max(DRONE_Z_REF + PAD, _args.obstacle_height + 0.5))
 
 # ── Animated artists ──────────────────────────────────────────────────────────
 trail_line, = ax.plot([], [], [], color="#4488ff", linewidth=1.4, alpha=0.55,
@@ -284,6 +435,12 @@ legend_handles = [
     mlines.Line2D([0], [0], marker="o", color="w", markerfacecolor="#55ee88",
                   markersize=7, linestyle="None", label="MPC reference"),
 ]
+if obstacle_polys:
+    legend_handles.append(mpatches.Patch(facecolor="grey", edgecolor="dimgray", alpha=0.5,
+                                          label="Obstacle (cosmetic height)"))
+if snapshot_path:
+    legend_handles.append(mpatches.Patch(facecolor="#dd4444", alpha=0.6,
+                                          label="own_map ESDF (z=0 plane)"))
 ax.legend(handles=legend_handles, loc="lower left",
           facecolor="#1a1a2e", edgecolor="#444466",
           labelcolor="#ccccee", fontsize=8)
@@ -319,6 +476,9 @@ def init():
 
 
 def update(frame):
+    if esdf_times is not None:
+        draw_esdf_surface(t_arr[frame])
+
     s = max(0, frame - trail_steps)
     trail_line.set_data_3d(x_arr[s:frame+1], y_arr[s:frame+1], z_arr[s:frame+1])
 
