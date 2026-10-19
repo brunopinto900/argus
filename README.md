@@ -335,6 +335,23 @@ python3 argus_follower/scripts/plot_online_mapping.py
 python3 argus_follower/scripts/plot_online_mapping.py --save-gif docs/online_mapping.gif --fps 10
 ```
 
+### Run metrics
+
+`online_mapping_demo` only (needs its `clearance_true`/`occlusion_clearance`/
+`solve_time_ms` log columns). Prints a summary table — collision safety
+(measured against `--real-target-m`, the actual physical requirement, not
+the inflated `d_safe` cost knob), tracking error, FOV bearing
+(`pitch_bearing_deviation_from_design_deg` is the real pitch "error," since
+0 is not the design target — see `config/quadrotor.yaml`'s
+`trailer.target_bearing_deg`), occlusion, solver health, and smoothness —
+plus a 7-panel figure:
+
+```bash
+./build/online_mapping_demo
+python3 scripts/compute_metrics.py
+python3 scripts/compute_metrics.py --save-png docs/metrics.png   # headless export
+```
+
 ---
 
 ## How to tune

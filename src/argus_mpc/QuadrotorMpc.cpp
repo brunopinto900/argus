@@ -49,6 +49,7 @@ struct QuadrotorMpc::Impl
     double timing_max_ms  = 0.0;
     double timing_sum_ms  = 0.0;
     long   timing_count   = 0;
+    double timing_last_ms = 0.0;
 
     Impl()
     {
@@ -176,6 +177,7 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
     impl.timing_min_ms = std::min(impl.timing_min_ms, solve_ms);
     impl.timing_max_ms = std::max(impl.timing_max_ms, solve_ms);
     impl.timing_sum_ms += solve_ms;
+    impl.timing_last_ms = solve_ms;
     ++impl.timing_count;
 
     RawInput u{};
@@ -216,6 +218,8 @@ SolverTiming QuadrotorMpc::solverTiming() const
     }
     return t;
 }
+
+double QuadrotorMpc::lastSolveTimeMs() const { return impl_->timing_last_ms; }
 
 void QuadrotorMpc::resetSolverTiming()
 {

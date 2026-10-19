@@ -60,6 +60,13 @@ trailer:
   heading_gain:        1.0   # lambda: how fast the follower's heading tracks the target's velocity direction
   N:                   20    # prediction horizon steps
   Ts:                   0.05 # sample time [s]
+  # Design target for the camera's pitch bearing to the FOV target -- NOT 0,
+  # the drone is meant to look down at a ground-level target from a standoff
+  # altitude. z_ref = distance_to_target * tan(target_bearing_deg), see
+  # examples/trailer_mpc_demo.cpp / online_mapping_demo.cpp's kFovZRef and
+  # design_decisions.md's "Static FOV-aware z_ref". Headroom under
+  # camera.fov_half_angle_deg (40 deg) is deliberate, not derived.
+  target_bearing_deg: 30.0
 
 # argus_perception::simulateLidarScan — synthetic 360° mapping sensor
 # ("a bunch of cameras + lidars"), separate from camera: above, which

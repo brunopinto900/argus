@@ -109,6 +109,12 @@ public:
     SolverTiming solverTiming() const;
     void resetSolverTiming();
 
+    // Wall-clock time of the most recent step() call's acados_solve(), in
+    // milliseconds. 0 before the first call. For per-step logging (e.g. a
+    // trajectory CSV's solve_time_ms column) -- solverTiming() only exposes
+    // the run-long aggregate.
+    double lastSolveTimeMs() const;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

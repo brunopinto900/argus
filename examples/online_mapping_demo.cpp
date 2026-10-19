@@ -82,11 +82,10 @@ constexpr double kTHover        = ARGUS_T_HOVER;
 // own banking requirement (tan(theta) = r*omega^2/g), which doesn't apply
 // to this scenario's threaded leader path. Here z_ref is instead derived
 // from tan(theta_FOV) = z_ref / distance_to_target, solved for z_ref at a
-// chosen target bearing angle -- see design_decisions.md's "Static
-// FOV-aware z_ref" for the full derivation and why this is computed once
-// from the configured standoff rather than recomputed online every
+// configured trailer.target_bearing_deg -- see design_decisions.md's
+// "Static FOV-aware z_ref" for the full derivation and why this is computed
+// once from the configured standoff rather than recomputed online every
 // control cycle (oscillation risk).
-constexpr double kTargetBearingDeg = 30.0;  // headroom under the 40 deg FOV half-angle
 // Ground-level tracked leader, distinct from the drone's z reference
 // above it -- same reasoning as examples/trailer_mpc_demo.cpp.
 constexpr double kTargetZ = 0.0;
@@ -104,6 +103,7 @@ struct TrailerConfig
     double heading_gain       = 1.0;
     int    N                  = 20;
     double Ts                 = 0.05;
+    double target_bearing_deg = 30.0;
 };
 
 TrailerConfig loadTrailerConfig(const YAML::Node& root, const std::string& yaml_path)
@@ -116,6 +116,7 @@ TrailerConfig loadTrailerConfig(const YAML::Node& root, const std::string& yaml_
     if (n["heading_gain"])       cfg.heading_gain        = n["heading_gain"].as<double>();
     if (n["N"])                  cfg.N                   = n["N"].as<int>();
     if (n["Ts"])                 cfg.Ts                  = n["Ts"].as<double>();
+    if (n["target_bearing_deg"]) cfg.target_bearing_deg  = n["target_bearing_deg"].as<double>();
     return cfg;
 }
 
@@ -237,6 +238,26 @@ double distanceAtPoint(const VoxelGrid& grid, double x, double y)
         static_cast<int>(std::floor((y - grid.origin().y()) / grid.voxelSize())), 0);
     if (!grid.inBounds(idx)) return std::numeric_limits<double>::infinity();
     return grid.distanceAt(idx);
+}
+
+// Minimum ground-truth clearance along the camera's line of sight (drone ->
+// FOV target), sampled at voxel resolution -- a proxy for "is the sightline
+// itself grazing an obstacle," distinct from clearance at the drone's own
+// position. Not an exact point-to-segment-vs-occupied-cell distance (that's
+// the planned occlusion-cost item in todo); this reuses the already-computed
+// ESDF via distanceAtPoint() at each sample instead, which is the min
+// distance from that sample point to the nearest obstacle -- close enough
+// for a metric, not a symbolic OCP cost.
+double occlusionClearance(const VoxelGrid& grid, double x0, double y0, double x1, double y1)
+{
+    const double seg_len = std::hypot(x1 - x0, y1 - y0);
+    const int n_samples = std::max(1, static_cast<int>(std::ceil(seg_len / grid.voxelSize())));
+    double min_dist = std::numeric_limits<double>::infinity();
+    for (int i = 0; i <= n_samples; ++i) {
+        const double s = static_cast<double>(i) / n_samples;
+        min_dist = std::min(min_dist, distanceAtPoint(grid, x0 + s * (x1 - x0), y0 + s * (y1 - y0)));
+    }
+    return min_dist;
 }
 
 // Planar counterpart of VoxelGrid::query() -- same bilinear interpolant and
@@ -391,10 +412,10 @@ int main(int argc, char** argv)
 
     const YAML::Node config_root = YAML::LoadFile(ARGUS_CONFIG_DIR "/quadrotor.yaml");
     const TrailerConfig trailer_cfg = loadTrailerConfig(config_root, ARGUS_CONFIG_DIR "/quadrotor.yaml");
-    // z_ref = distance_to_target * tan(kTargetBearingDeg) -- see the
-    // kTargetBearingDeg comment above.
+    // z_ref = distance_to_target * tan(target_bearing_deg) -- see the
+    // comment above kTs.
     const double kFovZRef = trailer_cfg.distance_to_target *
-                             std::tan(kTargetBearingDeg * M_PI / 180.0);
+                             std::tan(trailer_cfg.target_bearing_deg * M_PI / 180.0);
     const MappingSensorConfig sensor_cfg =
         loadMappingSensorConfig(config_root, ARGUS_CONFIG_DIR "/quadrotor.yaml");
 
@@ -434,13 +455,18 @@ int main(int argc, char** argv)
     // only this demo has (own_map's belief, not ground truth; see
     // design_decisions.md's "Ground truth vs. the drone's own map").
     // xt/yt/zt here = the follower's goal point; fx/fy/fz = the leader.
+    // clearance_true/occlusion_clearance are ground-truth ESDF queries (not
+    // own_map's belief, see dist_obstacle above) -- for the Monte Carlo
+    // metrics sweep (scripts/compute_metrics.py), not read by
+    // plot_telemetry_dashboard.py.
     traj << "step,t,"
             "x,y,z,vx,vy,vz,phi,theta,psi,p,q,r,"
             "T,p_cmd,q_cmd,r_cmd,"
             "xt,yt,zt,"
             "fx,fy,fz,"
             "solve_status,"
-            "dist_obstacle\n";
+            "dist_obstacle,"
+            "clearance_true,occlusion_clearance,solve_time_ms\n";
 
     // Staleness measurement -- a separate concern from the hinge cost
     // actually wired into step() above: this measures, per control tick,
@@ -558,6 +584,9 @@ int main(int argc, char** argv)
         // panel.
         const Eigen::Vector2d p1(x[0], x[1]);
         const auto q1 = queryPlanar(own_map, p1.x(), p1.y());
+        const double clearance_true = distanceAtPoint(ground_truth, p1.x(), p1.y());
+        const double occlusion_clear = occlusionClearance(ground_truth, p1.x(), p1.y(),
+                                                            leader_x, leader_y);
 
         traj << step << ',' << t;
         for (double v : x) traj << ',' << v;
@@ -566,7 +595,8 @@ int main(int argc, char** argv)
              << ',' << leader_x << ',' << leader_y << ',' << kTargetZ  // fx,fy,fz: the leader
              << ',' << cmd.solve_status << ',';
         if (q1.valid) traj << q1.distance; else traj << "nan";
-        traj << '\n';
+        traj << ',' << clearance_true << ',' << occlusion_clear << ',' << mpc.lastSolveTimeMs()
+             << '\n';
 
         if (q0.valid && q1.valid) {
             const double step_dist = (p1 - p0).norm();
@@ -596,12 +626,28 @@ int main(int argc, char** argv)
     const auto verification = verifyAgainstGroundTruth(own_map, ground_truth, observable_slice);
     const int total_voxels = own_map.dims().x() * own_map.dims().y() * own_map.dims().z();
 
+    // One-row mapping-coverage summary, for scripts/compute_metrics.py --
+    // these numbers were previously stdout-only, not readable by any script.
+    // Matters for a Monte Carlo sweep: mapping quality (how much of the
+    // relevant space own_map actually resolved before the drone got there)
+    // varies with speed/obstacle density and can explain collision/occlusion
+    // outcomes that look like controller failures but are really a mapping
+    // coverage gap.
+    const std::string summary_path = "logs/online_mapping_summary.csv";
+    std::ofstream summary(summary_path);
+    summary << std::fixed << std::setprecision(6);
+    summary << "resolved_fraction,observable_voxels,total_voxels,matched_voxels,mismatched_voxels\n"
+             << resolvedFraction(own_map) << ',' << verification.observable_count << ','
+             << total_voxels << ',' << verification.matched_count << ','
+             << verification.mismatched_count << '\n';
+
     std::cout << "Ran " << n_control_steps << " control steps (" << control_dt << "s) x "
               << steps_per_control << " sensor sub-ticks (" << sensor_dt << "s) each.\n"
               << "Logged trajectory to " << traj_path << "\n"
               << "Logged per-tick staleness measurements to " << staleness_path << "\n"
               << "Logged " << snapshots.size() << " own_map snapshots (" << kSnapshotRateHz
-              << "Hz) to " << snapshot_path << "\n\n"
+              << "Hz) to " << snapshot_path << "\n"
+              << "Logged mapping-coverage summary to " << summary_path << "\n\n"
               << "own_map resolved fraction: " << resolvedFraction(own_map) * 100.0 << "%\n\n"
               << "Observable-slice verification (own_map vs. ground truth, voxels the\n"
               << "sensor actually had a chance to resolve):\n"

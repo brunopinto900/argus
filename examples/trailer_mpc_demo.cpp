@@ -47,12 +47,11 @@ constexpr double kTHover         = ARGUS_T_HOVER;
 // -- that 1.5m comes from a different derivation tied to circular motion's
 // own banking requirement (tan(theta) = r*omega^2/g), which doesn't apply
 // to this scenario's arbitrary leader path. Here z_ref is instead derived
-// from tan(theta_FOV) = z_ref / distance_to_target, solved for z_ref at a
-// chosen target bearing angle -- see design_decisions.md's "Static
-// FOV-aware z_ref" for the full derivation and why this is computed once
-// from the configured standoff rather than recomputed online every
+// from tan(theta_FOV) = z_ref / distance_to_target, solved for z_ref at the
+// configured trailer.target_bearing_deg -- see design_decisions.md's
+// "Static FOV-aware z_ref" for the full derivation and why this is computed
+// once from the configured standoff rather than recomputed online every
 // control cycle (oscillation risk).
-constexpr double kTargetBearingDeg = 30.0;  // headroom under the 40 deg FOV half-angle
 // The tracked leader's own altitude for the FOV cost -- a ground-level
 // target (person/vehicle), distinct from the drone's z reference above
 // it. TrailerFollower/TargetMotionSimulator are 2-D (x, y only), so this
@@ -66,6 +65,7 @@ struct TrailerConfig
     double heading_gain       = 1.0;
     int    N                  = 20;
     double Ts                 = 0.05;
+    double target_bearing_deg = 30.0;
 };
 
 TrailerConfig loadTrailerConfig(const std::string& yaml_path)
@@ -79,6 +79,7 @@ TrailerConfig loadTrailerConfig(const std::string& yaml_path)
     if (n["heading_gain"])       cfg.heading_gain        = n["heading_gain"].as<double>();
     if (n["N"])                  cfg.N                   = n["N"].as<int>();
     if (n["Ts"])                 cfg.Ts                  = n["Ts"].as<double>();
+    if (n["target_bearing_deg"]) cfg.target_bearing_deg  = n["target_bearing_deg"].as<double>();
     return cfg;
 }
 
@@ -106,10 +107,10 @@ int main(int argc, char** argv)
     const double t_end = argc > 2 ? std::stod(argv[2]) : 20.0;
 
     const TrailerConfig trailer_cfg = loadTrailerConfig(ARGUS_CONFIG_DIR "/quadrotor.yaml");
-    // z_ref = distance_to_target * tan(kTargetBearingDeg) -- see the
-    // kTargetBearingDeg comment above.
+    // z_ref = distance_to_target * tan(target_bearing_deg) -- see the
+    // comment above kTHover.
     const double kFovZRef = trailer_cfg.distance_to_target *
-                             std::tan(kTargetBearingDeg * M_PI / 180.0);
+                             std::tan(trailer_cfg.target_bearing_deg * M_PI / 180.0);
 
     argus_mpc::QuadrotorMpc mpc;
     const int N = mpc.horizonLength();
