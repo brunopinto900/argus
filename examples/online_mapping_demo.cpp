@@ -22,6 +22,7 @@
 // for why, and its caveats (d_safe is still an unvalidated placeholder).
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -466,7 +467,7 @@ int main(int argc, char** argv)
             "fx,fy,fz,"
             "solve_status,"
             "dist_obstacle,"
-            "clearance_true,occlusion_clearance,solve_time_ms\n";
+            "clearance_true,occlusion_clearance,solve_time_ms,pipeline_time_ms\n";
 
     // Staleness measurement -- a separate concern from the hinge cost
     // actually wired into step() above: this measures, per control tick,
@@ -507,6 +508,20 @@ int main(int argc, char** argv)
                                                  // observable-slice report below
 
     for (int step = 0; step < n_control_steps; ++step) {
+        // Whole-pipeline wall-clock timing: everything a real flight
+        // computer would actually have to do once per control tick --
+        // follower goal points, obstacle linearization query, the MPC
+        // solve, and all steps_per_control sensor sub-ticks (lidar
+        // integration + own_map.computeEsdf(), which runs at the faster
+        // 60Hz sensor rate -- 3x per control tick here, and likely the
+        // real cost driver, not the sub-millisecond acados_solve() alone).
+        // Excludes metrics-only work (clearance_true/occlusion_clearance
+        // queries) and I/O (CSV/staleness logging, snapshot capture) --
+        // none of that would exist in a real deployment. See
+        // design_decisions.md's "Metrics dashboard" section on why
+        // solve_time_ms alone understates real-time risk.
+        const auto pipeline_start = std::chrono::steady_clock::now();
+
         const double t = step * control_dt;
         const double leader_x = target.x(t);
         const double leader_y = target.y(t);
@@ -575,6 +590,10 @@ int main(int argc, char** argv)
             ++sensor_tick;
         }
 
+        const auto pipeline_end = std::chrono::steady_clock::now();
+        const double pipeline_ms =
+            std::chrono::duration<double, std::milli>(pipeline_end - pipeline_start).count();
+
         // p1: drone's actual position one control tick later, after own_map
         // has kept being updated underneath it (same map object, further
         // along). Comparing d_lin_p1 (built from the stale p0/d0/grad0) to
@@ -596,7 +615,7 @@ int main(int argc, char** argv)
              << ',' << cmd.solve_status << ',';
         if (q1.valid) traj << q1.distance; else traj << "nan";
         traj << ',' << clearance_true << ',' << occlusion_clear << ',' << mpc.lastSolveTimeMs()
-             << '\n';
+             << ',' << pipeline_ms << '\n';
 
         if (q0.valid && q1.valid) {
             const double step_dist = (p1 - p0).norm();

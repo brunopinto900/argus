@@ -90,8 +90,11 @@ DISTANCE_TO_TARGET = (_cfg.get("trailer") or {}).get("distance_to_target")
 # trailer.target_bearing_deg comment). yaw has no such intentional offset
 # (0 really is its design target), only pitch needs this.
 TARGET_BEARING_DEG = (_cfg.get("trailer") or {}).get("target_bearing_deg")
+TS_MS = (_cfg.get("mpc") or {}).get("Ts")
+TS_MS = TS_MS * 1000.0 if TS_MS is not None else None
 
 dt = float(df["t"].diff().median())
+has_pipeline_time = "pipeline_time_ms" in df.columns
 
 
 def bearing_angles_deg():
@@ -234,6 +237,20 @@ def compute_summary():
         st = df["solve_time_ms"].values
         s["solve_time_mean_ms"] = float(np.mean(st))
         s["solve_time_max_ms"] = float(np.max(st))
+    # pipeline_time_ms is the whole control-tick wall-clock cost (follower
+    # goal points, obstacle linearization, the MPC solve, and every sensor
+    # sub-tick's lidar integration + own_map.computeEsdf()) -- solve_time_ms
+    # alone only covers acados_solve() and understates real-time risk by
+    # ~50x in practice (the ESDF recompute, not the solve, is the real cost
+    # driver). See design_decisions.md's "Metrics dashboard" section.
+    if has_pipeline_time:
+        pt = df["pipeline_time_ms"].values
+        s["pipeline_time_mean_ms"] = float(np.mean(pt))
+        s["pipeline_time_max_ms"] = float(np.max(pt))
+        if TS_MS is not None:
+            over_budget = pt > TS_MS
+            s["pipeline_over_budget_pct"] = float(100.0 * over_budget.mean())
+            s["pipeline_real_time_safe"] = bool(not over_budget.any())
     if RATE_MAX is not None:
         eps = 0.02 * RATE_MAX
         sat = ((df["p_cmd"].abs() > RATE_MAX - eps) |
@@ -422,13 +439,19 @@ def plot_results(s):
             a.axis("off")
             a.set_title("Solve time (no solve_time_ms column)")
             return
-        a.plot(df["t"], df["solve_time_ms"], color="tab:brown")
+        a.plot(df["t"], df["solve_time_ms"], color="tab:brown", label="acados solve_time_ms")
+        if has_pipeline_time:
+            a.plot(df["t"], df["pipeline_time_ms"], color="tab:purple",
+                   label="whole-pipeline pipeline_time_ms")
+        if TS_MS is not None:
+            a.axhline(TS_MS, color="tab:red", linestyle="--",
+                       label=f"real-time deadline (Ts = {TS_MS:.0f} ms)")
         fails = df[df["solve_status"] != 0]
         if len(fails):
             a.scatter(fails["t"], fails["solve_time_ms"], color="red", zorder=5, label="solve failed")
-            a.legend(fontsize=8)
-        a.set_xlabel("t [s]"); a.set_ylabel("solve time [ms]")
-        a.set_title("Solver time per step")
+        a.set_xlabel("t [s]"); a.set_ylabel("time [ms]")
+        a.set_title("Solver time vs. whole-pipeline time per step")
+        a.legend(fontsize=8)
     panels.append(solver_panel)
 
     def jerk_panel(a):
@@ -493,6 +516,10 @@ def plot_results(s):
              ok if s.get("solve_fail_rate_pct", 1) == 0 else warn),
             ("solve time (mean / max)", f"{fnum('solve_time_mean_ms')} / "
                                          f"{fnum('solve_time_max_ms')} ms", None),
+            ("pipeline time (mean / max)", f"{fnum('pipeline_time_mean_ms')} / "
+                                            f"{fnum('pipeline_time_max_ms')} ms", None),
+            ("real-time safe (pipeline < Ts)", str(s.get("pipeline_real_time_safe", "--")),
+             ok if s.get("pipeline_real_time_safe") else warn),
             ("rate saturation", fnum("rate_saturation_pct", "{:.1f}") + " %",
              ok if s.get("rate_saturation_pct", 1) == 0 else warn),
         ]),
