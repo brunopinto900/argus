@@ -16,9 +16,18 @@ mpc:
 constraints:
   T_min:         0.0   # minimum thrust [N]
   T_max_factor:  2.0   # T_max = T_max_factor × T_hover
-  rate_max:      5.0   # max roll/pitch rate command ±rate_max [rad/s]
-  yaw_rate_max:  2.0   # max yaw rate command ±yaw_rate_max [rad/s]
-  angle_max_deg: 60.0  # max roll / pitch [deg]  (keeps away from gimbal-lock at ±90°)
+  # rate_max/yaw_rate_max/angle_max_deg: PX4 stock defaults for a generic
+  # multicopter (confirmed no F450-specific tuning exists -- these apply
+  # uniformly, see design_decisions.md's "Real-world rate/angle limits"),
+  # from the local PX4-Autopilot checkout:
+  #   rate_max      <- MC_ROLLRATE_MAX/MC_PITCHRATE_MAX = 220 deg/s
+  #     (src/modules/mc_att_control/mc_att_control_params.yaml:54,71)
+  #   yaw_rate_max  <- MC_YAWRATE_MAX = 200 deg/s (same file, line 88)
+  #   angle_max_deg <- MPC_TILTMAX_AIR = 45 deg
+  #     (src/modules/mc_pos_control/multicopter_position_control_limits_params.yaml:48)
+  rate_max:      3.8397  # max roll/pitch rate command ±rate_max [rad/s] (220 deg/s)
+  yaw_rate_max:  3.4907  # max yaw rate command ±yaw_rate_max [rad/s] (200 deg/s)
+  angle_max_deg: 45.0    # max roll / pitch [deg]
 
 # Inner-loop (attitude rate controller) time constants — first-order approximation
 # of the PX4 second-order rate controller.  tau = 1/wn:
