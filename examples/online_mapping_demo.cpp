@@ -583,7 +583,6 @@ int main(int argc, char** argv)
 
             integrateLidarScan(ground_truth, own_map, pose, sensor_cfg.num_rays,
                                 sensor_cfg.max_range_m);
-            own_map.computeEsdf(/*treat_unknown_as_occupied=*/true);
 
             min_mpc_dist = std::min(min_mpc_dist, distanceAtPoint(ground_truth, x[0], x[1]));
 
@@ -592,6 +591,17 @@ int main(int argc, char** argv)
             }
             ++sensor_tick;
         }
+
+        // Occupancy integrates every sub-tick above (that's real sensor data
+        // arriving, must stay at sensor rate -- see design_decisions.md's
+        // "Occupancy accumulation"), but the derived ESDF only needs to be
+        // current once per control tick: that's the only granularity
+        // anything actually reads it at (the MPC's p0/q0 query next tick,
+        // and the snapshot capture above, which tolerates this tick's
+        // snapshots reflecting the previous tick's field a sub-tick or two
+        // longer than before). Recomputing it 3x per tick was pure waste --
+        // see design_decisions.md's "ESDF recompute strategy".
+        own_map.computeEsdf(/*treat_unknown_as_occupied=*/true);
 
         const auto pipeline_end = std::chrono::steady_clock::now();
         const double pipeline_ms =
