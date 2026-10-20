@@ -101,6 +101,25 @@ TARGET_BEARING_DEG = (_cfg.get("trailer") or {}).get("target_bearing_deg")
 TS_MS = (_cfg.get("mpc") or {}).get("Ts")
 TS_MS = TS_MS * 1000.0 if TS_MS is not None else None
 
+# Blur threshold -- derived from the actual depth camera this project is
+# built around (OAK-D-Lite; see ros2/argus_px4_bridge/doc/README.md's
+# "Depth camera & world" section), not a generic rule of thumb. See
+# design_decisions.md's "Blur threshold" section for the full derivation.
+# blur_px = omega[rad/s] * t_exposure[s] * f_px, f_px = width_px/(2*tan(half_angle)).
+# width_px=640 and the 1/update_rate_hz worst-case exposure both come from
+# this project's own depth-camera topic (640x480) and
+# mapping_sensor.update_rate_hz -- only the "<=1px is sharp" tolerance is a
+# generic imaging convention, not derived from this hardware.
+_DEPTH_CAM_WIDTH_PX = 640
+_BLUR_TOLERANCE_PX = 1.0
+_mapping_rate_hz = (_cfg.get("mapping_sensor") or {}).get("update_rate_hz")
+if FOV_HALF_ANGLE_DEG is not None and _mapping_rate_hz:
+    _f_px = _DEPTH_CAM_WIDTH_PX / (2.0 * np.tan(np.radians(FOV_HALF_ANGLE_DEG)))
+    _t_exposure_worst_s = 1.0 / _mapping_rate_hz
+    BLUR_THRESHOLD_DEG_S = float(np.degrees(_BLUR_TOLERANCE_PX / (_t_exposure_worst_s * _f_px)))
+else:
+    BLUR_THRESHOLD_DEG_S = None
+
 dt = float(df["t"].diff().median())
 has_pipeline_time = "pipeline_time_ms" in df.columns
 has_pipeline_onboard_time = "pipeline_onboard_time_ms" in df.columns
@@ -311,10 +330,25 @@ def compute_summary():
         s["own_map_mismatched_voxels"] = int(_mapping_summary["mismatched_voxels"])
 
     # -- Smoothness -------------------------------------------------------------
+    # Two different physical questions, not the same metric twice --
+    # see design_decisions.md's "Smoothness" section:
+    #  - body_rate_accel (d(p,q,r)/dt): is the COMMANDED motion smooth, or
+    #    chattering (large reversals)? A single large, purposeful turn has
+    #    high rate but low jerk; an oscillation has both. This is what
+    #    flagged the softplus_beta=5 chattering pathology.
+    #  - body_rate_magnitude (p,q,r themselves): the actual blur proxy --
+    #    image-plane smear during one exposure scales with angular rate
+    #    integrated over the exposure window, not with how fast that rate
+    #    is changing. A sustained high rate blurs every frame even with
+    #    zero jerk; a jerky-but-small rate never blurs at all.
     dp = np.diff(df["p"]) / dt
     dq = np.diff(df["q"]) / dt
     dr = np.diff(df["r"]) / dt
     s["body_rate_accel_rms_rad_s2"] = float(np.sqrt(np.mean(dp**2 + dq**2 + dr**2)))
+
+    rate_mag_deg_s = np.degrees(np.sqrt(df["p"]**2 + df["q"]**2 + df["r"]**2)).values
+    s["body_rate_magnitude_mean_deg_s"] = float(np.mean(rate_mag_deg_s))
+    s["body_rate_magnitude_max_deg_s"] = float(np.max(rate_mag_deg_s))
 
     return s
 
@@ -502,13 +536,29 @@ def plot_results(s):
         dp = np.degrees(np.diff(df["p"]) / dt)
         dq = np.degrees(np.diff(df["q"]) / dt)
         dr = np.degrees(np.diff(df["r"]) / dt)
-        a.plot(df["t"][1:], dp, label="d(p)/dt", alpha=0.7)
-        a.plot(df["t"][1:], dq, label="d(q)/dt", alpha=0.7)
-        a.plot(df["t"][1:], dr, label="d(r)/dt", alpha=0.7)
+        a.plot(df["t"][1:], dp, label="roll rate accel (d(p)/dt)", alpha=0.7)
+        a.plot(df["t"][1:], dq, label="pitch rate accel (d(q)/dt)", alpha=0.7)
+        a.plot(df["t"][1:], dr, label="yaw rate accel (d(r)/dt)", alpha=0.7)
         a.set_xlabel("t [s]"); a.set_ylabel("body-rate angular accel [deg/s²]")
-        a.set_title("Body-rate angular acceleration (smoothness proxy)")
+        a.set_title("Body-rate angular acceleration (control-smoothness / chatter proxy)")
         a.legend(fontsize=8)
     panels.append(jerk_panel)
+
+    def rate_magnitude_panel(a):
+        """Blur proxy, distinct from the jerk panel above: image-plane smear
+        during one exposure scales with angular RATE integrated over the
+        exposure window, not with how fast that rate is changing -- a
+        sustained high rate blurs every frame even with zero jerk."""
+        mag = np.degrees(np.sqrt(df["p"]**2 + df["q"]**2 + df["r"]**2))
+        a.plot(df["t"], mag, color="tab:red")
+        if BLUR_THRESHOLD_DEG_S is not None:
+            a.axhline(BLUR_THRESHOLD_DEG_S, color="black", linestyle="--", linewidth=1,
+                       label=f"blur threshold ({_BLUR_TOLERANCE_PX:.0f}px @ OAK-D-Lite "
+                             f"640px/{_mapping_rate_hz:.0f}fps) = {BLUR_THRESHOLD_DEG_S:.1f} °/s")
+            a.legend(fontsize=7)
+        a.set_xlabel("t [s]"); a.set_ylabel("combined body-rate magnitude [deg/s]")
+        a.set_title("Body-rate magnitude (blur proxy)")
+    panels.append(rate_magnitude_panel)
 
     def fnum(key, fmt="{:.3f}"):
         v = s.get(key)
@@ -572,7 +622,9 @@ def plot_results(s):
              ok if s.get("rate_saturation_pct", 1) == 0 else warn),
         ]),
         ("Smoothness", [
-            ("body-rate accel (rms)", fnum("body_rate_accel_rms_rad_s2") + " rad/s²", None),
+            ("body-rate accel, chatter proxy (rms)", fnum("body_rate_accel_rms_rad_s2") + " rad/s²", None),
+            ("body-rate magnitude, blur proxy (mean / max)", f"{fnum('body_rate_magnitude_mean_deg_s', '{:.1f}')} / "
+                                                              f"{fnum('body_rate_magnitude_max_deg_s', '{:.1f}')} °/s", None),
         ]),
         ("Mapping coverage", [
             ("own_map resolved", fnum("own_map_resolved_fraction_pct", "{:.1f}") + " %", None),

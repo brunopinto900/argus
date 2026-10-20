@@ -25,6 +25,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -403,6 +404,10 @@ int main(int argc, char** argv)
     fs::create_directories("logs");
 
     const std::string scenario_path = argc > 1 ? argv[1] : ARGUS_CONFIG_DIR "/forest.yaml";
+    // Comparison-only escape hatch for design_decisions.md's "RTI cold-start
+    // bootstrap" section -- real usage always wants the bootstrap enabled,
+    // this flag exists purely to reproduce the "before" measurement.
+    const bool skip_bootstrap = (argc > 2) && (std::strcmp(argv[2], "--no-bootstrap") == 0);
     const ScenarioConfig scenario = loadScenarioConfig(scenario_path);
     std::cout << "Scenario: " << scenario_path << " (" << scenario.obstacles.size()
               << " obstacles)\n";
@@ -500,6 +505,53 @@ int main(int argc, char** argv)
     PlantDynamics plant(x, kTHover, ARGUS_MASS, ARGUS_PLANT_WN_RP, ARGUS_PLANT_ZETA_RP,
                          ARGUS_PLANT_WN_YAW, ARGUS_PLANT_ZETA_YAW);
     PlantInput u = {kTHover, 0.0, 0.0, 0.0};
+
+    // ── RTI cold-start bootstrap ──────────────────────────────────────────────
+    // Real deployments don't hand the tracking MPC a flat hover guess and let
+    // its first command fly: the vehicle is already being held stable by
+    // whatever mode preceded tracking (PX4 position-hold, or an offboard
+    // "hold current position" setpoint stream), and the mode-switch into
+    // tracking happens only once the solver has pre-solved against the
+    // current (unmoved) state and converged -- a bumpless handoff, not a
+    // cold one. RTI only takes one linearized QP step per call, so without
+    // this the very first real step() has to reconcile a flat "zero rates,
+    // level, hover thrust" warm start with the full horizon's cost in one
+    // shot, producing the large initial roll-rate transient documented in
+    // design_decisions.md's "RTI cold-start bootstrap" section. Repeating
+    // step() here against the same unmoved x (nothing is applied to the
+    // plant yet, same as nothing would be sent to real hardware before the
+    // mode switch) lets the internal shift-warm-start stabilize first.
+    if (!skip_bootstrap) {
+        const argus_mpc::State x0_bootstrap{
+            x[0], x[1], x[2], x[3],  x[4],  x[5],
+            x[6], x[7], x[8], x[9], x[10], x[11],
+        };
+        std::vector<argus_mpc::Reference> bootstrap_horizon(N);
+        for (int j = 0; j < N; ++j)
+            bootstrap_horizon[j] = {horizon0.PDx[j], horizon0.PDy[j], kFovZRef};
+        std::vector<argus_mpc::TargetState> bootstrap_target(N);
+        for (int k = 0; k < N; ++k) {
+            const double t_k = std::min(k * control_dt, scenario.t_end);
+            bootstrap_target[k] = {
+                target.x(t_k), target.y(t_k), kTargetZ,
+                target.x.derivative(t_k), target.y.derivative(t_k), 0.0,
+            };
+        }
+        // own_map is still completely unresolved here (no lidar sub-tick has
+        // run yet) -- same no-op obstacle linearization the real step 0
+        // would see anyway, not a bootstrap-specific shortcut.
+        const Eigen::Vector2d p0(x[0], x[1]);
+        const auto q0 = queryPlanar(own_map, p0.x(), p0.y());
+        std::vector<argus_mpc::ObstacleLinearization> bootstrap_obstacle(N);
+        if (q0.valid) {
+            for (int k = 0; k < N; ++k)
+                bootstrap_obstacle[k] = {p0.x(), p0.y(), q0.distance, q0.grad_x, q0.grad_y};
+        }
+        constexpr int kBootstrapIters = 10;
+        for (int i = 0; i < kBootstrapIters; ++i) {
+            mpc.step(x0_bootstrap, bootstrap_horizon, bootstrap_target, bootstrap_obstacle);
+        }
+    }
 
     const int snapshot_decimation =
         static_cast<int>(std::round(sensor_cfg.update_rate_hz / kSnapshotRateHz));
