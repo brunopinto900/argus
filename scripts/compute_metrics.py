@@ -95,6 +95,8 @@ TS_MS = TS_MS * 1000.0 if TS_MS is not None else None
 
 dt = float(df["t"].diff().median())
 has_pipeline_time = "pipeline_time_ms" in df.columns
+has_pipeline_onboard_time = "pipeline_onboard_time_ms" in df.columns
+has_esdf_time = "esdf_time_ms" in df.columns
 
 
 def bearing_angles_deg():
@@ -237,20 +239,36 @@ def compute_summary():
         st = df["solve_time_ms"].values
         s["solve_time_mean_ms"] = float(np.mean(st))
         s["solve_time_max_ms"] = float(np.max(st))
-    # pipeline_time_ms is the whole control-tick wall-clock cost (follower
-    # goal points, obstacle linearization, the MPC solve, and every sensor
-    # sub-tick's lidar integration + own_map.computeEsdf()) -- solve_time_ms
-    # alone only covers acados_solve() and understates real-time risk by
-    # ~50x in practice (the ESDF recompute, not the solve, is the real cost
-    # driver). See design_decisions.md's "Metrics dashboard" section.
+    # pipeline_onboard_time_ms is the whole control-tick wall-clock cost a
+    # real flight computer would actually pay (follower goal points,
+    # obstacle linearization, the MPC solve, and every sensor sub-tick's
+    # lidar integration + own_map.computeEsdf()), with
+    # ground_truth.raycast() subtracted out -- that call stands in for a
+    # real depth sensor's own hardware resolving hits/misses, not something
+    # an onboard pipeline would ever pay for. solve_time_ms alone only
+    # covers acados_solve() and understates real-time risk by ~50x in
+    # practice (the ESDF recompute, not the solve, is the real cost
+    # driver). The raw wall-clock (pipeline_time_ms, including that
+    # raycast) is still computed below for s[], just not surfaced in the
+    # plot/summary -- see design_decisions.md's "Metrics dashboard"
+    # section.
     if has_pipeline_time:
         pt = df["pipeline_time_ms"].values
         s["pipeline_time_mean_ms"] = float(np.mean(pt))
         s["pipeline_time_max_ms"] = float(np.max(pt))
-        if TS_MS is not None:
-            over_budget = pt > TS_MS
-            s["pipeline_over_budget_pct"] = float(100.0 * over_budget.mean())
-            s["pipeline_real_time_safe"] = bool(not over_budget.any())
+    if has_pipeline_onboard_time:
+        pot = df["pipeline_onboard_time_ms"].values
+        s["pipeline_onboard_time_mean_ms"] = float(np.mean(pot))
+        s["pipeline_onboard_time_max_ms"] = float(np.max(pot))
+    if has_esdf_time:
+        et = df["esdf_time_ms"].values
+        s["esdf_time_mean_ms"] = float(np.mean(et))
+        s["esdf_time_max_ms"] = float(np.max(et))
+    real_time_series = pot if has_pipeline_onboard_time else (pt if has_pipeline_time else None)
+    if real_time_series is not None and TS_MS is not None:
+        over_budget = real_time_series > TS_MS
+        s["pipeline_over_budget_pct"] = float(100.0 * over_budget.mean())
+        s["pipeline_real_time_safe"] = bool(not over_budget.any())
     if RATE_MAX is not None:
         eps = 0.02 * RATE_MAX
         sat = ((df["p_cmd"].abs() > RATE_MAX - eps) |
@@ -440,9 +458,12 @@ def plot_results(s):
             a.set_title("Solve time (no solve_time_ms column)")
             return
         a.plot(df["t"], df["solve_time_ms"], color="tab:brown", label="acados solve_time_ms")
-        if has_pipeline_time:
-            a.plot(df["t"], df["pipeline_time_ms"], color="tab:purple",
-                   label="whole-pipeline pipeline_time_ms")
+        if has_esdf_time:
+            a.plot(df["t"], df["esdf_time_ms"], color="tab:orange",
+                   label="esdf_time_ms (own_map.computeEsdf, all sub-ticks)")
+        if has_pipeline_onboard_time:
+            a.plot(df["t"], df["pipeline_onboard_time_ms"], color="tab:purple",
+                   label="pipeline_onboard_time_ms (real onboard cost only)")
         if TS_MS is not None:
             a.axhline(TS_MS, color="tab:red", linestyle="--",
                        label=f"real-time deadline (Ts = {TS_MS:.0f} ms)")
@@ -450,7 +471,7 @@ def plot_results(s):
         if len(fails):
             a.scatter(fails["t"], fails["solve_time_ms"], color="red", zorder=5, label="solve failed")
         a.set_xlabel("t [s]"); a.set_ylabel("time [ms]")
-        a.set_title("Solver time vs. whole-pipeline time per step")
+        a.set_title("Onboard pipeline time per step (sensor-sim raycast excluded)")
         a.legend(fontsize=8)
     panels.append(solver_panel)
 
@@ -497,8 +518,8 @@ def plot_results(s):
                                               f"{fnum('yaw_bearing_offset_std_deg')} °", None),
             ("pitch offset (mean ± std)", f"{fnum('pitch_bearing_offset_mean_deg')} ± "
                                                 f"{fnum('pitch_bearing_offset_std_deg')} °", None),
-            ("pitch deviation from design", f"{fnum('pitch_bearing_deviation_from_design_deg_mean')} "
-                                             f"(max|.| {fnum('pitch_bearing_deviation_from_design_deg_max_abs')}) °", None),
+            ("pitch dev. from design", f"{fnum('pitch_bearing_deviation_from_design_deg_mean', '{:.2f}')} "
+                                        f"(max {fnum('pitch_bearing_deviation_from_design_deg_max_abs', '{:.2f}')}) °", None),
             ("FOV exceedance", fnum("fov_exceedance_pct", "{:.1f}") + " %",
              ok if s.get("fov_exceedance_pct", 1) == 0 else warn),
             ("initial acquisition latency", fnum("initial_acquisition_latency_s") + " s", None),
@@ -516,9 +537,11 @@ def plot_results(s):
              ok if s.get("solve_fail_rate_pct", 1) == 0 else warn),
             ("solve time (mean / max)", f"{fnum('solve_time_mean_ms')} / "
                                          f"{fnum('solve_time_max_ms')} ms", None),
-            ("pipeline time (mean / max)", f"{fnum('pipeline_time_mean_ms')} / "
-                                            f"{fnum('pipeline_time_max_ms')} ms", None),
-            ("real-time safe (pipeline < Ts)", str(s.get("pipeline_real_time_safe", "--")),
+            ("esdf compute (mean / max)", f"{fnum('esdf_time_mean_ms')} / "
+                                            f"{fnum('esdf_time_max_ms')} ms", None),
+            ("onboard pipeline (mean / max)", f"{fnum('pipeline_onboard_time_mean_ms')} / "
+                                            f"{fnum('pipeline_onboard_time_max_ms')} ms", None),
+            ("real-time safe (< Ts)", str(s.get("pipeline_real_time_safe", "--")),
              ok if s.get("pipeline_real_time_safe") else warn),
             ("rate saturation", fnum("rate_saturation_pct", "{:.1f}") + " %",
              ok if s.get("rate_saturation_pct", 1) == 0 else warn),
@@ -529,40 +552,71 @@ def plot_results(s):
         ("Mapping coverage", [
             ("own_map resolved", fnum("own_map_resolved_fraction_pct", "{:.1f}") + " %", None),
             ("observable voxels", fnum("observable_voxels_pct", "{:.1f}") + " % of grid", None),
-            ("matched vs. ground truth", fnum("own_map_matched_pct", "{:.4f}") + "% "
+            ("matched vs. ground truth", fnum("own_map_matched_pct", "{:.2f}") + "% "
              f"({fnum('own_map_mismatched_voxels', '{:.0f}')} mismatched)",
              ok if s.get("own_map_mismatched_voxels") == 0 else warn),
         ]),
     ]
 
-    def render_column(a, group_names, x0):
-        y = 1.0
+    # Base (unscaled) vertical steps, in axes fraction -- header_step for a
+    # group's title line, line_step per metric row, gap_step between groups.
+    header_step, line_step, gap_step = 0.085, 0.065, 0.025
+
+    def group_weight(name):
+        n = len(dict(groups)[name])
+        return header_step + n * line_step + gap_step
+
+    # Each column is a half-width [x0, x0+0.5) slot: label starts right after
+    # x0, value starts at a fixed offset inside the slot -- wide enough that
+    # the longest label in `groups` above doesn't run into the value column,
+    # and the value column doesn't run into the next column's label.
+    col_width, value_offset = 0.5, 0.32
+
+    def render_column(a, group_names, x0, scale):
+        y = 0.98
         for name in group_names:
             lines = dict(groups)[name]
             a.text(x0, y, name, transform=a.transAxes, va="top", ha="left",
                    fontsize=9, fontweight="bold")
-            y -= 0.085
+            y -= header_step * scale
             for label, value, status in lines:
                 a.text(x0 + 0.02, y, label, transform=a.transAxes, va="top", ha="left",
-                       fontsize=8)
+                       fontsize=7.5)
                 color = status if status is not None else "black"
-                a.text(x0 + 0.46, y, value, transform=a.transAxes, va="top", ha="left",
-                       fontsize=8, color=color,
+                a.text(x0 + value_offset, y, value, transform=a.transAxes, va="top", ha="left",
+                       fontsize=7.5, color=color,
                        fontweight="bold" if status is not None else "normal")
-                y -= 0.065
-            y -= 0.025
+                y -= line_step * scale
+            y -= gap_step * scale
 
     def summary_panel(a):
         a.axis("off")
-        render_column(a, ["Collision & safety", "Tracking", "FOV & bearing"], 0.0)
-        render_column(a, ["Occlusion", "Solver health", "Smoothness", "Mapping coverage"], 0.52)
+        # Groups are packed into two columns by a greedy balance on their
+        # rendered weight (not a fixed hand-picked split) so a future
+        # metric/group added to `groups` above never silently pushes a
+        # column's text below the axes -- each column is then scaled down
+        # (tighter line spacing) if its natural weight still would have.
+        all_names = [name for name, _ in groups]
+        columns = [[], []]
+        totals = [0.0, 0.0]
+        for name in sorted(all_names, key=group_weight, reverse=True):
+            col = 0 if totals[0] <= totals[1] else 1
+            columns[col].append(name)
+            totals[col] += group_weight(name)
+        # Column order follows `groups`' own order, not the balancing sort.
+        for col in columns:
+            col.sort(key=all_names.index)
+        budget = 0.92  # leaves top/bottom margin inside the axes
+        scale = min(1.0, budget / max(totals[0], totals[1], budget))
+        render_column(a, columns[0], 0.0, scale)
+        render_column(a, columns[1], col_width, scale)
         a.set_title("Summary (green/red = pass/fail against this run's own thresholds)")
     panels.append(summary_panel)
 
     data_panels = panels[:-1]
     n_data_rows = (len(data_panels) + 1) // 2
-    fig = plt.figure(figsize=(14, 4 * n_data_rows + 4.5))
-    gs = fig.add_gridspec(n_data_rows + 1, 2, height_ratios=[1] * n_data_rows + [1.3])
+    fig = plt.figure(figsize=(15.5, 4 * n_data_rows + 5.5))
+    gs = fig.add_gridspec(n_data_rows + 1, 2, height_ratios=[1] * n_data_rows + [1.6])
     fig.suptitle(f"Metrics -- {_args.csv_path}")
 
     for i, panel_fn in enumerate(data_panels):

@@ -175,6 +175,21 @@ void VoxelGrid::markRay(const Eigen::Vector3d& sensor_origin, const Eigen::Vecto
 void VoxelGrid::markFreeRay(const Eigen::Vector3d& origin, const Eigen::Vector3d& direction,
                              double max_range)
 {
+    const auto timing_start = std::chrono::steady_clock::now();
+    struct TimingGuard {
+        const std::chrono::steady_clock::time_point& start;
+        double& min_ms; double& max_ms; double& sum_ms; long& count;
+        ~TimingGuard() {
+            const double ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - start).count();
+            min_ms = (count == 0) ? ms : std::min(min_ms, ms);
+            max_ms = std::max(max_ms, ms);
+            sum_ms += ms;
+            ++count;
+        }
+    } timing_guard{timing_start, mark_free_min_ms_, mark_free_max_ms_, mark_free_sum_ms_,
+                   mark_free_count_};
+
     const double len = direction.norm();
     if (len < 1e-9 || max_range <= 0.0) return;
     const Eigen::Vector3d dir = direction / len;
@@ -218,6 +233,21 @@ std::optional<Eigen::Vector3d> VoxelGrid::raycast(const Eigen::Vector3d& origin,
                                                    const Eigen::Vector3d& direction,
                                                    double max_range) const
 {
+    const auto timing_start = std::chrono::steady_clock::now();
+    struct TimingGuard {
+        const std::chrono::steady_clock::time_point& start;
+        double& min_ms; double& max_ms; double& sum_ms; long& count;
+        ~TimingGuard() {
+            const double ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - start).count();
+            min_ms = (count == 0) ? ms : std::min(min_ms, ms);
+            max_ms = std::max(max_ms, ms);
+            sum_ms += ms;
+            ++count;
+        }
+    } timing_guard{timing_start, raycast_min_ms_, raycast_max_ms_, raycast_sum_ms_,
+                   raycast_count_};
+
     const double len = direction.norm();
     if (len < 1e-9 || max_range <= 0.0) return std::nullopt;
     const Eigen::Vector3d dir = direction / len;
@@ -338,6 +368,13 @@ void VoxelGrid::computeEsdf(bool treat_unknown_as_occupied)
     // axis fixed and is itself exact), not an approximation.
     auto passAlong = [&](int axis) {
         const int n = dims_[axis];
+        // A length-1 axis has nothing to transform -- the identity is
+        // already correct -- so skip it rather than paying the other two
+        // axes' full cell count in calls (e.g. dims=[300,300,1]'s z-pass
+        // would otherwise be 90,000 calls, each operating on a 1-element
+        // line and allocating three heap vectors in distanceTransform1D,
+        // to do provably nothing).
+        if (n <= 1) return;
         std::vector<double> line(static_cast<std::size_t>(n));
         Eigen::Vector3i idx;
         const int other0 = (axis + 1) % 3;
@@ -390,6 +427,7 @@ VoxelGridTiming VoxelGrid::insertTiming() const
     if (t.count > 0) {
         t.min_ms  = insert_min_ms_;
         t.max_ms  = insert_max_ms_;
+        t.sum_ms  = insert_sum_ms_;
         t.mean_ms = insert_sum_ms_ / static_cast<double>(t.count);
     }
     return t;
@@ -402,7 +440,34 @@ VoxelGridTiming VoxelGrid::computeEsdfTiming() const
     if (t.count > 0) {
         t.min_ms  = compute_min_ms_;
         t.max_ms  = compute_max_ms_;
+        t.sum_ms  = compute_sum_ms_;
         t.mean_ms = compute_sum_ms_ / static_cast<double>(t.count);
+    }
+    return t;
+}
+
+VoxelGridTiming VoxelGrid::markFreeRayTiming() const
+{
+    VoxelGridTiming t;
+    t.count = mark_free_count_;
+    if (t.count > 0) {
+        t.min_ms  = mark_free_min_ms_;
+        t.max_ms  = mark_free_max_ms_;
+        t.sum_ms  = mark_free_sum_ms_;
+        t.mean_ms = mark_free_sum_ms_ / static_cast<double>(t.count);
+    }
+    return t;
+}
+
+VoxelGridTiming VoxelGrid::raycastTiming() const
+{
+    VoxelGridTiming t;
+    t.count = raycast_count_;
+    if (t.count > 0) {
+        t.min_ms  = raycast_min_ms_;
+        t.max_ms  = raycast_max_ms_;
+        t.sum_ms  = raycast_sum_ms_;
+        t.mean_ms = raycast_sum_ms_ / static_cast<double>(t.count);
     }
     return t;
 }
@@ -413,6 +478,22 @@ void VoxelGrid::resetInsertTiming()
     insert_max_ms_ = 0.0;
     insert_sum_ms_ = 0.0;
     insert_count_  = 0;
+}
+
+void VoxelGrid::resetMarkFreeRayTiming()
+{
+    mark_free_min_ms_ = 0.0;
+    mark_free_max_ms_ = 0.0;
+    mark_free_sum_ms_ = 0.0;
+    mark_free_count_  = 0;
+}
+
+void VoxelGrid::resetRaycastTiming()
+{
+    raycast_min_ms_ = 0.0;
+    raycast_max_ms_ = 0.0;
+    raycast_sum_ms_ = 0.0;
+    raycast_count_  = 0;
 }
 
 void VoxelGrid::resetComputeEsdfTiming()

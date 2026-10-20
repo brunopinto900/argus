@@ -35,6 +35,10 @@ struct VoxelGridTiming
     double min_ms  = 0.0;
     double max_ms  = 0.0;
     double mean_ms = 0.0;
+    double sum_ms  = 0.0;  // exact accumulated total -- lets a caller take two
+                            // snapshots and subtract for a precise "time spent
+                            // in this operation during this window" delta,
+                            // without reconstructing it as mean_ms * count.
     long   count   = 0;
 };
 
@@ -157,6 +161,25 @@ public:
     void resetInsertTiming();
     void resetComputeEsdfTiming();
 
+    // markFreeRay(): real onboard map-integration cost, same category as
+    // insertPointCloud() (both happen once per ray in a sensor sweep) --
+    // tracked separately since a missed ray walks up to max_range/voxel_size
+    // voxels while a hit only walks to its (typically much closer) point,
+    // very different costs per call.
+    VoxelGridTiming markFreeRayTiming() const;
+    void resetMarkFreeRayTiming();
+
+    // raycast(): on a ground-truth grid used only to synthesize what a real
+    // sensor would have already resolved in hardware, this time does NOT
+    // belong in an onboard-pipeline budget -- it's standing in for the
+    // sensor itself, not the autonomy stack consuming its output. Tracked
+    // so callers can subtract it from a wall-clock pipeline measurement
+    // that otherwise can't tell "simulating the sensor" apart from
+    // "processing what the sensor produced." See
+    // design_decisions.md's "Metrics dashboard" section.
+    VoxelGridTiming raycastTiming() const;
+    void resetRaycastTiming();
+
     // ── Accessors — visualization, testing, and diagnostics ─────────────
     VoxelState stateAt(const Eigen::Vector3i& idx) const;
     double distanceAt(const Eigen::Vector3i& idx) const;
@@ -198,6 +221,16 @@ private:
     double compute_max_ms_ = 0.0;
     double compute_sum_ms_ = 0.0;
     long   compute_count_  = 0;
+
+    double mark_free_min_ms_ = 0.0;
+    double mark_free_max_ms_ = 0.0;
+    double mark_free_sum_ms_ = 0.0;
+    long   mark_free_count_  = 0;
+
+    mutable double raycast_min_ms_ = 0.0;
+    mutable double raycast_max_ms_ = 0.0;
+    mutable double raycast_sum_ms_ = 0.0;
+    mutable long   raycast_count_  = 0;
 };
 
 }  // namespace argus_esdf

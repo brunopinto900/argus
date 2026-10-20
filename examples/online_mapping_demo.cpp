@@ -467,7 +467,8 @@ int main(int argc, char** argv)
             "fx,fy,fz,"
             "solve_status,"
             "dist_obstacle,"
-            "clearance_true,occlusion_clearance,solve_time_ms,pipeline_time_ms\n";
+            "clearance_true,occlusion_clearance,solve_time_ms,pipeline_time_ms,"
+            "pipeline_onboard_time_ms,esdf_time_ms\n";
 
     // Staleness measurement -- a separate concern from the hinge cost
     // actually wired into step() above: this measures, per control tick,
@@ -521,6 +522,8 @@ int main(int argc, char** argv)
         // design_decisions.md's "Metrics dashboard" section on why
         // solve_time_ms alone understates real-time risk.
         const auto pipeline_start = std::chrono::steady_clock::now();
+        const double raycast_sum_ms_before = ground_truth.raycastTiming().sum_ms;
+        const double esdf_sum_ms_before = own_map.computeEsdfTiming().sum_ms;
 
         const double t = step * control_dt;
         const double leader_x = target.x(t);
@@ -593,6 +596,20 @@ int main(int argc, char** argv)
         const auto pipeline_end = std::chrono::steady_clock::now();
         const double pipeline_ms =
             std::chrono::duration<double, std::milli>(pipeline_end - pipeline_start).count();
+        // ground_truth.raycast() (inside integrateLidarScan()) stands in for
+        // what a real depth sensor's own hardware would already have
+        // resolved before ever reaching the flight computer -- subtracting
+        // it out of the wall-clock measurement leaves only genuine onboard
+        // work (map integration + solve), not "the simulator's job of
+        // fabricating sensor input." See VoxelGrid.hpp's raycastTiming()
+        // and design_decisions.md's "Metrics dashboard" section.
+        const double raycast_delta_ms = ground_truth.raycastTiming().sum_ms - raycast_sum_ms_before;
+        const double pipeline_onboard_ms = pipeline_ms - raycast_delta_ms;
+        // own_map.computeEsdf() summed across this tick's steps_per_control
+        // sub-ticks -- broken out separately since it's the dominant term
+        // inside pipeline_onboard_ms (see the per-operation timing print
+        // below), not just folded into one undifferentiated onboard number.
+        const double esdf_delta_ms = own_map.computeEsdfTiming().sum_ms - esdf_sum_ms_before;
 
         // p1: drone's actual position one control tick later, after own_map
         // has kept being updated underneath it (same map object, further
@@ -615,7 +632,7 @@ int main(int argc, char** argv)
              << ',' << cmd.solve_status << ',';
         if (q1.valid) traj << q1.distance; else traj << "nan";
         traj << ',' << clearance_true << ',' << occlusion_clear << ',' << mpc.lastSolveTimeMs()
-             << ',' << pipeline_ms << '\n';
+             << ',' << pipeline_ms << ',' << pipeline_onboard_ms << ',' << esdf_delta_ms << '\n';
 
         if (q0.valid && q1.valid) {
             const double step_dist = (p1 - p0).norm();
@@ -668,6 +685,16 @@ int main(int argc, char** argv)
               << "Hz) to " << snapshot_path << "\n"
               << "Logged mapping-coverage summary to " << summary_path << "\n\n"
               << "own_map resolved fraction: " << resolvedFraction(own_map) * 100.0 << "%\n\n"
+              << "Per-operation timing (own_map unless noted; ground_truth.raycast()\n"
+              << "stands in for sensor hardware, excluded from pipeline_onboard_time_ms):\n"
+              << "  insertPointCloud:      mean=" << own_map.insertTiming().mean_ms
+              << "ms  max=" << own_map.insertTiming().max_ms << "ms\n"
+              << "  markFreeRay:           mean=" << own_map.markFreeRayTiming().mean_ms
+              << "ms  max=" << own_map.markFreeRayTiming().max_ms << "ms\n"
+              << "  computeEsdf:           mean=" << own_map.computeEsdfTiming().mean_ms
+              << "ms  max=" << own_map.computeEsdfTiming().max_ms << "ms\n"
+              << "  raycast (ground_truth): mean=" << ground_truth.raycastTiming().mean_ms
+              << "ms  max=" << ground_truth.raycastTiming().max_ms << "ms\n\n"
               << "Observable-slice verification (own_map vs. ground truth, voxels the\n"
               << "sensor actually had a chance to resolve):\n"
               << "  observable voxels: " << verification.observable_count << " / " << total_voxels
