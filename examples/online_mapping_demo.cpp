@@ -549,22 +549,33 @@ int main(int argc, char** argv)
         };
 
         // p0: drone's position as of this solve, queried against own_map as
-        // it stands right now -- the one ESDF evaluation this whole solve
-        // gets (see design_decisions.md's "ESDF collision cost" section).
-        // Simplest-possible per-stage choice: reuse the same (p0, d0, grad)
-        // linearization for every horizon stage rather than querying at
-        // each stage's predicted position -- QuadrotorMpc doesn't expose
-        // the previous solve's predicted trajectory to build a better p0
-        // from. An invalid query (own_map not yet resolved there) falls
-        // back to the no-op default so an unresolved point never fabricates
-        // a spurious obstacle cost.
+        // it stands right now (also used below for the tick-to-tick
+        // staleness log). Each of the N horizon stages gets its own query
+        // at pos_k = p0 + v0*k*dt -- constant-velocity propagation from the
+        // drone's actual current velocity (v0, real, not a decision
+        // variable -- the only velocity available before this tick's own
+        // solve has run), rather than reusing one (p0, d0, grad)
+        // linearization for every stage. See design_decisions.md's
+        // "Symbolic graph constraint & per-stage ESDF linearization with a
+        // constant-velocity model" for why this has to happen out here in
+        // C++ rather than inside the solve, and why this propagation was
+        // chosen over the alternatives considered. An invalid query
+        // (own_map not yet resolved there) falls back to the no-op default
+        // so an unresolved point never fabricates a spurious obstacle cost.
         const Eigen::Vector2d p0(x[0], x[1]);
+        const Eigen::Vector2d v0(x[3], x[4]);
         const auto q0 = queryPlanar(own_map, p0.x(), p0.y());
-        argus_mpc::ObstacleLinearization obs_stage;
+        std::vector<argus_mpc::ObstacleLinearization> obstacle(N);
         if (q0.valid) {
-            obs_stage = {p0.x(), p0.y(), q0.distance, q0.grad_x, q0.grad_y};
+            obstacle[0] = {p0.x(), p0.y(), q0.distance, q0.grad_x, q0.grad_y};
         }
-        const std::vector<argus_mpc::ObstacleLinearization> obstacle(N, obs_stage);
+        for (int k = 1; k < N; ++k) {
+            const Eigen::Vector2d pos_k = p0 + v0 * (k * control_dt);
+            const auto qk = queryPlanar(own_map, pos_k.x(), pos_k.y());
+            if (qk.valid) {
+                obstacle[k] = {pos_k.x(), pos_k.y(), qk.distance, qk.grad_x, qk.grad_y};
+            }
+        }
 
         const argus_mpc::Command cmd = mpc.step(x0_mpc, mpc_horizon, tgt, obstacle);
         u = {cmd.thrust * kTHover, cmd.roll_rate, cmd.pitch_rate, cmd.yaw_rate};
