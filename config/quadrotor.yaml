@@ -40,7 +40,7 @@ cost:
 # Camera model: forward-facing (body +x axis), circular FOV cone
 camera:
   fov_half_angle_deg: 40.0  # cone half-angle [deg] — must match FRUSTUM_H_FOV in animate_xy.py
-  softplus_beta:       5.0  # sharpness of softplus transition (higher = closer to hard max)
+  softplus_beta:       10.0  # sharpness of softplus transition (higher = closer to hard max)
 
 # Plant simulator: second-order body-rate dynamics (matches PX4 inner loop).
 # Intentionally different from the first-order MPC prediction model —

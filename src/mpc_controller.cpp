@@ -77,34 +77,72 @@ private:
     double radius_, altitude_, omega_;
 };
 
+// Always returns the same world position, regardless of time, lookahead or
+// target motion -- isolates pure attitude (yaw-cone) dynamics for the
+// fov_edge sweep scenario by removing position-reference tracking from the
+// picture entirely (drone is already sitting at its reference at t=0; the
+// only error the MPC has to correct is the initial attitude offset).
+class HoldPosition : public DroneReference
+{
+public:
+    explicit HoldPosition(argus_mpc::Reference r) : r_(r) {}
+    argus_mpc::Reference at(double, double, const argus_mpc::TargetState&) const override
+    {
+        return r_;
+    }
+private:
+    argus_mpc::Reference r_;
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 int main(int argc, char** argv)
 {
     namespace fs = std::filesystem;
 
     // ── Parse mode: which TargetSource drives the tracked target ──────────────
-    bool is_circle = true;
+    enum class Mode { Circle, MovingTarget, FovEdge };
+    Mode mode = Mode::Circle;
     if (argc > 1) {
         if (std::strcmp(argv[1], "moving_target") == 0)
-            is_circle = false;
+            mode = Mode::MovingTarget;
+        else if (std::strcmp(argv[1], "fov_edge") == 0)
+            mode = Mode::FovEdge;
         else if (std::strcmp(argv[1], "circle") != 0) {
-            std::cerr << "Usage: argus_mpc [circle|moving_target]\n";
+            std::cerr << "Usage: argus_mpc [circle|moving_target|fov_edge]\n";
             return 1;
         }
     }
-    std::cout << "Mode: " << (is_circle ? "circle tracking" : "moving target") << "\n";
+    std::cout << "Mode: " << (mode == Mode::Circle ? "circle tracking" :
+                               mode == Mode::MovingTarget ? "moving target" :
+                               "FOV-edge softplus_beta sweep scenario") << "\n";
 
     std::unique_ptr<TargetSource>    target;
     std::unique_ptr<DroneReference>  drone_ref;
-    if (is_circle) {
+
+    // fov_edge: static target directly ahead at the SAME altitude as the
+    // drone (no pitch component -- see design_decisions.md's "softplus_beta
+    // weight sweep" section), drone held at its initial position (no
+    // position error to correct), initial yaw deliberately offset so
+    // gamma_0 = fov_half_angle_deg + kFovEdgeMarginDeg (just outside the
+    // cone) -- isolates the yaw-correction transient this sweep needs to
+    // observe as softplus_beta changes.
+    constexpr double kFovEdgeDistance  = 5.0;  // drone->target range [m], arbitrary (gamma is range-independent)
+    constexpr double kFovEdgeMarginDeg = 5.0;  // how far outside the cone at t=0
+
+    if (mode == Mode::Circle) {
         target    = std::make_unique<StaticTarget>(
             argus_mpc::TargetState{0.0, 0.0, ARGUS_CIRCLE_Z, 0.0, 0.0, 0.0});
         drone_ref = std::make_unique<OrbitAroundTarget>(
             ARGUS_CIRCLE_R, mpc::hover_altitude, ARGUS_CIRCLE_PERIOD);
-    } else {
+    } else if (mode == Mode::MovingTarget) {
         const TargetConfig cfg = load_target_config(ARGUS_CONFIG_DIR "/target.yaml");
         target    = std::make_unique<TargetSimulator>(cfg);
         drone_ref = std::make_unique<HoverAboveTarget>(mpc::hover_altitude);
+    } else {
+        target    = std::make_unique<StaticTarget>(
+            argus_mpc::TargetState{0.0, 0.0, mpc::hover_altitude, 0.0, 0.0, 0.0});
+        drone_ref = std::make_unique<HoldPosition>(
+            argus_mpc::Reference{-kFovEdgeDistance, 0.0, mpc::hover_altitude});
     }
 
     argus_mpc::QuadrotorMpc mpc;
@@ -113,9 +151,12 @@ int main(int argc, char** argv)
     // ── Initial drone state ────────────────────────────────────────────────────
     const argus_mpc::TargetState t0 = target->state();
     const argus_mpc::Reference   r0 = drone_ref->at(0.0, 0.0, t0);
+    const double psi0 = (mode == Mode::FovEdge)
+        ? M_PI / 180.0 * (ARGUS_FOV_HALF_ANGLE_DEG + kFovEdgeMarginDeg)
+        : 0.0;
     PlantState x0 = {r0.x,  r0.y,  r0.z,
                       0.0,   0.0,   0.0,
-                      0.0,   0.0,   0.0,
+                      0.0,   0.0,   psi0,
                       0.0,   0.0,   0.0};
 
     PlantDynamics plant(x0, mpc::T_hover, ARGUS_MASS,
@@ -134,7 +175,9 @@ int main(int argc, char** argv)
            "solve_status\n";
 
     // ── Simulation loop ───────────────────────────────────────────────────────
-    constexpr double T_sim = 30.0;
+    // fov_edge only needs to capture one yaw-correction transient, not a
+    // full 30s tracking run.
+    const double T_sim = (mode == Mode::FovEdge) ? 3.0 : 30.0;
     const int Nsim = static_cast<int>(T_sim / mpc::Ts);
 
     PlantState x = x0;

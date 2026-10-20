@@ -266,7 +266,9 @@ def generate_cpp_params_header(out_dir: str):
         f.write(f"static constexpr double ARGUS_PLANT_WN_RP    = {_plant_cfg['wn_rp']};\n")
         f.write(f"static constexpr double ARGUS_PLANT_ZETA_RP  = {_plant_cfg['zeta_rp']};\n")
         f.write(f"static constexpr double ARGUS_PLANT_WN_YAW   = {_plant_cfg['wn_yaw']};\n")
-        f.write(f"static constexpr double ARGUS_PLANT_ZETA_YAW = {_plant_cfg['zeta_yaw']};\n")
+        f.write(f"static constexpr double ARGUS_PLANT_ZETA_YAW = {_plant_cfg['zeta_yaw']};\n\n")
+        f.write(f"static constexpr double ARGUS_FOV_HALF_ANGLE_DEG = {_cam_cfg['fov_half_angle_deg']};\n")
+        f.write(f"static constexpr double ARGUS_SOFTPLUS_BETA      = {FOV_BETA};\n")
     print(f"C++ params header written to: {path}")
 
 
