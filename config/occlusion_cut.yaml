@@ -1,0 +1,35 @@
+# Scenario: Target Occlusion Cut -- the leader sidesteps a single obstacle
+# sitting directly on an otherwise-straight path, at cruise speed (no
+# deliberate slowdown, unlike wall_slowdown.yaml). Tests the occlusion
+# metric itself (occlusion_clearance / occlusion_pct, see
+# design_decisions.md's "Occlusion metric"): the follower's inherent lag
+# behind a quick lateral waypoint change should momentarily put this
+# obstacle on the drone->target bearing line even though the target itself
+# is never behind it -- exactly the "obstacle cuts behind the target's
+# path, briefly fouling the sightline" case the max-combined metric is
+# meant to catch.
+#
+# shape: circle   -> center [x, y], radius
+# shape: square   -> center [x, y], half_size
+obstacles:
+  - shape: circle
+    center: [0.0, 4.0]
+    radius: 0.5
+
+leader:
+  t_end: 14.0
+  waypoints:
+    - [0.0, -6.0]
+    - [0.0, 2.5]
+    - [1.5, 4.0]    # sidestep around the obstacle
+    - [0.0, 5.5]
+    - [0.0, 8.0]
+  # Cruise speed held through the sidestep -- no deliberate slowdown, so the
+  # follower's lag relative to the leader's quick lateral move is what's
+  # expected to create the momentary occlusion.
+  speed_profile:
+    - [0.0, 0.0]      # start at rest
+    - [1.5, 1.3]      # accelerate to cruise
+    - [10.5, 1.3]     # cruise straight through the sidestep
+    - [13.0, 0.4]
+    - [14.0, 0.0]     # stop

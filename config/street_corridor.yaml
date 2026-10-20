@@ -1,0 +1,49 @@
+# Scenario: Street Corridor -- obstacles lining both sides of a straight
+# ~2m-wide corridor (building-like, unlike forest.yaml's scattered trees),
+# demanding tight, sustained lateral precision rather than occasional
+# dodges. Tests tracking error and rate saturation under a long stretch with
+# very little lateral margin on either side, not just brief closest-approach
+# moments.
+#
+# shape: circle   -> center [x, y], radius
+# shape: square   -> center [x, y], half_size
+obstacles:
+  - shape: square
+    center: [-1.6, -4.0]
+    half_size: 0.6
+  - shape: square
+    center: [1.6, -4.0]
+    half_size: 0.6
+
+  - shape: square
+    center: [-1.6, -1.0]
+    half_size: 0.6
+  - shape: square
+    center: [1.6, -1.0]
+    half_size: 0.6
+
+  - shape: square
+    center: [-1.6, 2.0]
+    half_size: 0.6
+  - shape: square
+    center: [1.6, 2.0]
+    half_size: 0.6
+
+  - shape: square
+    center: [-1.6, 5.0]
+    half_size: 0.6
+  - shape: square
+    center: [1.6, 5.0]
+    half_size: 0.6
+
+leader:
+  t_end: 14.0
+  waypoints:
+    - [0.0, -6.0]
+    - [0.0, 8.0]
+  speed_profile:
+    - [0.0, 0.0]      # start at rest
+    - [1.5, 1.4]      # accelerate to cruise
+    - [12.5, 1.4]     # cruise down the corridor
+    - [13.5, 0.3]
+    - [14.0, 0.0]     # stop

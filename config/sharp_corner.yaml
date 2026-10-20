@@ -1,0 +1,29 @@
+# Scenario: Cruise-to-Sharp-Corner -- a near-right-angle waypoint turn taken
+# at full cruise speed (no deliberate slowdown), with an obstacle sitting at
+# the inside of the corner. Tests the controller under a sudden large heading
+# change while the leader itself keeps moving fast -- the aggressive-cornering
+# case the curated suite exists to probe, distinct from wall_slowdown.yaml's
+# "obstacle forces you to slow down" case.
+#
+# shape: circle   -> center [x, y], radius
+# shape: square   -> center [x, y], half_size
+obstacles:
+  - shape: circle
+    center: [2.0, 4.8]
+    radius: 0.6              # tucked just inside the corner
+
+leader:
+  t_end: 12.0
+  waypoints:
+    - [0.0, -6.0]
+    - [0.0, 4.0]
+    - [4.0, 4.0]    # near-90-degree turn, 0.2m clearance from the obstacle's edge
+    - [8.0, 4.0]
+  # Accelerate to cruise, then hold cruise speed straight through the corner
+  # -- no slowdown is the point of this scenario.
+  speed_profile:
+    - [0.0, 0.0]     # start at rest
+    - [1.5, 1.8]     # accelerate to cruise
+    - [9.5, 1.8]     # cruise straight through the corner at full speed
+    - [11.0, 0.5]    # decelerate near the end
+    - [12.0, 0.0]    # stop

@@ -1,0 +1,28 @@
+# Scenario: Stop-and-Go -- a straight line with no obstacles, isolating the
+# motion-profile question from obstacle interaction: accelerate, cruise, come
+# to a full stop, hold, then accelerate again (the Skydio "person runs, stops,
+# then moves again" case). Tests whether a sudden-stop/sudden-restart demand
+# alone -- independent of any avoidance cost -- reproduces the kind of
+# transient seen at t=0 of other scenarios (see design_decisions.md's "RTI
+# cold-start bootstrap" investigation), or whether it's specific to starting
+# from rest.
+#
+# shape: circle   -> center [x, y], radius
+# shape: square   -> center [x, y], half_size
+obstacles: []
+
+leader:
+  t_end: 16.0
+  waypoints:
+    - [0.0, -6.0]
+    - [0.0, 10.0]
+  speed_profile:
+    - [0.0, 0.0]      # start at rest
+    - [1.5, 1.8]      # accelerate to cruise
+    - [5.0, 1.8]      # cruise
+    - [6.0, 0.0]      # hard stop
+    - [8.0, 0.0]      # hold stopped
+    - [9.5, 1.8]       # accelerate again, mid-scenario
+    - [14.5, 1.8]      # cruise
+    - [15.5, 0.3]
+    - [16.0, 0.0]     # decelerate to a stop
