@@ -246,7 +246,8 @@ private:
                 }
                 const argus_mpc::TargetState target{0.0, 0.0, ARGUS_CIRCLE_Z, 0.0, 0.0, 0.0};
 
-                const argus_mpc::Command cmd = mpc_.step(x0, horizon, target);
+                const argus_mpc::Command cmd =
+                    mpc_.step(x0, horizon, std::vector<argus_mpc::TargetState>(N_, target));
                 if (cmd.solve_status != 0) {
                     RCLCPP_WARN(this->get_logger(),
                         "MPC solve status %d | x0: pos=(%.3f,%.3f,%.3f) vel=(%.3f,%.3f,%.3f) "

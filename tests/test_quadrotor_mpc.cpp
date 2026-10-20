@@ -16,6 +16,10 @@ std::vector<Reference> constantHorizon(const Reference& ref, int n)
 {
     return std::vector<Reference>(static_cast<std::size_t>(n), ref);
 }
+std::vector<TargetState> constantTarget(const TargetState& tgt, int n)
+{
+    return std::vector<TargetState>(static_cast<std::size_t>(n), tgt);
+}
 }  // namespace
 
 // At rest exactly at the reference (level, hover), the solver should command
@@ -36,7 +40,8 @@ TEST(QuadrotorMpc, HoverAtZeroError)
     Reference r{};  r.x = s.x; r.y = s.y; r.z = s.z;
     TargetState tgt{};  // target at world origin
 
-    const Command cmd = mpc.step(s, constantHorizon(r, mpc.horizonLength()), tgt);
+    const Command cmd = mpc.step(s, constantHorizon(r, mpc.horizonLength()),
+                                  constantTarget(tgt, mpc.horizonLength()));
 
     EXPECT_EQ(cmd.solve_status, 0);
     EXPECT_NEAR(cmd.thrust,     1.0, 0.05);
@@ -60,7 +65,8 @@ TEST(QuadrotorMpc, ForwardReferenceProducesForwardPitch)
 
     Command cmd{};
     for (int i = 0; i < 5; ++i)
-        cmd = mpc.step(s, constantHorizon(r, mpc.horizonLength()), tgt);
+        cmd = mpc.step(s, constantHorizon(r, mpc.horizonLength()),
+                        constantTarget(tgt, mpc.horizonLength()));
 
     EXPECT_TRUE(std::isfinite(cmd.pitch_rate));
     EXPECT_GT(cmd.pitch_rate, 0.0);
@@ -75,5 +81,21 @@ TEST(QuadrotorMpc, WrongHorizonSizeThrows)
     State s{};
     Reference r{};
     TargetState tgt{};
-    EXPECT_THROW(mpc.step(s, constantHorizon(r, mpc.horizonLength() - 1), tgt), std::invalid_argument);
+    EXPECT_THROW(mpc.step(s, constantHorizon(r, mpc.horizonLength() - 1),
+                           constantTarget(tgt, mpc.horizonLength())),
+                 std::invalid_argument);
+}
+
+// target.size() must match horizonLength() exactly too, same reasoning as
+// WrongHorizonSizeThrows above -- now that target is per-stage, a mismatched
+// caller should fail loudly here as well, not silently read out of bounds.
+TEST(QuadrotorMpc, WrongTargetSizeThrows)
+{
+    QuadrotorMpc mpc;
+    State s{};
+    Reference r{};
+    TargetState tgt{};
+    EXPECT_THROW(mpc.step(s, constantHorizon(r, mpc.horizonLength()),
+                           constantTarget(tgt, mpc.horizonLength() - 1)),
+                 std::invalid_argument);
 }

@@ -165,7 +165,7 @@ int main(int argc, char** argv)
         const double xt_log = horizon[0].x, yt_log = horizon[0].y, zt_log = horizon[0].z;  // drone ref
         const double fx_log = tgt.x,        fy_log = tgt.y,        fz_log = tgt.z;          // FOV target
 
-        const argus_mpc::Command cmd = mpc.step(x0_mpc, horizon, tgt);
+        const argus_mpc::Command cmd = mpc.step(x0_mpc, horizon, std::vector<argus_mpc::TargetState>(N, tgt));
         u = {cmd.thrust * mpc::T_hover, cmd.roll_rate, cmd.pitch_rate, cmd.yaw_rate};
 
         // ── Log ───────────────────────────────────────────────────────────────

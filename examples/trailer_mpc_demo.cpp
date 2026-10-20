@@ -180,7 +180,7 @@ int main(int argc, char** argv)
             x[0], x[1], x[2], x[3],  x[4],  x[5],
             x[6], x[7], x[8], x[9], x[10], x[11],
         };
-        const argus_mpc::Command cmd = mpc.step(x0_mpc, mpc_horizon, tgt);
+        const argus_mpc::Command cmd = mpc.step(x0_mpc, mpc_horizon, std::vector<argus_mpc::TargetState>(N, tgt));
         u = {cmd.thrust * kTHover, cmd.roll_rate, cmd.pitch_rate, cmd.yaw_rate};
 
         csv << step << ',' << t;

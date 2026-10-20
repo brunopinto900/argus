@@ -95,13 +95,25 @@ public:
 
     // Solve one MPC step (SQP-RTI: one iteration).
     // horizon.size() must equal horizonLength(); throws std::invalid_argument otherwise.
-    // target.{x,y,z} → model.p (FOV cost).  target.{vx,vy,vz} → velocity yref.
+    // target: one TargetState per horizon stage (same size as horizon) --
+    // target[k].{x,y,z} → stage k's model.p (FOV cost); target[k].{vx,vy,vz}
+    // → stage k's velocity yref. Per-stage, not a single shared value,
+    // since the FOV/bearing cost at stage k is evaluated against the
+    // drone's *predicted* pose there -- a target held fixed at its
+    // current-tick position becomes systematically stale by the time the
+    // horizon reaches later stages, exactly the same staleness pattern as
+    // obstacle (below). Callers tracking a known target trajectory should
+    // propagate target[k] to the target's actual predicted position/
+    // velocity at that stage's time (t + k*Ts), not just repeat one value;
+    // callers with no better model (e.g. a momentarily-static assumption)
+    // can still pass the same TargetState N times. target.size() must
+    // equal horizonLength().
     // obstacle: one ObstacleLinearization per horizon stage (same size as
     // horizon), or empty to disable collision avoidance entirely (every
     // stage uses the no-op default). obstacle.size() must equal
     // horizonLength() if non-empty.
     Command step(const State& x0, const std::vector<Reference>& horizon,
-                 const TargetState& target,
+                 const std::vector<TargetState>& target,
                  const std::vector<ObstacleLinearization>& obstacle = {});
 
     // Accumulated acados solve-time stats since construction (or since the

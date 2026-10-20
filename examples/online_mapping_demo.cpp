@@ -539,10 +539,25 @@ int main(int argc, char** argv)
         for (int j = 0; j < N; ++j) {
             mpc_horizon[j] = {horizon.PDx[j], horizon.PDy[j], kFovZRef};
         }
-        const argus_mpc::TargetState tgt{
-            leader_x, leader_y, kTargetZ,
-            target.x.derivative(t), target.y.derivative(t), 0.0,
-        };
+        // FOV/bearing target, propagated per horizon stage -- the leader's
+        // trajectory is a known closed-form function of time here, so each
+        // stage k gets its own exact target.x/y(t + k*control_dt) and
+        // derivative, not one value held fixed across the whole horizon
+        // (unlike the obstacle linearization, which has to approximate
+        // since own_map can't be queried at a not-yet-observed future
+        // point). See design_decisions.md's "Symbolic graph constraint &
+        // per-stage ESDF linearization" section. Clamped to scenario.t_end
+        // since CubicSpline extrapolates past its fitted sample domain
+        // (late-horizon stages near the end of the run would otherwise
+        // query beyond where the leader's path was ever actually defined).
+        std::vector<argus_mpc::TargetState> target_horizon(N);
+        for (int k = 0; k < N; ++k) {
+            const double t_k = std::min(t + k * control_dt, scenario.t_end);
+            target_horizon[k] = {
+                target.x(t_k), target.y(t_k), kTargetZ,
+                target.x.derivative(t_k), target.y.derivative(t_k), 0.0,
+            };
+        }
         const argus_mpc::State x0_mpc{
             x[0], x[1], x[2], x[3],  x[4],  x[5],
             x[6], x[7], x[8], x[9], x[10], x[11],
@@ -577,7 +592,7 @@ int main(int argc, char** argv)
             }
         }
 
-        const argus_mpc::Command cmd = mpc.step(x0_mpc, mpc_horizon, tgt, obstacle);
+        const argus_mpc::Command cmd = mpc.step(x0_mpc, mpc_horizon, target_horizon, obstacle);
         u = {cmd.thrust * kTHover, cmd.roll_rate, cmd.pitch_rate, cmd.yaw_rate};
 
         // Plant (and therefore the mapping sensor riding it) integrates at

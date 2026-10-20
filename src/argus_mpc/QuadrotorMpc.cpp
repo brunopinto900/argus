@@ -78,12 +78,16 @@ QuadrotorMpc::~QuadrotorMpc() = default;
 int QuadrotorMpc::horizonLength() const { return kN; }
 
 Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizon,
-                           const TargetState& target,
+                           const std::vector<TargetState>& target,
                            const std::vector<ObstacleLinearization>& obstacle)
 {
     if (static_cast<int>(horizon.size()) != kN)
         throw std::invalid_argument(
             "QuadrotorMpc::step(): horizon.size() must equal horizonLength() (" +
+            std::to_string(kN) + ")");
+    if (static_cast<int>(target.size()) != kN)
+        throw std::invalid_argument(
+            "QuadrotorMpc::step(): target.size() must equal horizonLength() (" +
             std::to_string(kN) + ")");
     if (!obstacle.empty() && static_cast<int>(obstacle.size()) != kN)
         throw std::invalid_argument(
@@ -116,22 +120,21 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
         impl.warm_started = true;
     }
 
-    // ── Inject target position + per-stage obstacle linearization into
-    // model.p ─────────────────────────────────────────────────────────────
-    // Unlike target (same value at every stage), obstacle info varies per
-    // stage -- each stage's predicted position can be near a different
-    // part of (or distance from) the ESDF. Terminal stage reuses the last
-    // running stage's obstacle info, same convention as yref_e below
-    // reusing horizon[kN-1].
-    auto set_params = [&](int stage, const ObstacleLinearization& o) {
+    // ── Inject per-stage FOV target + obstacle linearization into model.p ───
+    // Both vary per stage now -- each stage's predicted drone pose can be
+    // evaluated against a different target position (if the caller
+    // propagated one) and a different part of (or distance from) the ESDF.
+    // Terminal stage reuses the last running stage's target/obstacle info,
+    // same convention as yref_e below reusing horizon[kN-1].
+    auto set_params = [&](int stage, const TargetState& tgt, const ObstacleLinearization& o) {
         double p_param[kNp] = {
-            target.x, target.y, target.z,
+            tgt.x, tgt.y, tgt.z,
             o.p0_x, o.p0_y, o.distance, o.grad_x, o.grad_y,
         };
         quadrotor_acados_update_params(impl.capsule, stage, p_param, kNp);
     };
-    for (int i = 0; i < kN; ++i) set_params(i, obs[i]);
-    set_params(kN, obs[kN - 1]);
+    for (int i = 0; i < kN; ++i) set_params(i, target[i], obs[i]);
+    set_params(kN, target[kN - 1], obs[kN - 1]);
 
     // ── Pin the measured state as the initial-stage equality constraint ─────
     ocp_nlp_constraints_model_set(impl.config, impl.dims, impl.nlp_in, impl.nlp_out, 0, "lbx",
@@ -141,14 +144,17 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
 
     // ── Per-stage horizon reference ───────────────────────────────────────────
     // yref layout: [x,y,z, vx,vy,vz, phi,theta, r_fov, r_obs, T, p_cmd,q_cmd,r_cmd]
-    // Velocity yref is the target's velocity — incentivises the drone to match speed.
+    // Velocity yref is stage k's target velocity (target[k].vx/vy/vz) —
+    // incentivises the drone to match the target's speed at that point in
+    // the horizon, not just its speed as of this tick.
     // r_obs reference is always 0 — "no hinge violation" is the only
     // sensible target for a residual that's already 0 whenever safe.
     for (int j = 0; j < kN; ++j) {
         const Reference& ref = horizon[j];
+        const TargetState& tgt = target[j];
         double yref[kNy] = {
-            ref.x,      ref.y,      ref.z,
-            target.vx,  target.vy,  target.vz,
+            ref.x,  ref.y,  ref.z,
+            tgt.vx, tgt.vy, tgt.vz,
             0.0, 0.0,             // phi, theta reference: level
             0.0,                  // r_fov reference: target inside the FOV cone
             0.0,                  // r_obs reference: clear of any obstacle
@@ -158,9 +164,10 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
     }
     {
         const Reference& ref = horizon[kN - 1];
+        const TargetState& tgt = target[kN - 1];
         double yref_e[kNyN] = {
-            ref.x,     ref.y,     ref.z,
-            target.vx, target.vy, target.vz,
+            ref.x,  ref.y,  ref.z,
+            tgt.vx, tgt.vy, tgt.vz,
             0.0, 0.0,
             0.0,
             0.0,
