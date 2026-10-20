@@ -35,11 +35,19 @@ def _parse_args():
                          "trailer.distance_to_target")
     p.add_argument("--save-png", metavar="PATH",
                     help="Render headlessly to PATH instead of showing a window")
-    p.add_argument("--occlusion-threshold-m", type=float, default=0.1,
-                    help="occlusion_clearance below this counts as the sightline "
-                         "actually being blocked, not just close to an obstacle "
-                         "(default: %(default)s m, a heuristic -- see the module "
-                         "docstring)")
+    p.add_argument("--d-fov", type=float, default=4.0,
+                    help="Occlusion falloff scale [m]: occlusion_clearance (the "
+                         "ground-truth min ESDF distance along the drone->target "
+                         "sightline, already logged by online_mapping_demo.cpp) is "
+                         "converted to a percentage via occ_pct = 100 * max(0, 1 - "
+                         "occlusion_clearance/d_FOV) -- 0 m clearance = 100% "
+                         "occluded, >= d_FOV clearance = 0% occluded. Same formula "
+                         "and default as scripts/occlusion_metric_demo.py (default: "
+                         "%(default)s m)")
+    p.add_argument("--occlusion-event-pct", type=float, default=80.0,
+                    help="occ_pct above this counts as an occlusion EVENT worth "
+                         "flagging red, not just some nonzero degradation "
+                         "(default: %(default)s %%)")
     p.add_argument("--real-target-m", type=float, default=0.27,
                     help="Actual physical safety requirement, distinct from "
                          "--config-path's d_safe_m knob (which is already "
@@ -225,11 +233,22 @@ def compute_summary():
         s["initial_settle_time_s"] = float(t[still_out[-1]] + dt) if len(still_out) else 0.0
 
     # -- Occlusion ------------------------------------------------------------
+    # occlusion_clearance is the ground-truth min ESDF distance along the
+    # drone->target sightline (see online_mapping_demo.cpp's
+    # occlusionClearance()) -- already exactly the "lateral clearance to the
+    # bearing vector, depth-gated to the segment between drone and target"
+    # quantity the occlusion metric needs (design_decisions.md's "Occlusion
+    # metric" section), so no new CSV column is needed: just convert the
+    # existing clearance into the same percentage/falloff scripts/
+    # occlusion_metric_demo.py validates.
     if has_collision_cols:
         occ = df["occlusion_clearance"].values
+        occ_pct = 100.0 * np.clip(1.0 - occ / _args.d_fov, 0.0, 1.0)
         s["occlusion_clearance_min_m"] = float(np.min(occ))
         s["occlusion_clearance_mean_m"] = float(np.mean(occ))
-        occluded = occ < _args.occlusion_threshold_m
+        s["occlusion_pct_mean"] = float(np.mean(occ_pct))
+        s["occlusion_pct_max"] = float(np.max(occ_pct))
+        occluded = occ_pct > _args.occlusion_event_pct
         s["occluded_pct"] = float(100.0 * occluded.mean())
 
     # -- Solver health ----------------------------------------------------------
@@ -342,15 +361,17 @@ def plot_results(s):
             a.axis("off")
             a.set_title("Occlusion (no occlusion_clearance column)")
             return
-        a.plot(df["t"], df["occlusion_clearance"], color="tab:purple")
-        a.axhline(_args.occlusion_threshold_m, color="tab:red", linestyle="--",
-                   label=f"threshold = {_args.occlusion_threshold_m:.2f} m")
-        occluded = (df["occlusion_clearance"] < _args.occlusion_threshold_m).values
+        occ_pct = 100.0 * np.clip(1.0 - df["occlusion_clearance"].values / _args.d_fov, 0.0, 1.0)
+        a.plot(df["t"], occ_pct, color="tab:purple")
+        a.axhline(_args.occlusion_event_pct, color="tab:red", linestyle="--",
+                   label=f"event threshold = {_args.occlusion_event_pct:.0f} %")
+        occluded = occ_pct > _args.occlusion_event_pct
         for b, e in contiguous_true_runs(occluded):
             a.axvspan(df["t"].iloc[b], df["t"].iloc[e], color="red", alpha=0.2,
                        label="occluded" if (b, e) == contiguous_true_runs(occluded)[0] else None)
-        a.set_xlabel("t [s]"); a.set_ylabel("distance [m]")
-        a.set_title(f"Sightline clearance (occlusion proxy) -- "
+        a.set_xlabel("t [s]"); a.set_ylabel("occlusion [%]")
+        a.set_ylim(-5, 105)
+        a.set_title(f"Occlusion -- 100*max(0, 1 - clearance/d_FOV={_args.d_fov:.1f}m) -- "
                     f"occluded {s['occluded_pct']:.1f}% of the run")
         a.legend(fontsize=8)
     panels.append(occlusion_panel)
@@ -387,6 +408,7 @@ def plot_results(s):
 
         worst_idx = int(df["occlusion_clearance"].idxmin())
         worst = df.loc[worst_idx]
+        worst_pct = 100.0 * np.clip(1.0 - worst["occlusion_clearance"] / _args.d_fov, 0.0, 1.0)
 
         if FOV_HALF_ANGLE_DEG is not None:
             yaw_deg = np.degrees(worst["psi"])
@@ -399,15 +421,16 @@ def plot_results(s):
 
         a.plot([worst["x"], worst["fx"]], [worst["y"], worst["fy"]],
                color="black", linewidth=2, zorder=5,
-               label=f"worst sightline (clearance={worst['occlusion_clearance']:.3f} m, "
+               label=f"worst sightline (occ={worst_pct:.0f}%, clearance={worst['occlusion_clearance']:.3f} m, "
                      f"t={worst['t']:.2f}s)")
         a.scatter([worst["x"]], [worst["y"]], color="tab:blue", zorder=6, marker="o")
         a.scatter([worst["fx"]], [worst["fy"]], color="tab:red", zorder=6, marker="*")
 
-        occluded = df["occlusion_clearance"] < _args.occlusion_threshold_m
+        occ_pct = 100.0 * np.clip(1.0 - df["occlusion_clearance"].values / _args.d_fov, 0.0, 1.0)
+        occluded = occ_pct > _args.occlusion_event_pct
         if occluded.any():
             a.scatter(df.loc[occluded, "x"], df.loc[occluded, "y"], color="orange", s=10,
-                       zorder=4, label=f"occluded (<{_args.occlusion_threshold_m:.2f} m)")
+                       zorder=4, label=f"occluded (>{_args.occlusion_event_pct:.0f}%)")
 
         a.set_xlabel("x [m]"); a.set_ylabel("y [m]")
         a.set_title("Occlusion map")
@@ -527,9 +550,11 @@ def plot_results(s):
             ("initial settle time", fnum("initial_settle_time_s") + " s", None),
         ]),
         ("Occlusion", [
+            ("occlusion (mean / max)", f"{fnum('occlusion_pct_mean', '{:.1f}')} / "
+                                        f"{fnum('occlusion_pct_max', '{:.1f}')} %", None),
             ("sightline clearance (min / mean)", f"{fnum('occlusion_clearance_min_m')} / "
                                                   f"{fnum('occlusion_clearance_mean_m')} m", None),
-            ("occluded", fnum("occluded_pct", "{:.1f}") + " %",
+            (f"occlusion events (>{_args.occlusion_event_pct:.0f}%)", fnum("occluded_pct", "{:.1f}") + " %",
              ok if s.get("occluded_pct", 1) == 0 else warn),
         ]),
         ("Solver health", [
