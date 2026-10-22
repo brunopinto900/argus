@@ -199,8 +199,10 @@ def compute_gate_and_stats(df, cfg):
     m["target_speed_min_m_s"] = float(np.min(target_speed))
     m["target_speed_mean_m_s"] = float(np.mean(target_speed))
     m["target_speed_max_m_s"] = float(np.max(target_speed))
-    target_accel = np.gradient(target_speed, t)
-    m["target_accel_mean_abs_m_s2"] = float(np.mean(np.abs(target_accel)))
+    target_accel_abs = np.abs(np.gradient(target_speed, t))
+    m["target_accel_abs_min_m_s2"] = float(np.min(target_accel_abs))
+    m["target_accel_abs_mean_m_s2"] = float(np.mean(target_accel_abs))
+    m["target_accel_abs_max_m_s2"] = float(np.max(target_accel_abs))
 
     fov_half_angle_deg = cfg["camera"]["fov_half_angle_deg"]
     gamma = _bearing_gamma_deg(df)

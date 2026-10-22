@@ -165,7 +165,8 @@ def plot_cell(ax, name, scenario_file, df, cfg, blur_threshold_deg_s):
          f"max {m['body_rate_magnitude_max_deg_s']:.0f}°/s (thr {blur_threshold_deg_s:.0f})", blur_color),
         (f"target speed {m['target_speed_min_m_s']:.2f}/{m['target_speed_mean_m_s']:.2f}/"
          f"{m['target_speed_max_m_s']:.2f} m/s (min/mean/max)", "black"),
-        (f"target accel mean|.| {m['target_accel_mean_abs_m_s2']:.2f} m/s²", "black"),
+        (f"target accel |.| {m['target_accel_abs_min_m_s2']:.2f}/{m['target_accel_abs_mean_m_s2']:.2f}/"
+         f"{m['target_accel_abs_max_m_s2']:.2f} m/s² (min/mean/max)", "black"),
     ]
     y = -0.14
     for text, color in lines:
