@@ -7,6 +7,18 @@
 # the mapping+ESDF+avoidance pipeline reacts fast enough once it's
 # finally seen, not just whether avoidance works once the map is settled.
 #
+# NOTE: the leader's waypoints are hand-checked against straight-line
+# segments between them, but the actual realized path is a cubic spline
+# through those points (argus_follower::waypointTarget) which can cut a
+# sharp dodge's corner tighter than the straight-line estimate suggests --
+# the original single-waypoint dodge here (1.6, 6.0) looked like 0.6m
+# clearance on paper but the real spline path penetrated the obstacle by
+# 0.136m. Fixed by widening the dodge AND adding entry/exit waypoints that
+# constrain the spline's shape through the turn, then verified against the
+# logged fx/fy (not just the waypoints) before trusting it -- see
+# design_decisions.md's "Scenario validation must check the realized
+# spline, not just waypoints."
+#
 # shape: circle   -> center [x, y], radius
 # shape: square   -> center [x, y], half_size
 obstacles:
@@ -18,9 +30,11 @@ leader:
   t_end: 11.0
   waypoints:
     - [0.0, -6.0]   # drone starts ~2m further south -- obstacle is ~14m away, outside sensor range
-    - [0.0, 4.2]
-    - [1.6, 6.0]     # dodge past the obstacle's edge (0.6m clearance)
-    - [0.0, 7.8]
+    - [0.0, 3.5]
+    - [1.5, 5.0]     # start swinging wide well before the obstacle's y-range (spans y:[5,7])
+    - [2.8, 6.0]     # dodge past the obstacle's edge (1.8m clearance from the straight waypoints)
+    - [1.5, 7.0]
+    - [0.0, 8.5]
     - [0.0, 10.0]
   # Full cruise speed the whole way, no early slowdown -- the obstacle only
   # enters sensor range partway through the approach.

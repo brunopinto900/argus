@@ -6,14 +6,24 @@
 # change, and speed simultaneously, which is where a cost-weight tradeoff
 # that looks fine in isolation can still fight itself.
 #
+# NOTE: a straight-line check of the waypoints against the obstacles said
+# ~0.5m clearance, but the realized spline (argus_follower::waypointTarget)
+# cut that down to 0.038m -- the sharp turn immediately after the gap
+# pulls the spline's tangent sideways *through* the gap, not just along
+# it. Fixed by widening the gap AND adding a short straight buffer
+# waypoint between the gap and the turn so the spline has room to
+# straighten out first -- verified against the logged fx/fy afterward, see
+# design_decisions.md's "Scenario validation must check the realized
+# spline, not just waypoints."
+#
 # shape: circle   -> center [x, y], radius
 # shape: square   -> center [x, y], half_size
 obstacles:
   - shape: circle
-    center: [-0.9, 4.0]
+    center: [-1.1, 4.0]
     radius: 0.4
   - shape: circle
-    center: [0.9, 4.3]
+    center: [1.1, 4.3]
     radius: 0.4
 
 leader:
@@ -21,8 +31,9 @@ leader:
   waypoints:
     - [0.0, -6.0]
     - [0.0, 3.5]
-    - [0.0, 4.15]   # thread the ~1.1m gap between the two obstacles
-    - [3.0, 6.5]     # immediately into a sharp turn, no straight recovery leg
+    - [0.0, 4.15]   # thread the ~1.4m gap between the two obstacles
+    - [0.0, 5.2]     # short straight buffer before the turn -- lets the spline straighten out first
+    - [3.0, 6.5]     # sharp turn, now clear of the gap
     - [6.0, 6.5]
   # Cruise speed held through BOTH the passage and the turn -- no slowdown
   # anywhere, the point of this scenario.
