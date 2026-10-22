@@ -112,6 +112,24 @@ def plot_cell(ax, name, scenario_file, df, cfg, blur_threshold_deg_s):
         obstacles = []
     _draw_obstacles(ax, obstacles)
 
+    # FOV cone at the worst (max-gamma) bearing moment of the run -- same
+    # wedge geometry as compute_metrics.py's occlusion_map_panel, drawn
+    # here for every scenario (not just the ones with an occlusion event)
+    # so the suite always shows where the target came closest to leaving
+    # the cone, not just whether it did.
+    fov_half_angle_deg = cfg["camera"]["fov_half_angle_deg"]
+    gamma = suite._bearing_gamma_deg(df)
+    worst_fov_i = int(gamma.values.argmax())
+    wf = df.loc[worst_fov_i]
+    yaw_deg = math.degrees(wf["psi"])
+    sightline_len = math.hypot(wf["fx"] - wf["x"], wf["fy"] - wf["y"])
+    wedge = matplotlib.patches.Wedge((wf["x"], wf["y"]), sightline_len * 1.3,
+                                      yaw_deg - fov_half_angle_deg, yaw_deg + fov_half_angle_deg,
+                                      color="orange", alpha=0.22, zorder=0.5, label="FOV cone (worst moment)")
+    ax.add_patch(wedge)
+    ax.scatter([wf["x"]], [wf["y"]], color="orange", marker="^", s=22, zorder=5,
+               edgecolor="black", linewidth=0.3, label="worst FOV moment")
+
     ax.plot(df["x"], df["y"], color="tab:blue", linewidth=1.0, alpha=0.8, label="drone")
     ax.plot(df["fx"], df["fy"], "--", color="tab:red", linewidth=1.0, alpha=0.8, label="target")
 
