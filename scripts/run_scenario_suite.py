@@ -117,6 +117,23 @@ SOFT_METRICS = [
 REGRESSION_TOLERANCE_FRAC = 0.20
 
 
+def contiguous_true_runs(mask):
+    """[(start_idx, end_idx_inclusive), ...] for each run of consecutive True
+    -- same as compute_metrics.py's helper, duplicated for the same reason
+    as the rest of this module's standalone metric extraction."""
+    runs = []
+    start = None
+    for i, v in enumerate(mask):
+        if v and start is None:
+            start = i
+        elif not v and start is not None:
+            runs.append((start, i - 1))
+            start = None
+    if start is not None:
+        runs.append((start, len(mask) - 1))
+    return runs
+
+
 def _bearing_gamma_deg(df):
     """Same ZYX-rotation formula as compute_metrics.py's bearing_angles_deg(),
     reduced to just gamma (combined bearing angle)."""
@@ -148,6 +165,7 @@ def compute_gate_and_stats(df, cfg):
     ts_ms = cfg["mpc"]["Ts"] * 1000.0
     pot = df["pipeline_onboard_time_ms"].values
     m["pipeline_real_time_safe"] = bool(not (pot > ts_ms).any())
+    m["pipeline_onboard_time_mean_ms"] = float(np.mean(pot))
     m["pipeline_onboard_time_max_ms"] = float(np.max(pot))
 
     rate_max = cfg["constraints"]["rate_max"]
@@ -161,9 +179,26 @@ def compute_gate_and_stats(df, cfg):
     m["xy_tracking_error_mean_m"] = float(xy_err.mean())
     m["xy_tracking_error_max_m"] = float(xy_err.max())
 
+    # Raw drone<->target (leader) distance -- hovers around the design
+    # standoff distance. Mean +/- std, NOT max: every scenario's initial
+    # transient (closing from a cold start) would otherwise dominate a max
+    # and say nothing about steady-state behavior, same reasoning as the
+    # "separate initial vs. remaining instants" split earlier in
+    # design_decisions.md's softplus_beta investigation.
+    drone_target_dist = np.hypot(df["x"] - df["fx"], df["y"] - df["fy"])
+    m["drone_target_dist_mean_m"] = float(drone_target_dist.mean())
+    m["drone_target_dist_std_m"] = float(drone_target_dist.std())
+
     fov_half_angle_deg = cfg["camera"]["fov_half_angle_deg"]
     gamma = _bearing_gamma_deg(df)
-    m["fov_exceedance_pct"] = float(100.0 * (gamma > fov_half_angle_deg).mean())
+    out_of_fov = gamma > fov_half_angle_deg
+    m["fov_exceedance_pct"] = float(100.0 * out_of_fov.mean())
+    # Reacquisition count: same convention as compute_metrics.py's
+    # compute_summary() -- the first out-of-FOV run (if it starts at index
+    # 0) is "initial acquisition," not a "re"-acquisition.
+    events = contiguous_true_runs(out_of_fov)
+    reacq_events = events[1:] if (events and events[0][0] == 0) else events
+    m["reacquisition_events"] = len(reacq_events)
 
     occ = df["occlusion_clearance"].values
     occ_pct = 100.0 * np.clip(1.0 - occ / D_FOV, 0.0, 1.0)
@@ -171,6 +206,7 @@ def compute_gate_and_stats(df, cfg):
     m["occluded_pct"] = float(100.0 * (occ_pct > OCCLUSION_EVENT_PCT).mean())
 
     rate_mag_deg_s = np.degrees(np.sqrt(df["p"]**2 + df["q"]**2 + df["r"]**2))
+    m["body_rate_magnitude_mean_deg_s"] = float(np.mean(rate_mag_deg_s))
     m["body_rate_magnitude_max_deg_s"] = float(np.max(rate_mag_deg_s))
 
     m["gates_pass"] = bool(m["collision_free"] and m["solve_fail_rate_pct"] == 0.0
