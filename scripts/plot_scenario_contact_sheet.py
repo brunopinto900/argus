@@ -34,27 +34,41 @@ SUITE_DIR = suite.SUITE_DIR
 
 N_COLS = 5
 
-# Very brief "what's exciting/stressing here" caption per scenario, shown
-# under each thumbnail's title -- distinct from (and shorter than) the
-# full rationale in run_scenario_suite.py's SCENARIOS list, which is sized
-# for the printed table/design_decisions.md instead.
-CAPTIONS = {
-    "forest_clutter": "general multi-obstacle baseline",
-    "wall_slowdown": "big obstacle, deliberate slowdown",
-    "sharp_corner": "sharp turn at full cruise speed",
-    "stop_and_go": "full stop + restart, no obstacles",
-    "street_corridor": "sustained tight corridor",
-    "occlusion_cut": "sidestep fouls the sightline",
-    "compound_stress": "narrow gap + sharp turn combined",
-    "target_reversal": "near-180° heading reversal",
-    "standoff_conflict": "standoff vs. avoidance tension",
-    "sensor_range_edge": "late detection at high speed",
-    "high_curvature": "continuous S-curve slalom",
-    "cold_start_acquisition": "starts facing away from target",
-    "serpentine_clutter": "continuous weave, dense obstacles",
-    "stop_near_obstacle": "stops and holds near an obstacle",
-    "near_miss_cascade": "back-to-back dodges, little recovery",
-}
+
+def stress_caption(m, blur_threshold_deg_s):
+    """Very brief "what's actually stressed here" caption, computed from
+    this scenario's own metrics (collision clearance, blur, tracking
+    stability, FOV exceedance) rather than a hand-written description of
+    scenario intent -- the user asked for what the numbers show, not a
+    restatement of the design goal. Picks the top 2 standouts by a
+    normalized severity score per metric, each scaled so ~1.0 is "notably
+    stressed" for that metric:
+      - collision: how close min_clearance_true_m got to 0, relative to
+        the 0.5m band every curated scenario's margin was designed around
+      - blur: body_rate_magnitude_max_deg_s relative to the derived
+        9 deg/s threshold
+      - FOV exceedance: scaled against a 10% nominal band
+      - tracking stability: drone<->target distance std, scaled against
+        a 0.1m nominal band
+    """
+    has_obstacles = m["min_clearance_true_m"] < 1000.0
+    candidates = []
+    if has_obstacles:
+        collision_sev = max(0.0, 1.0 - m["min_clearance_true_m"] / 0.5)
+        label = f"clearance {m['min_clearance_true_m']:.2f}m"
+        if not m["collision_free"]:
+            label += " (COLLISION)"
+        candidates.append((collision_sev, label))
+    blur_sev = m["body_rate_magnitude_max_deg_s"] / blur_threshold_deg_s
+    candidates.append((blur_sev, f"blur max {m['body_rate_magnitude_max_deg_s']:.0f}°/s"))
+    fov_sev = m["fov_exceedance_pct"] / 10.0
+    candidates.append((fov_sev, f"FOV exceed {m['fov_exceedance_pct']:.0f}%"))
+    track_sev = m["drone_target_dist_std_m"] / 0.1
+    candidates.append((track_sev, f"tracking ±{m['drone_target_dist_std_m']:.2f}m"))
+
+    candidates.sort(key=lambda c: c[0], reverse=True)
+    top = [label for sev, label in candidates[:2] if sev > 0.3]
+    return " · ".join(top) if top else "no standout metric"
 
 
 def _parse_args():
@@ -127,7 +141,7 @@ def plot_cell(ax, name, scenario_file, df, cfg, blur_threshold_deg_s):
         spine.set_edgecolor("tab:green" if m["gates_pass"] else "tab:red")
         spine.set_linewidth(2.5)
     ax.set_title(name, fontsize=8, fontweight="bold", pad=26)
-    ax.text(0.5, 1.22, CAPTIONS.get(name, ""), transform=ax.transAxes,
+    ax.text(0.5, 1.22, stress_caption(m, blur_threshold_deg_s), transform=ax.transAxes,
              ha="center", va="bottom", fontsize=6.5, style="italic", color="dimgray")
 
     onboard_color = "tab:red" if m["pipeline_onboard_time_max_ms"] > cfg["mpc"]["Ts"] * 1000.0 else "black"
