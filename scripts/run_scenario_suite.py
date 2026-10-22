@@ -59,9 +59,9 @@ SCENARIOS = [
     ("stop_and_go", "stop_and_go.yaml",
      "No obstacles: accelerate, cruise, full stop, hold, accelerate again -- "
      "isolates the motion-profile transient from any avoidance cost."),
-    ("street_corridor", "street_corridor.yaml",
-     "Sustained ~2m-wide obstacle corridor -- tight lateral precision held "
-     "over a long stretch, not just a brief closest-approach moment."),
+    ("pedestrian_walk", "pedestrian_walk.yaml",
+     "Walk, full stop, lateral sidestep, small twist, walk again -- one "
+     "continuous Skydio-style clip chaining behaviors, not one isolated event."),
     ("occlusion_cut", "occlusion_cut.yaml",
      "Leader sidesteps an obstacle at cruise speed -- follower lag should "
      "momentarily foul the bearing sightline even though the target itself "
