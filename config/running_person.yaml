@@ -29,7 +29,10 @@ obstacles:
     radius: 0.3
 
 leader:
-  t_end: 7.0
+  # NOTE: speed_profile's time-integral must match waypoints' total path
+  # length (14.16m here) -- see stop_and_go.yaml's comment and
+  # design_decisions.md's "Path-length / speed-profile mismatch".
+  t_end: 7.35
   waypoints:
     - [0.0, -6.0]
     - [0.0, -1.0]
@@ -42,6 +45,6 @@ leader:
   speed_profile:
     - [0.0, 0.0]      # start at rest
     - [1.0, 2.4]      # quick accel to jogging cruise -- faster ramp than the walking scenarios
-    - [5.5, 2.4]      # sustained cruise, no slowdown
-    - [6.3, 0.5]
-    - [7.0, 0.0]      # stop
+    - [5.85, 2.4]     # sustained cruise, no slowdown
+    - [6.65, 0.5]
+    - [7.35, 0.0]      # stop

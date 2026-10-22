@@ -13,7 +13,10 @@ obstacles:
     half_size: 1.5          # 3m x 3m wall, centered on the straight path
 
 leader:
-  t_end: 14.0
+  # NOTE: speed_profile's time-integral must match waypoints' total path
+  # length (16.98m here) -- see stop_and_go.yaml's comment and
+  # design_decisions.md's "Path-length / speed-profile mismatch".
+  t_end: 14.49
   waypoints:
     - [0.0, -6.0]
     - [0.0, 0.5]    # approach, still south of the wall (wall spans y:[1.5,4.5])
@@ -30,5 +33,5 @@ leader:
     - [6.5, 0.4]     # slow sharply on approach
     - [9.0, 0.4]     # creep past at close range
     - [10.0, 1.6]    # back to cruise after clearing
-    - [13.0, 1.6]
-    - [14.0, 0.0]    # stop
+    - [13.49, 1.6]
+    - [14.49, 0.0]    # stop

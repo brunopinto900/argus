@@ -12,7 +12,15 @@
 obstacles: []
 
 leader:
-  t_end: 16.0
+  # NOTE: speed_profile's time-integral must match waypoints' total path
+  # length (16.0m here), or the leader runs out of path before the
+  # profile's planned deceleration and the spline clamps to an abrupt,
+  # uncommanded stop -- which then shows up as a huge spurious
+  # acceleration spike in any derivative of the logged position. Caught
+  # via scripts/run_scenario_suite.py's target_accel stats showing 16
+  # m/s^2; see design_decisions.md's "Path-length / speed-profile
+  # mismatch" for the full story and which scenarios were affected.
+  t_end: 13.8
   waypoints:
     - [0.0, -6.0]
     - [0.0, 10.0]
@@ -23,6 +31,6 @@ leader:
     - [6.0, 0.0]      # hard stop
     - [8.0, 0.0]      # hold stopped
     - [9.5, 1.8]       # accelerate again, mid-scenario
-    - [14.5, 1.8]      # cruise
-    - [15.5, 0.3]
-    - [16.0, 0.0]     # decelerate to a stop
+    - [12.3, 1.8]      # cruise
+    - [13.3, 0.3]
+    - [13.8, 0.0]     # decelerate to a stop

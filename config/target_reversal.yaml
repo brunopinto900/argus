@@ -9,18 +9,33 @@
 obstacles: []
 
 leader:
-  t_end: 14.0
+  # NOTE: speed_profile's time-integral must match waypoints' total path
+  # length (16.2m here) -- see stop_and_go.yaml's comment and
+  # design_decisions.md's "Path-length / speed-profile mismatch". That
+  # alone isn't enough here, though: the "brief stop at the reversal
+  # point" also has to happen at the right ARC-LENGTH, not just
+  # somewhere in the overall time budget. The reversal vertex
+  # ([0,2.1]) sits at 8.1m of arc-length, but the original profile's
+  # deceleration (scheduled for t=6.0-6.8s) didn't line up with that --
+  # the leader actually reached the 0.1m reversal nudge at t=5.45s,
+  # still at full 1.7 m/s, producing an instantaneous direction flip
+  # (a 12 m/s^2 spike in the logged target_accel). Fixed by deriving the
+  # decel/accel timing from arc-length directly: decelerate over the
+  # 1.0m approaching the vertex, hold briefly AT the vertex, accelerate
+  # back out over the next 1.0m.
+  t_end: 12.59
   waypoints:
     - [0.0, -6.0]
     - [0.0, 2.0]    # cruise north
     - [0.0, 2.1]    # near-180 reversal: a tiny forward nudge, then straight back
     - [0.0, -6.0]   # cruise back south, retracing the same line
   speed_profile:
-    - [0.0, 0.0]     # start at rest
+    - [0.0, 0.0]      # start at rest
     - [1.5, 1.7]      # accelerate to cruise
-    - [6.0, 1.7]      # cruise north
-    - [6.8, 0.0]      # brief stop at the reversal point
-    - [7.2, 1.7]      # accelerate back south
-    - [12.5, 1.7]
-    - [13.5, 0.4]
-    - [14.0, 0.0]     # stop
+    - [4.93, 1.7]     # cruise north, until 1.0m short of the reversal vertex (8.1m arc-length)
+    - [6.11, 0.0]     # decelerate into the reversal vertex
+    - [6.41, 0.0]     # hold at the vertex
+    - [7.59, 1.7]     # accelerate back south
+    - [11.09, 1.7]
+    - [12.09, 0.4]
+    - [12.59, 0.0]     # stop
