@@ -90,9 +90,9 @@ SCENARIOS = [
     ("stop_near_obstacle", "stop_near_obstacle.yaml",
      "Leader stops and holds right beside an obstacle -- sustained "
      "near-contact dwell, not a brief closest-approach."),
-    ("near_miss_cascade", "near_miss_cascade.yaml",
-     "Several obstacles dodged back-to-back with little recovery distance "
-     "between them, at cruise speed -- tests whether transients settle in time."),
+    ("running_person", "running_person.yaml",
+     "Jogging pace (~2.4 m/s), moderate clearance, no deliberate slowdown -- "
+     "the first scenario in the suite to leave walking pace."),
 ]
 
 REAL_TARGET_M = 0.27

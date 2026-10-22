@@ -1,0 +1,47 @@
+# Scenario: Running Person -- the first scenario in this suite to leave
+# walking pace. Every other scenario cruises at 1.0-2.0 m/s (normal
+# walking, per standard pace tables); this one cruises at ~2.4 m/s,
+# light-jogging pace. Deliberately isolates speed as the one new variable
+# (mostly straight path, one gentle bend, moderate -- not tight -- obstacle
+# clearance) rather than combining it with tight geometry, the way
+# compound_stress combines a narrow gap with a sharp turn. See
+# design_decisions.md's "Running Person" section for why this is treated
+# as a diagnostic (expected to possibly fail, same or worse than the
+# walking-pace scenarios) rather than a pass/fail expectation -- 7 of the
+# other 14 scenarios already fail at walking pace, so a FAIL here isn't a
+# new problem, it's confirmation the existing ones get worse at speed.
+#
+# No deliberate early slowdown: unlike wall_slowdown.yaml (which
+# decelerates well before its obstacle on purpose), the speed_profile
+# below holds jogging cruise straight through both obstacles and the
+# bend -- a jogger doesn't necessarily ease off for something at a
+# moderate clearance the way a cautious pedestrian would, and that
+# contrast with wall_slowdown is the point.
+#
+# shape: circle   -> center [x, y], radius
+# shape: square   -> center [x, y], half_size
+obstacles:
+  - shape: circle
+    center: [1.6, 1.0]
+    radius: 0.35
+  - shape: circle
+    center: [-0.3, 4.3]
+    radius: 0.3
+
+leader:
+  t_end: 7.0
+  waypoints:
+    - [0.0, -6.0]
+    - [0.0, -1.0]
+    - [0.8, 2.0]     # gentle bend -- shallow, not a sharp turn
+    - [0.5, 5.0]
+    - [0.0, 8.0]
+  # No deliberate early slowdown -- cruise held at jogging pace straight
+  # through both obstacles and the bend, unlike wall_slowdown.yaml's
+  # deliberate deceleration on approach.
+  speed_profile:
+    - [0.0, 0.0]      # start at rest
+    - [1.0, 2.4]      # quick accel to jogging cruise -- faster ramp than the walking scenarios
+    - [5.5, 2.4]      # sustained cruise, no slowdown
+    - [6.3, 0.5]
+    - [7.0, 0.0]      # stop
