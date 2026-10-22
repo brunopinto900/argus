@@ -1,0 +1,30 @@
+# Scenario: Obstacle-Forces-Standoff-Conflict -- an obstacle sits on the
+# path's centerline where the leader passes it with only a thin dodge
+# (0.3m clearance from the leader's own line, deliberately tighter than
+# obstacle_avoidance.d_safe_m), so the drone's own 2m-behind standoff point
+# -- which tracks close to the same corridor a beat later -- is forced into
+# sustained tension between "hold the design standoff distance/bearing" and
+# "respect the avoidance margin," rather than a single brief closest-
+# approach moment like wall_slowdown.yaml.
+#
+# shape: circle   -> center [x, y], radius
+# shape: square   -> center [x, y], half_size
+obstacles:
+  - shape: circle
+    center: [0.0, 4.0]
+    radius: 0.5
+
+leader:
+  t_end: 14.0
+  waypoints:
+    - [0.0, -6.0]
+    - [0.0, 3.0]
+    - [0.8, 4.0]    # thin dodge -- only 0.3m clearance from the obstacle's edge
+    - [0.0, 5.0]
+    - [0.0, 8.0]
+  speed_profile:
+    - [0.0, 0.0]      # start at rest
+    - [1.5, 1.5]      # accelerate to cruise
+    - [11.5, 1.5]     # cruise straight through -- no deliberate slowdown
+    - [13.0, 0.4]
+    - [14.0, 0.0]     # stop

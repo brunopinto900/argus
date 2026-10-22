@@ -66,6 +66,33 @@ SCENARIOS = [
      "Leader sidesteps an obstacle at cruise speed -- follower lag should "
      "momentarily foul the bearing sightline even though the target itself "
      "is never behind the obstacle."),
+    ("compound_stress", "compound_stress.yaml",
+     "Narrow passage AND a sharp turn, both at full cruise speed -- combines "
+     "geometry tightness, heading change, and speed instead of isolating one."),
+    ("target_reversal", "target_reversal.yaml",
+     "Leader reverses direction almost 180 degrees -- stresses the "
+     "follower's heading-tracking under a near-full reversal, no obstacles."),
+    ("standoff_conflict", "standoff_conflict.yaml",
+     "Leader's dodge margin is tighter than d_safe_m -- forces sustained "
+     "tension between the drone's standoff tracking and its own avoidance margin."),
+    ("sensor_range_edge", "sensor_range_edge.yaml",
+     "Obstacle starts beyond mapping_sensor.max_range_m, approached at full "
+     "cruise with no early slowdown -- tests reacting fast once finally seen."),
+    ("high_curvature", "high_curvature.yaml",
+     "Sustained S-curve/slalom at cruise speed, no obstacles -- continuous "
+     "heading change instead of sharp_corner.yaml's single turn event."),
+    ("cold_start_acquisition", "cold_start_acquisition.yaml",
+     "Drone starts with yaw offset so the target begins outside the FOV "
+     "cone -- exercises initial_acquisition_latency_s for the first time."),
+    ("serpentine_clutter", "serpentine_clutter.yaml",
+     "Continuous weave through closely-spaced obstacles at cruise speed -- "
+     "sustained chattering stress, not occasional dodges."),
+    ("stop_near_obstacle", "stop_near_obstacle.yaml",
+     "Leader stops and holds right beside an obstacle -- sustained "
+     "near-contact dwell, not a brief closest-approach."),
+    ("near_miss_cascade", "near_miss_cascade.yaml",
+     "Several obstacles dodged back-to-back with little recovery distance "
+     "between them, at cruise speed -- tests whether transients settle in time."),
 ]
 
 REAL_TARGET_M = 0.27

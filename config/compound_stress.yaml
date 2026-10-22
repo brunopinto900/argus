@@ -1,0 +1,34 @@
+# Scenario: Compound Stress -- a narrow passage AND a sharp turn, taken at
+# full cruise speed with no deliberate slowdown through either. The existing
+# curated scenarios each isolate one stressor (wall_slowdown.yaml: a big
+# slow-closing obstacle; sharp_corner.yaml: a fast turn; forest.yaml: a
+# narrow gap, but taken slowly) -- this combines geometry tightness, heading
+# change, and speed simultaneously, which is where a cost-weight tradeoff
+# that looks fine in isolation can still fight itself.
+#
+# shape: circle   -> center [x, y], radius
+# shape: square   -> center [x, y], half_size
+obstacles:
+  - shape: circle
+    center: [-0.9, 4.0]
+    radius: 0.4
+  - shape: circle
+    center: [0.9, 4.3]
+    radius: 0.4
+
+leader:
+  t_end: 11.0
+  waypoints:
+    - [0.0, -6.0]
+    - [0.0, 3.5]
+    - [0.0, 4.15]   # thread the ~1.1m gap between the two obstacles
+    - [3.0, 6.5]     # immediately into a sharp turn, no straight recovery leg
+    - [6.0, 6.5]
+  # Cruise speed held through BOTH the passage and the turn -- no slowdown
+  # anywhere, the point of this scenario.
+  speed_profile:
+    - [0.0, 0.0]      # start at rest
+    - [1.3, 1.8]      # accelerate to cruise
+    - [9.5, 1.8]      # cruise through the gap and the turn
+    - [10.5, 0.4]
+    - [11.0, 0.0]     # stop

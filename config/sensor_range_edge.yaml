@@ -1,0 +1,32 @@
+# Scenario: Sensor-Range Edge -- a single obstacle placed more than
+# mapping_sensor.max_range_m (8.0m, see config/quadrotor.yaml) from the
+# drone's starting position, approached at full cruise speed with no
+# deliberate slowdown (unlike wall_slowdown.yaml, which decelerates well
+# before the obstacle is even in range). own_map can't resolve the
+# obstacle until the drone is already within range, so this tests whether
+# the mapping+ESDF+avoidance pipeline reacts fast enough once it's
+# finally seen, not just whether avoidance works once the map is settled.
+#
+# shape: circle   -> center [x, y], radius
+# shape: square   -> center [x, y], half_size
+obstacles:
+  - shape: square
+    center: [0.0, 6.0]
+    half_size: 1.0
+
+leader:
+  t_end: 11.0
+  waypoints:
+    - [0.0, -6.0]   # drone starts ~2m further south -- obstacle is ~14m away, outside sensor range
+    - [0.0, 4.2]
+    - [1.6, 6.0]     # dodge past the obstacle's edge (0.6m clearance)
+    - [0.0, 7.8]
+    - [0.0, 10.0]
+  # Full cruise speed the whole way, no early slowdown -- the obstacle only
+  # enters sensor range partway through the approach.
+  speed_profile:
+    - [0.0, 0.0]      # start at rest
+    - [1.2, 2.0]      # accelerate to cruise
+    - [9.5, 2.0]      # cruise straight through, including the dodge
+    - [10.5, 0.4]
+    - [11.0, 0.0]     # stop

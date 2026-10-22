@@ -1,0 +1,31 @@
+# Scenario: Sustained High-Curvature Path -- a tight S-curve/slalom with no
+# obstacles, held at cruise speed throughout. sharp_corner.yaml tests one
+# isolated heading-change event; this tests whether the controller's good
+# single-event cornering also holds under continuous, repeated heading
+# change, same isolation convention as stop_and_go.yaml (no obstacles,
+# motion profile only).
+#
+# shape: circle   -> center [x, y], radius
+# shape: square   -> center [x, y], half_size
+obstacles: []
+
+leader:
+  t_end: 14.0
+  waypoints:
+    - [0.0, -6.0]
+    - [0.0, -3.0]
+    - [2.0, -1.5]   # tight S-curve: alternating left/right turns, ~2m radius
+    - [0.0,  0.0]
+    - [-2.0, 1.5]
+    - [0.0,  3.0]
+    - [2.0,  4.5]
+    - [0.0,  6.0]
+    - [0.0,  8.0]
+  # Cruise held through the whole slalom -- no deliberate slowdown at any
+  # one turn, the point of this scenario.
+  speed_profile:
+    - [0.0, 0.0]      # start at rest
+    - [1.5, 1.5]      # accelerate to cruise
+    - [12.5, 1.5]     # cruise through the entire slalom
+    - [13.5, 0.4]
+    - [14.0, 0.0]     # stop

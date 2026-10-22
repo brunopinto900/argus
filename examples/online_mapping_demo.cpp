@@ -164,6 +164,14 @@ struct ScenarioConfig
     std::vector<std::pair<double, double>> leader_waypoints;
     argus_follower::SpeedKeyframes leader_speed_profile;
     double t_end = 14.0;
+    // Optional top-level 'initial_yaw_deg' -- drone's starting yaw, offset
+    // from the default 0 (facing the hitch goal point's world +x axis, see
+    // TrailerFollower::computeGoalPoints' heading_angle_ default). Defaults
+    // to 0.0 (every pre-existing scenario's implicit behavior) so this is
+    // backward compatible; a scenario that wants to stress initial FOV
+    // acquisition (target starting outside the cone, not already dead
+    // ahead) sets this instead of adding a second code path.
+    double initial_yaw_deg = 0.0;
 };
 
 ScenarioConfig loadScenarioConfig(const std::string& yaml_path)
@@ -196,6 +204,9 @@ ScenarioConfig loadScenarioConfig(const std::string& yaml_path)
     cfg.t_end = leader["t_end"].as<double>();
     for (const YAML::Node& wp : leader["waypoints"]) {
         cfg.leader_waypoints.emplace_back(wp[0].as<double>(), wp[1].as<double>());
+    }
+    if (root["initial_yaw_deg"]) {
+        cfg.initial_yaw_deg = root["initial_yaw_deg"].as<double>();
     }
     for (const YAML::Node& kf : leader["speed_profile"]) {
         cfg.leader_speed_profile.emplace_back(kf[0].as<double>(), kf[1].as<double>());
@@ -500,7 +511,7 @@ int main(int argc, char** argv)
     const auto horizon0 = follower.computeGoalPoints(target.x, target.y, N, 0.0, control_dt);
     PlantState x = {horizon0.PDx[0], horizon0.PDy[0], kFovZRef,
                      0.0,            0.0,             0.0,
-                     0.0,            0.0,             0.0,
+                     0.0,            0.0,             scenario.initial_yaw_deg * M_PI / 180.0,
                      0.0,            0.0,             0.0};
     PlantDynamics plant(x, kTHover, ARGUS_MASS, ARGUS_PLANT_WN_RP, ARGUS_PLANT_ZETA_RP,
                          ARGUS_PLANT_WN_YAW, ARGUS_PLANT_ZETA_YAW);

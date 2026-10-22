@@ -1,0 +1,26 @@
+# Scenario: Target Reversal -- the leader cruises, then reverses direction
+# almost 180 degrees (not just a corner turn), then cruises back out. No
+# obstacles -- isolates the follower's heading-tracking (TrailerFollower's
+# heading_gain) under a near-full reversal from any avoidance cost, same
+# convention as stop_and_go.yaml isolating the stop/restart transient.
+#
+# shape: circle   -> center [x, y], radius
+# shape: square   -> center [x, y], half_size
+obstacles: []
+
+leader:
+  t_end: 14.0
+  waypoints:
+    - [0.0, -6.0]
+    - [0.0, 2.0]    # cruise north
+    - [0.0, 2.1]    # near-180 reversal: a tiny forward nudge, then straight back
+    - [0.0, -6.0]   # cruise back south, retracing the same line
+  speed_profile:
+    - [0.0, 0.0]     # start at rest
+    - [1.5, 1.7]      # accelerate to cruise
+    - [6.0, 1.7]      # cruise north
+    - [6.8, 0.0]      # brief stop at the reversal point
+    - [7.2, 1.7]      # accelerate back south
+    - [12.5, 1.7]
+    - [13.5, 0.4]
+    - [14.0, 0.0]     # stop

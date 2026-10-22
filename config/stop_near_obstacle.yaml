@@ -1,0 +1,32 @@
+# Scenario: Stop Near Obstacle -- the leader approaches an obstacle and
+# comes to a full stop right beside it (close clearance), holds there, then
+# resumes -- unlike wall_slowdown.yaml (passes through at reduced speed) or
+# stop_and_go.yaml (stops on an open straight line). Tests sustained
+# near-contact dwell, not a brief closest-approach moment.
+#
+# shape: circle   -> center [x, y], radius
+# shape: square   -> center [x, y], half_size
+obstacles:
+  - shape: square
+    center: [0.0, 4.0]
+    half_size: 1.0
+
+leader:
+  t_end: 16.0
+  waypoints:
+    - [0.0, -6.0]
+    - [0.0, 1.5]
+    - [1.5, 3.0]    # stop point: 0.5m clearance from the obstacle's edge
+    - [1.5, 5.0]    # resume, pass alongside
+    - [0.0, 6.5]
+    - [0.0, 8.0]
+  speed_profile:
+    - [0.0, 0.0]      # start at rest
+    - [1.5, 1.4]      # accelerate to cruise
+    - [5.0, 1.4]      # cruise toward the obstacle
+    - [6.0, 0.0]      # stop right beside it
+    - [8.5, 0.0]      # hold, close to the obstacle
+    - [9.5, 1.4]      # resume
+    - [14.5, 1.4]     # cruise away
+    - [15.5, 0.4]
+    - [16.0, 0.0]     # stop
