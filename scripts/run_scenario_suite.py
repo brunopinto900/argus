@@ -189,6 +189,19 @@ def compute_gate_and_stats(df, cfg):
     m["drone_target_dist_mean_m"] = float(drone_target_dist.mean())
     m["drone_target_dist_std_m"] = float(drone_target_dist.std())
 
+    # Target (leader) speed/acceleration -- from the logged fx,fy path
+    # itself (the realized spline), not the scenario yaml's speed_profile
+    # keyframes, so this reflects what the leader actually did.
+    t = df["t"].values
+    target_vx = np.gradient(df["fx"].values, t)
+    target_vy = np.gradient(df["fy"].values, t)
+    target_speed = np.hypot(target_vx, target_vy)
+    m["target_speed_min_m_s"] = float(np.min(target_speed))
+    m["target_speed_mean_m_s"] = float(np.mean(target_speed))
+    m["target_speed_max_m_s"] = float(np.max(target_speed))
+    target_accel = np.gradient(target_speed, t)
+    m["target_accel_mean_abs_m_s2"] = float(np.mean(np.abs(target_accel)))
+
     fov_half_angle_deg = cfg["camera"]["fov_half_angle_deg"]
     gamma = _bearing_gamma_deg(df)
     out_of_fov = gamma > fov_half_angle_deg
@@ -207,6 +220,7 @@ def compute_gate_and_stats(df, cfg):
 
     rate_mag_deg_s = np.degrees(np.sqrt(df["p"]**2 + df["q"]**2 + df["r"]**2))
     m["body_rate_magnitude_mean_deg_s"] = float(np.mean(rate_mag_deg_s))
+    m["body_rate_magnitude_std_deg_s"] = float(np.std(rate_mag_deg_s))
     m["body_rate_magnitude_max_deg_s"] = float(np.max(rate_mag_deg_s))
 
     m["gates_pass"] = bool(m["collision_free"] and m["solve_fail_rate_pct"] == 0.0

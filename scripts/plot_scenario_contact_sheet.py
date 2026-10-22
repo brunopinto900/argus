@@ -34,6 +34,28 @@ SUITE_DIR = suite.SUITE_DIR
 
 N_COLS = 5
 
+# Very brief "what's exciting/stressing here" caption per scenario, shown
+# under each thumbnail's title -- distinct from (and shorter than) the
+# full rationale in run_scenario_suite.py's SCENARIOS list, which is sized
+# for the printed table/design_decisions.md instead.
+CAPTIONS = {
+    "forest_clutter": "general multi-obstacle baseline",
+    "wall_slowdown": "big obstacle, deliberate slowdown",
+    "sharp_corner": "sharp turn at full cruise speed",
+    "stop_and_go": "full stop + restart, no obstacles",
+    "street_corridor": "sustained tight corridor",
+    "occlusion_cut": "sidestep fouls the sightline",
+    "compound_stress": "narrow gap + sharp turn combined",
+    "target_reversal": "near-180° heading reversal",
+    "standoff_conflict": "standoff vs. avoidance tension",
+    "sensor_range_edge": "late detection at high speed",
+    "high_curvature": "continuous S-curve slalom",
+    "cold_start_acquisition": "starts facing away from target",
+    "serpentine_clutter": "continuous weave, dense obstacles",
+    "stop_near_obstacle": "stops and holds near an obstacle",
+    "near_miss_cascade": "back-to-back dodges, little recovery",
+}
+
 
 def _parse_args():
     p = argparse.ArgumentParser(description=__doc__)
@@ -96,12 +118,17 @@ def plot_cell(ax, name, scenario_file, df, cfg, blur_threshold_deg_s):
         ax.scatter([wo["x"]], [wo["y"]], color="tab:purple", marker="o", s=18, zorder=5,
                    label="worst occlusion")
 
+    # Ticks left on (small font) rather than stripped -- gives each map an
+    # actual x/y distance reference instead of an unscaled sketch.
     ax.set_aspect("equal", adjustable="datalim")
-    ax.set_xticks([]); ax.set_yticks([])
+    ax.tick_params(labelsize=5, length=2)
+    ax.grid(True, alpha=0.15, linewidth=0.4)
     for spine in ax.spines.values():
         spine.set_edgecolor("tab:green" if m["gates_pass"] else "tab:red")
         spine.set_linewidth(2.5)
-    ax.set_title(name, fontsize=8, fontweight="bold")
+    ax.set_title(name, fontsize=8, fontweight="bold", pad=26)
+    ax.text(0.5, 1.22, CAPTIONS.get(name, ""), transform=ax.transAxes,
+             ha="center", va="bottom", fontsize=6.5, style="italic", color="dimgray")
 
     onboard_color = "tab:red" if m["pipeline_onboard_time_max_ms"] > cfg["mpc"]["Ts"] * 1000.0 else "black"
     blur_color = "tab:red" if m["body_rate_magnitude_max_deg_s"] > blur_threshold_deg_s else "black"
@@ -118,14 +145,17 @@ def plot_cell(ax, name, scenario_file, df, cfg, blur_threshold_deg_s):
          f"reacq {m['reacquisition_events']}", "black"),
         (f"FOV {m['fov_exceedance_pct']:.0f}%  onboard {m['pipeline_onboard_time_mean_ms']:.1f}/"
          f"{m['pipeline_onboard_time_max_ms']:.1f}ms", onboard_color),
-        (f"blur max {m['body_rate_magnitude_max_deg_s']:.0f}°/s "
-         f"(thr {blur_threshold_deg_s:.0f})", blur_color),
+        (f"blur {m['body_rate_magnitude_mean_deg_s']:.0f}±{m['body_rate_magnitude_std_deg_s']:.0f} / "
+         f"max {m['body_rate_magnitude_max_deg_s']:.0f}°/s (thr {blur_threshold_deg_s:.0f})", blur_color),
+        (f"target speed {m['target_speed_min_m_s']:.2f}/{m['target_speed_mean_m_s']:.2f}/"
+         f"{m['target_speed_max_m_s']:.2f} m/s (min/mean/max)", "black"),
+        (f"target accel mean|.| {m['target_accel_mean_abs_m_s2']:.2f} m/s²", "black"),
     ]
-    y = -0.12
+    y = -0.14
     for text, color in lines:
         ax.text(0.5, y, text, transform=ax.transAxes, ha="center", va="top",
                  fontsize=6, color=color)
-        y -= 0.11
+        y -= 0.115
 
 
 def main():
@@ -140,8 +170,8 @@ def main():
 
     n = len(suite.SCENARIOS)
     n_rows = math.ceil(n / N_COLS)
-    fig = plt.figure(figsize=(3.1 * N_COLS, 3.9 * n_rows))
-    gs = fig.add_gridspec(n_rows, N_COLS, hspace=0.6, wspace=0.3)
+    fig = plt.figure(figsize=(3.3 * N_COLS, 5.5 * n_rows))
+    gs = fig.add_gridspec(n_rows, N_COLS, hspace=1.3, wspace=0.35)
 
     handles_labels = None
     for i, (name, scenario_file, _) in enumerate(suite.SCENARIOS):
@@ -159,11 +189,11 @@ def main():
 
     if handles_labels is not None:
         fig.legend(*handles_labels, loc="lower center", ncol=4, fontsize=9,
-                    bbox_to_anchor=(0.5, -0.01))
+                    bbox_to_anchor=(0.5, -0.035))
 
     fig.suptitle("Curated scenario suite -- contact sheet "
                   "(green/red border = hard gates pass/fail)", fontsize=13)
-    fig.tight_layout(rect=[0, 0.03, 1, 0.97])
+    fig.tight_layout(rect=[0, 0.045, 1, 0.97])
     fig.savefig(args.save_png, dpi=150, bbox_inches="tight")
     print(f"Saved {args.save_png}")
 
