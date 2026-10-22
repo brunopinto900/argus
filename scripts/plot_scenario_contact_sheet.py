@@ -124,8 +124,10 @@ def plot_cell(ax, name, scenario_file, df, cfg, blur_threshold_deg_s):
     if has_obstacles:
         worst_clear_i = int(df["clearance_true"].values.argmin())
         wc = df.loc[worst_clear_i]
+        clear_label = ("closest approach (collision-free)" if m["collision_free"]
+                        else "closest approach (COLLISION)")
         ax.scatter([wc["x"]], [wc["y"]], color=clear_color, marker="X", s=40, zorder=5,
-                   label="closest approach")
+                   label=clear_label)
 
         worst_occ_i = int(df["occlusion_clearance"].values.argmin())
         wo = df.loc[worst_occ_i]
@@ -187,7 +189,12 @@ def main():
     fig = plt.figure(figsize=(3.3 * N_COLS, 5.5 * n_rows))
     gs = fig.add_gridspec(n_rows, N_COLS, hspace=1.3, wspace=0.35)
 
-    handles_labels = None
+    # Collect legend entries across ALL cells, deduplicated by label --
+    # not just the first cell's, since e.g. "closest approach (COLLISION)"
+    # (red X) never appears in forest_clutter (the first scenario, which
+    # is collision-free) and would otherwise be missing from the legend
+    # entirely despite being used in half the thumbnails.
+    legend_by_label = {}
     for i, (name, scenario_file, _) in enumerate(suite.SCENARIOS):
         ax = fig.add_subplot(gs[i // N_COLS, i % N_COLS])
         csv_path = os.path.join(SUITE_DIR, f"{name}_trajectory.csv")
@@ -198,12 +205,13 @@ def main():
             continue
         df = pd.read_csv(csv_path)
         plot_cell(ax, name, scenario_file, df, cfg, blur_threshold_deg_s)
-        if handles_labels is None:
-            handles_labels = ax.get_legend_handles_labels()
+        handles, labels = ax.get_legend_handles_labels()
+        for h, l in zip(handles, labels):
+            legend_by_label.setdefault(l, h)
 
-    if handles_labels is not None:
-        fig.legend(*handles_labels, loc="lower center", ncol=4, fontsize=9,
-                    bbox_to_anchor=(0.5, -0.035))
+    if legend_by_label:
+        fig.legend(legend_by_label.values(), legend_by_label.keys(), loc="lower center",
+                    ncol=min(5, len(legend_by_label)), fontsize=9, bbox_to_anchor=(0.5, -0.035))
 
     fig.suptitle("Curated scenario suite -- contact sheet "
                   "(green/red border = hard gates pass/fail)", fontsize=13)
