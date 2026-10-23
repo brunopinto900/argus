@@ -19,6 +19,13 @@
 # design_decisions.md's "Scenario validation must check the realized
 # spline, not just waypoints."
 #
+# NOTE 2: even with those entry/exit waypoints, each turn was still a
+# C0 kink (same bug class as high_curvature.yaml's original zigzag) --
+# confirmed vector-accel spike of ~26 m/s^2 at tick resolution. Fixed
+# with scripts/test_motion_profile.py's round_waypoints() helper, then
+# re-stretched the cruise segment to match the new path length.
+# target_accel_abs_max dropped from 6.36 to ~1.67 m/s^2.
+#
 # shape: circle   -> center [x, y], radius
 # shape: square   -> center [x, y], half_size
 obstacles:
@@ -27,23 +34,42 @@ obstacles:
     half_size: 1.0
 
 leader:
-  # NOTE: speed_profile's time-integral must match waypoints' total path
-  # length (18.52m here) -- see stop_and_go.yaml's comment and
-  # design_decisions.md's "Path-length / speed-profile mismatch".
-  t_end: 10.71
+  t_end: 10.5378
   waypoints:
-    - [0.0, -6.0]   # drone starts ~2m further south -- obstacle is ~14m away, outside sensor range
-    - [0.0, 3.5]
-    - [1.5, 5.0]     # start swinging wide well before the obstacle's y-range (spans y:[5,7])
-    - [2.8, 6.0]     # dodge past the obstacle's edge (1.8m clearance from the straight waypoints)
-    - [1.5, 7.0]
-    - [0.0, 8.5]
-    - [0.0, 10.0]
+    - [0.0000, -6.0000]
+    - [0.0000, 3.3343]
+    - [0.0077, 3.4124]
+    - [0.0304, 3.4874]
+    - [0.0674, 3.5565]
+    - [0.1172, 3.6172]
+    - [1.4816, 4.9816]
+    - [1.5006, 4.9994]
+    - [1.5206, 5.0158]
+    - [2.3878, 5.6830]
+    - [2.4415, 5.7326]
+    - [2.4852, 5.7912]
+    - [2.5175, 5.8568]
+    - [2.5373, 5.9272]
+    - [2.5440, 6.0000]
+    - [2.5373, 6.0728]
+    - [2.5175, 6.1432]
+    - [2.4852, 6.2088]
+    - [2.4415, 6.2674]
+    - [2.3878, 6.3170]
+    - [1.5206, 6.9842]
+    - [1.5006, 7.0006]
+    - [1.4816, 7.0184]
+    - [0.1172, 8.3828]
+    - [0.0674, 8.4435]
+    - [0.0304, 8.5126]
+    - [0.0077, 8.5876]
+    - [0.0000, 8.6657]
+    - [0.0000, 10.0000]
   # Full cruise speed the whole way, no early slowdown -- the obstacle only
   # enters sensor range partway through the approach.
   speed_profile:
-    - [0.0, 0.0]      # start at rest
-    - [1.2, 2.0]      # accelerate to cruise
-    - [9.21, 2.0]     # cruise straight through, including the dodge
-    - [10.21, 0.4]
-    - [10.71, 0.0]     # stop
+    - [0.0000, 0.0000]
+    - [1.2000, 2.0000]
+    - [9.0378, 2.0000]
+    - [10.0378, 0.4000]
+    - [10.5378, 0.0000]

@@ -4,6 +4,31 @@
 # stop_and_go.yaml (stops on an open straight line). Tests sustained
 # near-contact dwell, not a brief closest-approach moment.
 #
+# NOTE: this scenario was broken. speed_profile's total time-integral
+# matched waypoints' total path length (the usual check, see
+# stop_and_go.yaml's comment and design_decisions.md's "Path-length /
+# speed-profile mismatch"), but that check only guarantees the END state
+# lines up -- it says nothing about whether an intermediate feature (here,
+# "stop exactly at the obstacle-adjacent waypoint") lands at the right
+# arc-length. It didn't: the decel-to-zero was scheduled in time to finish
+# well before the leader's arc-length actually reached the (1.5, 3.0) stop
+# waypoint, so the leader actually stopped at (0, 0.65) -- 2.35m+ short of
+# the obstacle, in open space. The scenario tested nothing like its name.
+# Fixed by re-deriving the accel/cruise/decel timing directly from the
+# cumulative arc-length to the stop waypoint (9.621m), the same technique
+# used for target_reversal's second fix. Confirmed the hold now actually
+# sits at (1.5, 3.0).
+#
+# NOTE 2: the turn into the approach (vertex at (0, 1.5)) and the two
+# turns after the stop (vertices at (1.5, 5.0) and (0, 6.5)) were all
+# separate C0 kinks (same bug class as high_curvature.yaml's original
+# zigzag). Rounded with scripts/test_motion_profile.py's
+# round_waypoints() helper, restricted to those three vertices (the stop
+# vertex itself, (1.5, 3.0), is deliberately left sharp -- velocity is
+# zero there, so a kink is harmless and rounding it would only
+# complicate the arc-length bookkeeping above for no benefit).
+# target_accel_abs_max dropped from 3.76 to ~1.4 m/s^2.
+#
 # shape: circle   -> center [x, y], radius
 # shape: square   -> center [x, y], half_size
 obstacles:
@@ -12,21 +37,33 @@ obstacles:
     half_size: 1.0
 
 leader:
-  t_end: 16.0
+  t_end: 15.8854
   waypoints:
-    - [0.0, -6.0]
-    - [0.0, 1.5]
-    - [1.5, 3.0]    # stop point: 0.5m clearance from the obstacle's edge
-    - [1.5, 5.0]    # resume, pass alongside
-    - [0.0, 6.5]
-    - [0.0, 8.0]
+    - [0.0000, -6.0000]
+    - [0.0000, 1.3343]
+    - [0.0077, 1.4124]
+    - [0.0304, 1.4874]
+    - [0.0674, 1.5565]
+    - [0.1172, 1.6172]
+    - [1.5000, 3.0000]
+    - [1.5000, 4.8343]
+    - [1.4923, 4.9124]
+    - [1.4696, 4.9874]
+    - [1.4326, 5.0565]
+    - [1.3828, 5.1172]
+    - [0.1172, 6.3828]
+    - [0.0674, 6.4435]
+    - [0.0304, 6.5126]
+    - [0.0077, 6.5876]
+    - [0.0000, 6.6657]
+    - [0.0000, 8.0000]
   speed_profile:
-    - [0.0, 0.0]      # start at rest
-    - [1.5, 1.4]      # accelerate to cruise
-    - [5.0, 1.4]      # cruise toward the obstacle
-    - [6.0, 0.0]      # stop right beside it
-    - [8.5, 0.0]      # hold, close to the obstacle
-    - [9.5, 1.4]      # resume
-    - [14.5, 1.4]     # cruise away
-    - [15.5, 0.4]
-    - [16.0, 0.0]     # stop
+    - [0.0000, 0.0000]
+    - [1.5000, 1.4000]
+    - [7.1097, 1.4000]
+    - [8.1097, 0.0000]
+    - [10.6097, 0.0000]
+    - [11.6097, 1.4000]
+    - [14.3854, 1.4000]
+    - [15.3854, 0.4000]
+    - [15.8854, 0.0000]

@@ -5,6 +5,18 @@
 # obstacle (as opposed to forest.yaml's many small/fast-passing ones), and
 # whether tracking/standoff degrade while the leader itself is slow.
 #
+# NOTE: the original waypoints routed the initial swing-out through a
+# single sharp vertex -- a true C0 kink (same bug class as
+# high_curvature.yaml's original zigzag, see design_decisions.md's
+# "Motion-generator module is piecewise-linear geometry, not a real
+# curve"). Confirmed at actual control-tick resolution the leader's
+# velocity vector flipped almost instantaneously there (vector-accel
+# spike of ~17 m/s^2). Fixed with scripts/test_motion_profile.py's
+# round_waypoints() helper (a reusable corner-fillet, not a one-off hand
+# derivation): densified both turns into actual arcs, then re-stretched
+# the cruise segment so speed_profile's time-integral still matches the
+# new (slightly longer) path length.
+#
 # shape: circle   -> center [x, y], radius
 # shape: square   -> center [x, y], half_size
 obstacles:
@@ -13,25 +25,57 @@ obstacles:
     half_size: 1.5          # 3m x 3m wall, centered on the straight path
 
 leader:
-  # NOTE: speed_profile's time-integral must match waypoints' total path
-  # length (16.98m here) -- see stop_and_go.yaml's comment and
-  # design_decisions.md's "Path-length / speed-profile mismatch".
-  t_end: 14.49
+  t_end: 14.2257
   waypoints:
-    - [0.0, -6.0]
-    - [0.0, 0.5]    # approach, still south of the wall (wall spans y:[1.5,4.5])
-    - [2.0, 1.0]     # move laterally out to x=2.0 before entering the wall's y-range
-    - [2.0, 5.3]     # pass alongside the wall's edge (edge at x=1.5, 0.5m clearance)
-    - [0.0, 6.0]     # return to centerline well past the wall, to avoid corner-cutting it
-    - [0.0, 8.0]
+    - [0.0000, -6.0000]
+    - [0.0000, 0.1096]
+    - [0.0054, 0.1830]
+    - [0.0215, 0.2548]
+    - [0.0480, 0.3235]
+    - [0.0843, 0.3875]
+    - [0.1296, 0.4455]
+    - [0.1829, 0.4962]
+    - [0.2431, 0.5386]
+    - [0.3088, 0.5716]
+    - [0.3787, 0.5947]
+    - [1.6213, 0.9053]
+    - [1.6912, 0.9284]
+    - [1.7569, 0.9614]
+    - [1.8171, 1.0038]
+    - [1.8704, 1.0545]
+    - [1.9157, 1.1125]
+    - [1.9520, 1.1765]
+    - [1.9785, 1.2452]
+    - [1.9946, 1.3170]
+    - [2.0000, 1.3904]
+    - [2.0000, 4.9453]
+    - [1.9941, 5.0221]
+    - [1.9764, 5.0971]
+    - [1.9474, 5.1685]
+    - [1.9078, 5.2346]
+    - [1.8585, 5.2938]
+    - [1.8007, 5.3447]
+    - [1.7357, 5.3862]
+    - [1.6652, 5.4172]
+    - [0.3348, 5.8828]
+    - [0.2643, 5.9138]
+    - [0.1993, 5.9553]
+    - [0.1415, 6.0062]
+    - [0.0922, 6.0654]
+    - [0.0526, 6.1315]
+    - [0.0236, 6.2029]
+    - [0.0059, 6.2779]
+    - [0.0000, 6.3547]
+    - [0.0000, 8.0000]
   # Cruise, then slow sharply on approach, creep past at close range, then
-  # back to cruise -- the deliberate deceleration this scenario exists to test.
+  # back to cruise -- the deliberate deceleration this scenario exists to
+  # test.
   speed_profile:
-    - [0.0, 0.0]     # start at rest
-    - [1.5, 1.6]     # accelerate to cruise
-    - [5.5, 1.6]     # cruise toward the wall
-    - [6.5, 0.4]     # slow sharply on approach
-    - [9.0, 0.4]     # creep past at close range
-    - [10.0, 1.6]    # back to cruise after clearing
-    - [13.49, 1.6]
-    - [14.49, 0.0]    # stop
+    - [0.0000, 0.0000]
+    - [1.5000, 1.6000]
+    - [5.2357, 1.6000]
+    - [6.2357, 0.4000]
+    - [8.7357, 0.4000]
+    - [9.7357, 1.6000]
+    - [13.2257, 1.6000]
+    - [14.2257, 0.0000]

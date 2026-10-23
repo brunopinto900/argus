@@ -1,11 +1,21 @@
 # Scenario: Obstacle-Forces-Standoff-Conflict -- an obstacle sits on the
-# path's centerline where the leader passes it with only a thin dodge
-# (0.3m clearance from the leader's own line, deliberately tighter than
-# obstacle_avoidance.d_safe_m), so the drone's own 2m-behind standoff point
-# -- which tracks close to the same corridor a beat later -- is forced into
-# sustained tension between "hold the design standoff distance/bearing" and
-# "respect the avoidance margin," rather than a single brief closest-
-# approach moment like wall_slowdown.yaml.
+# path's centerline where the leader passes it with a dodge deliberately
+# tighter than obstacle_avoidance.d_safe_m, so the drone's own 2m-behind
+# standoff point -- which tracks close to the same corridor a beat later
+# -- is forced into sustained tension between "hold the design standoff
+# distance/bearing" and "respect the avoidance margin," rather than a
+# single brief closest-approach moment like wall_slowdown.yaml.
+#
+# NOTE: the original dodge (clearance 0.3m) was a single-vertex C0 kink
+# (same bug class as high_curvature.yaml's original zigzag) -- confirmed
+# vector-accel spike of ~18 m/s^2 at tick resolution. Fixing that with
+# scripts/test_motion_profile.py's round_waypoints() helper alone would
+# have cut the real clearance to ~0.13m (rounding a corner cuts inside
+# it), below the 0.27m hard safety gate -- so the dodge was widened from
+# 0.8m to 1.5m offset first (clearance now 0.33m with rounding applied),
+# trading some of the original "thin dodge" margin for a dodge that's
+# actually physically executable at cruise speed. target_accel_abs_max
+# dropped from 3.27 to ~1.00 m/s^2.
 #
 # shape: circle   -> center [x, y], radius
 # shape: square   -> center [x, y], half_size
@@ -15,19 +25,36 @@ obstacles:
     radius: 0.5
 
 leader:
-  # NOTE: speed_profile's time-integral must match waypoints' total path
-  # length (14.56m here) -- see stop_and_go.yaml's comment and
-  # design_decisions.md's "Path-length / speed-profile mismatch".
-  t_end: 11.87
+  t_end: 12.2420
   waypoints:
-    - [0.0, -6.0]
-    - [0.0, 3.0]
-    - [0.8, 4.0]    # thin dodge -- only 0.3m clearance from the obstacle's edge
-    - [0.0, 5.0]
-    - [0.0, 8.0]
+    - [0.0000, -6.0000]
+    - [0.0000, 2.7859]
+    - [0.0077, 2.8640]
+    - [0.0305, 2.9392]
+    - [0.0676, 3.0084]
+    - [0.1174, 3.0690]
+    - [0.1781, 3.1187]
+    - [1.0008, 3.6672]
+    - [1.0615, 3.7169]
+    - [1.1113, 3.7776]
+    - [1.1484, 3.8468]
+    - [1.1712, 3.9219]
+    - [1.1789, 4.0000]
+    - [1.1712, 4.0781]
+    - [1.1484, 4.1532]
+    - [1.1113, 4.2224]
+    - [1.0615, 4.2831]
+    - [1.0008, 4.3328]
+    - [0.1781, 4.8813]
+    - [0.1174, 4.9310]
+    - [0.0676, 4.9916]
+    - [0.0305, 5.0608]
+    - [0.0077, 5.1360]
+    - [0.0000, 5.2141]
+    - [0.0000, 8.0000]
   speed_profile:
-    - [0.0, 0.0]      # start at rest
-    - [1.5, 1.5]      # accelerate to cruise
-    - [9.37, 1.5]     # cruise straight through -- no deliberate slowdown
-    - [10.87, 0.4]
-    - [11.87, 0.0]     # stop
+    - [0.0000, 0.0000]
+    - [1.5000, 1.5000]
+    - [9.7420, 1.5000]
+    - [11.2420, 0.4000]
+    - [12.2420, 0.0000]

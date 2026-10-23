@@ -18,6 +18,15 @@
 # moderate clearance the way a cautious pedestrian would, and that
 # contrast with wall_slowdown is the point.
 #
+# NOTE: target_accel_abs_max (2.40 m/s^2) is NOT a bug -- it's the
+# deliberately quick accel-to-jogging-cruise ramp at t=0 (2.4 m/s over
+# 1.0s), a realistic sprint-start acceleration, not cornering. The
+# "gentle bend" vertex was a mild C0 kink (vector-accel ~6.6 m/s^2 at
+# tick resolution); lightly rounded with
+# scripts/test_motion_profile.py's round_waypoints() helper for
+# consistency with the rest of the suite, though it wasn't driving the
+# tracked metric.
+#
 # shape: circle   -> center [x, y], radius
 # shape: square   -> center [x, y], half_size
 obstacles:
@@ -29,22 +38,22 @@ obstacles:
     radius: 0.3
 
 leader:
-  # NOTE: speed_profile's time-integral must match waypoints' total path
-  # length (14.16m here) -- see stop_and_go.yaml's comment and
-  # design_decisions.md's "Path-length / speed-profile mismatch".
-  t_end: 7.35
+  t_end: 7.3492
   waypoints:
-    - [0.0, -6.0]
-    - [0.0, -1.0]
-    - [0.8, 2.0]     # gentle bend -- shallow, not a sharp turn
-    - [0.5, 5.0]
-    - [0.0, 8.0]
-  # No deliberate early slowdown -- cruise held at jogging pace straight
-  # through both obstacles and the bend, unlike wall_slowdown.yaml's
-  # deliberate deceleration on approach.
+    - [0.0000, -6.0000]
+    - [0.0000, -1.0393]
+    - [0.0025, -1.0003]
+    - [0.0101, -0.9620]
+    - [0.7859, 1.9472]
+    - [0.7951, 2.0004]
+    - [0.7946, 2.0544]
+    - [0.5010, 4.9902]
+    - [0.4998, 5.0000]
+    - [0.4984, 5.0097]
+    - [0.0000, 8.0000]
   speed_profile:
-    - [0.0, 0.0]      # start at rest
-    - [1.0, 2.4]      # quick accel to jogging cruise -- faster ramp than the walking scenarios
-    - [5.85, 2.4]     # sustained cruise, no slowdown
-    - [6.65, 0.5]
-    - [7.35, 0.0]      # stop
+    - [0.0000, 0.0000]
+    - [1.0000, 2.4000]
+    - [5.8492, 2.4000]
+    - [6.6492, 0.5000]
+    - [7.3492, 0.0000]

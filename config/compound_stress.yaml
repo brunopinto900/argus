@@ -16,6 +16,12 @@
 # design_decisions.md's "Scenario validation must check the realized
 # spline, not just waypoints."
 #
+# NOTE 2: the turn itself was still a single-vertex C0 kink (same bug
+# class as high_curvature.yaml's original zigzag). Fixed with
+# scripts/test_motion_profile.py's round_waypoints() helper, then
+# re-stretched the cruise segment to match the new path length.
+# target_accel_abs_max dropped from 2.33 to ~1.40 m/s^2.
+#
 # shape: circle   -> center [x, y], radius
 # shape: square   -> center [x, y], half_size
 obstacles:
@@ -27,19 +33,30 @@ obstacles:
     radius: 0.4
 
 leader:
-  t_end: 11.0
+  t_end: 10.9560
   waypoints:
-    - [0.0, -6.0]
-    - [0.0, 3.5]
-    - [0.0, 4.15]   # thread the ~1.4m gap between the two obstacles
-    - [0.0, 5.2]     # short straight buffer before the turn -- lets the spline straighten out first
-    - [3.0, 6.5]     # sharp turn, now clear of the gap
-    - [6.0, 6.5]
+    - [0.0000, -6.0000]
+    - [0.0000, 3.5000]
+    - [0.0000, 4.1500]
+    - [0.0000, 4.8717]
+    - [0.0053, 4.9441]
+    - [0.0209, 5.0149]
+    - [0.0467, 5.0828]
+    - [0.0820, 5.1461]
+    - [0.1261, 5.2037]
+    - [0.1781, 5.2544]
+    - [0.2369, 5.2969]
+    - [0.3012, 5.3305]
+    - [2.9049, 6.4588]
+    - [2.9691, 6.4815]
+    - [3.0357, 6.4954]
+    - [3.1037, 6.5000]
+    - [6.0000, 6.5000]
   # Cruise speed held through BOTH the passage and the turn -- no slowdown
   # anywhere, the point of this scenario.
   speed_profile:
-    - [0.0, 0.0]      # start at rest
-    - [1.3, 1.8]      # accelerate to cruise
-    - [9.5, 1.8]      # cruise through the gap and the turn
-    - [10.5, 0.4]
-    - [11.0, 0.0]     # stop
+    - [0.0000, 0.0000]
+    - [1.3000, 1.8000]
+    - [9.4560, 1.8000]
+    - [10.4560, 0.4000]
+    - [10.9560, 0.0000]

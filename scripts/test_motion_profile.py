@@ -45,6 +45,70 @@ def load_leader_config(yaml_path: pathlib.Path):
     return waypoints, speed_profile, t_end, obstacles
 
 
+def round_waypoints(waypoints, radius=0.6, ds=0.1, min_leg=0.3, indices=None):
+    """Replace every interior sharp vertex of a waypoint polyline with a
+    circular fillet of the given radius, densely sampled every ds along
+    the arc. This is a pure waypoint-authoring utility -- it does not
+    touch argus_follower::waypointTarget, which still only ever does
+    piecewise-linear interpolation; it just gives that interpolator
+    enough points to approximate a smooth curve instead of a true C0
+    kink (same technique used by hand for high_curvature.yaml).
+
+    Endpoints are never rounded. A vertex is skipped (left sharp) if its
+    fillet's tangent length would exceed min_leg fraction of either
+    adjacent segment's length, to avoid producing self-intersecting or
+    nonsensical geometry on very short segments.
+
+    indices, if given, restricts rounding to those interior vertex
+    indices (e.g. to skip a vertex that's deliberately a zero-speed stop
+    point, where a kink is harmless and rounding would just complicate
+    the arc-length bookkeeping for no benefit).
+    """
+    wp = [np.array(p, dtype=float) for p in waypoints]
+    out = [wp[0]]
+    for i in range(1, len(wp) - 1):
+        if indices is not None and i not in indices:
+            out.append(wp[i])
+            continue
+        A, V, B = wp[i - 1], wp[i], wp[i + 1]
+        u1 = V - A
+        u2 = B - V
+        len1, len2 = np.linalg.norm(u1), np.linalg.norm(u2)
+        if len1 < 1e-9 or len2 < 1e-9:
+            out.append(V)
+            continue
+        u1, u2 = u1 / len1, u2 / len2
+        cross = u1[0] * u2[1] - u1[1] * u2[0]
+        dot = np.clip(np.dot(u1, u2), -1.0, 1.0)
+        delta = np.arctan2(cross, dot)  # signed turn angle
+        if abs(delta) < 1e-3:
+            out.append(V)  # already straight, nothing to round
+            continue
+        T = radius * np.tan(abs(delta) / 2.0)
+        if T > min_leg * len1 or T > min_leg * len2:
+            out.append(V)  # fillet would eat too much of a short segment
+            continue
+        P1 = V - T * u1
+        P2 = V + T * u2
+        sign = 1.0 if cross > 0 else -1.0
+        n1 = sign * np.array([-u1[1], u1[0]])
+        center = P1 + radius * n1
+        a1 = np.arctan2(P1[1] - center[1], P1[0] - center[0])
+        a2 = np.arctan2(P2[1] - center[1], P2[0] - center[0])
+        sweep = a2 - a1
+        # normalize sweep to have the same sign as the turn direction
+        if sign > 0 and sweep < 0:
+            sweep += 2 * np.pi
+        if sign < 0 and sweep > 0:
+            sweep -= 2 * np.pi
+        n_samples = max(2, int(np.ceil(abs(sweep) * radius / ds)))
+        angles = a1 + sweep * np.linspace(0, 1, n_samples + 1)
+        arc = [center + radius * np.array([np.cos(a), np.sin(a)]) for a in angles]
+        out.extend(arc)
+    out.append(wp[-1])
+    return [(round(float(p[0]), 4), round(float(p[1]), 4)) for p in out]
+
+
 def path_length(waypoints):
     wp = np.array(waypoints, dtype=float)
     return float(np.sum(np.hypot(*np.diff(wp, axis=0).T)))
