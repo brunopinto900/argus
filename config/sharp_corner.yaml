@@ -5,6 +5,18 @@
 # case the curated suite exists to probe, distinct from wall_slowdown.yaml's
 # "obstacle forces you to slow down" case.
 #
+# NOTE: the original single-vertex 90-degree turn was a true C0 kink (same
+# bug class as high_curvature.yaml's original zigzag) -- confirmed
+# vector-accel spike of ~24 m/s^2 at tick resolution, unrealistic even for
+# a deliberately aggressive-cornering stress test. Rounded for consistency
+# with the rest of the suite, using scripts/test_motion_profile.py's
+# round_waypoints() helper, then re-stretched the cruise segment to match
+# the new path length. target_accel_abs_max dropped from 5.19 to ~1.20
+# m/s^2 (the realized ~1.08m turn radius at cruise speed still makes this
+# the most aggressive single turn in the suite). The post-turn straight
+# path's 0.2m clearance from the obstacle is unchanged by this -- it's the
+# original waypoint geometry's own clearance, not affected by rounding.
+#
 # shape: circle   -> center [x, y], radius
 # shape: square   -> center [x, y], half_size
 obstacles:
@@ -13,17 +25,27 @@ obstacles:
     radius: 0.6              # tucked just inside the corner
 
 leader:
-  t_end: 12.0
+  t_end: 11.8803
   waypoints:
-    - [0.0, -6.0]
-    - [0.0, 4.0]
-    - [4.0, 4.0]    # near-90-degree turn, 0.2m clearance from the obstacle's edge
-    - [8.0, 4.0]
+    - [0.0000, -6.0000]
+    - [0.0000, 3.5000]
+    - [0.0062, 3.5782]
+    - [0.0245, 3.6545]
+    - [0.0545, 3.7270]
+    - [0.0955, 3.7939]
+    - [0.1464, 3.8536]
+    - [0.2061, 3.9045]
+    - [0.2730, 3.9455]
+    - [0.3455, 3.9755]
+    - [0.4218, 3.9938]
+    - [0.5000, 4.0000]
+    - [4.0000, 4.0000]
+    - [8.0000, 4.0000]
   # Accelerate to cruise, then hold cruise speed straight through the corner
   # -- no slowdown is the point of this scenario.
   speed_profile:
-    - [0.0, 0.0]     # start at rest
-    - [1.5, 1.8]     # accelerate to cruise
-    - [9.5, 1.8]     # cruise straight through the corner at full speed
-    - [11.0, 0.5]    # decelerate near the end
-    - [12.0, 0.0]    # stop
+    - [0.0000, 0.0000]     # start at rest
+    - [1.5000, 1.8000]     # accelerate to cruise
+    - [9.3803, 1.8000]     # cruise straight through the corner at full speed
+    - [10.8803, 0.5000]    # decelerate near the end
+    - [11.8803, 0.0000]    # stop

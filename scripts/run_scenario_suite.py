@@ -200,9 +200,36 @@ def compute_gate_and_stats(df, cfg):
     m["target_speed_mean_m_s"] = float(np.mean(target_speed))
     m["target_speed_max_m_s"] = float(np.max(target_speed))
     target_accel_abs = np.abs(np.gradient(target_speed, t))
-    m["target_accel_abs_min_m_s2"] = float(np.min(target_accel_abs))
-    m["target_accel_abs_mean_m_s2"] = float(np.mean(target_accel_abs))
-    m["target_accel_abs_max_m_s2"] = float(np.max(target_accel_abs))
+
+    # Exclude the brief ringing right at the scenario's final full stop:
+    # every scenario ends by decelerating the target to permanent rest,
+    # and a global natural cubic spline fit through that one sharp kink in
+    # the data (speed flattening to zero and staying there) can overshoot
+    # nearby, producing accel spikes of several m/s^2 the speed_profile
+    # never commanded and the MPC never meaningfully reacts to (the run is
+    # ending) -- see design_decisions.md's "Motion-generator module is
+    # piecewise-linear geometry, not a real curve". Found concretely in
+    # forest_clutter (4.21 m/s^2 at the very last waypoint). Identify the
+    # final contiguous near-zero-speed run (the permanent stop, as opposed
+    # to a mid-scenario hold that later resumes) and drop a 1s buffer
+    # before it from the stats.
+    near_zero = target_speed < 0.05
+    final_stop_start = len(target_speed)
+    for i in range(len(target_speed) - 1, -1, -1):
+        if near_zero[i]:
+            final_stop_start = i
+        else:
+            break
+    dt_mean = float(np.mean(np.diff(t))) if len(t) > 1 else 1.0
+    buffer_ticks = int(round(1.0 / dt_mean)) if dt_mean > 0 else 0
+    exclude_from = max(0, final_stop_start - buffer_ticks)
+    accel_for_stats = target_accel_abs[:exclude_from] if exclude_from > 0 else target_accel_abs
+    if accel_for_stats.size == 0:
+        accel_for_stats = target_accel_abs
+
+    m["target_accel_abs_min_m_s2"] = float(np.min(accel_for_stats))
+    m["target_accel_abs_mean_m_s2"] = float(np.mean(accel_for_stats))
+    m["target_accel_abs_max_m_s2"] = float(np.max(accel_for_stats))
 
     fov_half_angle_deg = cfg["camera"]["fov_half_angle_deg"]
     gamma = _bearing_gamma_deg(df)
