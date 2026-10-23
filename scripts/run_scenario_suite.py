@@ -78,9 +78,10 @@ SCENARIOS = [
     ("sensor_range_edge", "sensor_range_edge.yaml",
      "Obstacle starts beyond mapping_sensor.max_range_m, approached at full "
      "cruise with no early slowdown -- tests reacting fast once finally seen."),
-    ("high_curvature", "high_curvature.yaml",
-     "Sustained S-curve/slalom at cruise speed, no obstacles -- continuous "
-     "heading change instead of sharp_corner.yaml's single turn event."),
+    ("obstacle_roundabout", "obstacle_roundabout.yaml",
+     "Packed 4-obstacle cluster circled by a full 360-degree committed loop "
+     "-- tests commitment under ambiguity: does avoidance commit to one "
+     "side, or stall/oscillate when the target is opposite the cluster?"),
     ("cold_start_acquisition", "cold_start_acquisition.yaml",
      "Drone starts with yaw offset so the target begins outside the FOV "
      "cone -- exercises initial_acquisition_latency_s for the first time."),

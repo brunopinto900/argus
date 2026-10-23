@@ -6,6 +6,7 @@ todo
 design_decisions.md
 whiteboard.md
 interview.md
+docs/roundabout_concept.png
 
 # CMake build output
 build/
