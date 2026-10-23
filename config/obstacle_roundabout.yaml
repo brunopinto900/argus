@@ -1,0 +1,151 @@
+# Scenario: Obstacle Roundabout -- replaces high_curvature.yaml, which
+# became redundant once fixed (clean PASS, and serpentine_clutter /
+# sharp_corner / compound_stress already cover curvature-plus-avoidance
+# combinations it isolated). This tests something none of the other 15
+# scenarios do: commitment under ambiguity. A packed 2x2 cluster of
+# overlapping obstacles (no gaps to thread, forcing a real "go around")
+# sits at the center of a full 360-degree loop the jogger commits to and
+# completes, returning to the same point it entered -- a roundabout, not
+# a one-way dodge. The question this is designed to surface: does the
+# MPC's avoidance cost commit cleanly to one side of the cluster and
+# track the loop, or does the drone stall/oscillate hunting for a
+# direction when the target is roughly opposite it across the cluster,
+# where the local avoidance gradient is closest to symmetric? See
+# design_decisions.md for the geometric reasoning and docs/
+# roundabout_concept.png for the original sketch.
+#
+# NOTE: a straight vertical approach cannot be tangent to a circle
+# centered on that same vertical line -- it always meets the circle
+# radially (a 90-degree kink), the same C0-kink lesson as every other
+# fixed scenario this session (see "Motion-generator module is
+# piecewise-linear geometry, not a real curve"). Fixed at the geometry
+# level, not by rounding after the fact: the loop is centered at
+# (R_loop, cluster_y) instead of directly on the approach line, so the
+# approach's entry point is the circle's LEFTMOST point, where the
+# tangent is naturally vertical -- a genuinely smooth, kink-free entry
+# and exit with no patching needed. Verified via
+# scripts/test_motion_profile.py: vector-accel max 1.28 m/s^2, scalar
+# 0.90 m/s^2 -- clean.
+#
+# shape: circle   -> center [x, y], radius
+# shape: square   -> center [x, y], half_size
+obstacles:
+  - shape: circle
+    center: [1.2, 3.7]
+    radius: 0.5
+  - shape: circle
+    center: [2.0, 3.7]
+    radius: 0.5
+  - shape: circle
+    center: [1.2, 4.4]
+    radius: 0.5
+  - shape: circle
+    center: [2.0, 4.4]
+    radius: 0.5
+
+leader:
+  # NOTE: speed_profile's time-integral must match waypoints' total path
+  # length (20.10m here) -- see stop_and_go.yaml's comment and
+  # design_decisions.md's "Path-length / speed-profile mismatch".
+  t_end: 16.9815
+  waypoints:
+    - [0.0000, -6.0000]
+    - [0.0000, 4.0500]
+    - [0.0040, 4.1629]
+    - [0.0159, 4.2752]
+    - [0.0358, 4.3863]
+    - [0.0634, 4.4958]
+    - [0.0986, 4.6031]
+    - [0.1414, 4.7077]
+    - [0.1914, 4.8089]
+    - [0.2485, 4.9064]
+    - [0.3122, 4.9996]
+    - [0.3824, 5.0880]
+    - [0.4587, 5.1713]
+    - [0.5406, 5.2491]
+    - [0.6278, 5.3208]
+    - [0.7199, 5.3862]
+    - [0.8164, 5.4450]
+    - [0.9167, 5.4968]
+    - [1.0205, 5.5414]
+    - [1.1271, 5.5785]
+    - [1.2361, 5.6081]
+    - [1.3469, 5.6299]
+    - [1.4590, 5.6438]
+    - [1.5718, 5.6498]
+    - [1.6847, 5.6478]
+    - [1.7972, 5.6378]
+    - [1.9087, 5.6199]
+    - [2.0187, 5.5943]
+    - [2.1265, 5.5609]
+    - [2.2318, 5.5200]
+    - [2.3339, 5.4717]
+    - [2.4324, 5.4164]
+    - [2.5267, 5.3543]
+    - [2.6164, 5.2857]
+    - [2.7010, 5.2109]
+    - [2.7802, 5.1304]
+    - [2.8534, 5.0444]
+    - [2.9205, 4.9535]
+    - [2.9809, 4.8581]
+    - [3.0345, 4.7587]
+    - [3.0809, 4.6558]
+    - [3.1199, 4.5498]
+    - [3.1514, 4.4413]
+    - [3.1751, 4.3309]
+    - [3.1910, 4.2191]
+    - [3.1990, 4.1065]
+    - [3.1990, 3.9935]
+    - [3.1910, 3.8809]
+    - [3.1751, 3.7691]
+    - [3.1514, 3.6587]
+    - [3.1199, 3.5502]
+    - [3.0809, 3.4442]
+    - [3.0345, 3.3413]
+    - [2.9809, 3.2419]
+    - [2.9205, 3.1465]
+    - [2.8534, 3.0556]
+    - [2.7802, 2.9696]
+    - [2.7010, 2.8891]
+    - [2.6164, 2.8143]
+    - [2.5267, 2.7457]
+    - [2.4324, 2.6836]
+    - [2.3339, 2.6283]
+    - [2.2318, 2.5800]
+    - [2.1265, 2.5391]
+    - [2.0187, 2.5057]
+    - [1.9087, 2.4801]
+    - [1.7972, 2.4622]
+    - [1.6847, 2.4522]
+    - [1.5718, 2.4502]
+    - [1.4590, 2.4562]
+    - [1.3469, 2.4701]
+    - [1.2361, 2.4919]
+    - [1.1271, 2.5215]
+    - [1.0205, 2.5586]
+    - [0.9167, 2.6032]
+    - [0.8164, 2.6550]
+    - [0.7199, 2.7138]
+    - [0.6278, 2.7792]
+    - [0.5406, 2.8509]
+    - [0.4587, 2.9287]
+    - [0.3824, 3.0120]
+    - [0.3122, 3.1004]
+    - [0.2485, 3.1936]
+    - [0.1914, 3.2911]
+    - [0.1414, 3.3923]
+    - [0.0986, 3.4969]
+    - [0.0634, 3.6042]
+    - [0.0358, 3.7137]
+    - [0.0159, 3.8248]
+    - [0.0040, 3.9371]
+    - [0.0000, 4.0500]
+  # Cruise through the entire loop, no deliberate slowdown -- a jogger
+  # commits to the roundabout at pace, the same convention as
+  # running_person.yaml's "no deliberate early slowdown".
+  speed_profile:
+    - [0.0000, 0.0000]
+    - [1.5000, 1.3000]
+    - [15.4815, 1.3000]
+    - [16.4815, 0.4000]
+    - [16.9815, 0.0000]
