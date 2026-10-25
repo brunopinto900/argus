@@ -19,10 +19,13 @@ Runtime param (np =  8):  [p_target_x, p_target_y, p_target_z,
   stage today), obs_* is expected to differ per stage -- the caller
   queries the ESDF at each stage's predicted position separately.
 
-Cost output   (ny = 14):  [x, y, z, vx, vy, vz, phi, theta, r_fov, r_obs, T, p_cmd, q_cmd, r_cmd]
+Cost output   (ny = 15):  [x, y, z, vx, vy, vz, phi, theta, r_fov, r_obs, r_dist, T, p_cmd, q_cmd, r_cmd]
   - r_fov = softplus(cos(alpha_fov) - cos(gamma)) — zero inside FOV cone, grows outside
   - r_obs = max(0, d_safe - d_lin) — squared-hinge collision cost (NLS squares every
     residual automatically); d_lin = obs_d0 + obs_grad . (p - obs_p0)
+  - r_dist = ||p_drone - p_leader|| - D_DESIRED — direct standoff-distance cost,
+    added alongside (not replacing) x/y/z tracking of the trailer reference point;
+    see design_decisions.md's collision-clearance analysis for why
   - phi, theta penalised to keep the drone roughly level
   - rate commands penalised to limit aggressiveness
 
@@ -73,6 +76,7 @@ T_MAX        = _con_cfg['T_max_factor'] * T_HOVER
 RATE_MAX     = _con_cfg['rate_max']
 YAW_RATE_MAX = _con_cfg['yaw_rate_max']
 ANGLE_MAX    = np.deg2rad(_con_cfg['angle_max_deg'])
+Z_MIN        = float(_con_cfg['z_min'])
 
 W_STAGE    = np.diag(_cost_cfg['W_stage'])
 W_TERMINAL = np.diag(_cost_cfg['W_terminal'])
@@ -82,6 +86,12 @@ FOV_BETA  = float(_cam_cfg['softplus_beta'])
 COS_ALPHA = float(np.cos(FOV_ALPHA))
 
 D_SAFE = float(_obs_cfg['d_safe_m'])
+# Desired drone-to-leader distance for the new r_dist cost term -- reuses
+# the same standoff distance the trailer reference point is built from
+# (config/quadrotor.yaml's trailer.distance_to_target), so both the
+# trailer xy/z tracking term (still computed, weight 0 for this
+# experiment) and r_dist are aiming at the same nominal standoff.
+D_DESIRED = float(_cfg['trailer']['distance_to_target'])
 
 
 
@@ -151,8 +161,23 @@ def generate_mpc():
     d_lin = obs_d0 + ca.dot(obs_grad, x_sym[:2] - obs_p0)
     r_obs = ca.fmax(0.0, D_SAFE - d_lin)
 
-    cost_y_expr   = ca.vertcat(x_sym[:8], r_fov, r_obs, u_sym)  # ny   = 14
-    cost_y_expr_e = ca.vertcat(x_sym[:8], r_fov, r_obs)          # ny_e = 10
+    # ── Direct standoff-distance residual: r_dist = ||p_drone - p_leader|| - D_DESIRED ──
+    # Reuses `range_` already computed above for the FOV bearing term --
+    # same 3D distance-to-leader, just penalised directly instead of only
+    # going into a bearing ratio. This is the "fold standoff into the MPC
+    # cost" experiment from design_decisions.md's collision-clearance
+    # analysis: the trailer reference point (ref.x/y/z, still computed and
+    # still fed in as yref[0:3]) can be driven through an obstacle, and the
+    # x/y/z tracking term then pulls the drone toward that infeasible
+    # point. r_dist instead rewards the right *distance* to the leader
+    # regardless of which xy point achieves it, leaving the actual xy
+    # placement to avoidance/FOV. Experiment keeps the trailer term in the
+    # cost vector (W_stage[0:3] set to 0 in config, not removed) so this
+    # is a cost-term addition, not a rewrite.
+    r_dist = range_ - D_DESIRED
+
+    cost_y_expr   = ca.vertcat(x_sym[:8], r_fov, r_obs, r_dist, u_sym)  # ny   = 15
+    cost_y_expr_e = ca.vertcat(x_sym[:8], r_fov, r_obs, r_dist)          # ny_e = 11
 
     ocp.cost.cost_type   = 'NONLINEAR_LS'
     ocp.cost.cost_type_e = 'NONLINEAR_LS'
@@ -171,8 +196,9 @@ def generate_mpc():
                               0.0, 0.0,                # phi, theta
                               0.0,                     # r_fov  (target inside cone)
                               0.0,                     # r_obs  (clear of any obstacle)
+                              0.0,                     # r_dist (exactly D_DESIRED away)
                               T_HOVER, 0.0, 0.0, 0.0]) # T, rates
-    yref_hover_e = yref_hover[:10]
+    yref_hover_e = yref_hover[:11]
 
     ocp.cost.yref   = yref_hover
     ocp.cost.yref_e = yref_hover_e
@@ -183,12 +209,18 @@ def generate_mpc():
     ocp.constraints.ubu    = np.array([T_MAX,  RATE_MAX,  RATE_MAX,  YAW_RATE_MAX])
     ocp.constraints.idxbu  = np.array([0, 1, 2, 3])
 
-    # State box constraints on phi (idx 6) and theta (idx 7) — running stages
-    ocp.constraints.lbx    = np.array([-ANGLE_MAX, -ANGLE_MAX])
-    ocp.constraints.ubx    = np.array([ ANGLE_MAX,  ANGLE_MAX])
-    ocp.constraints.idxbx  = np.array([6, 7])
+    # State box constraints: z (idx 2, hard ground-clearance floor -- fixed
+    # world altitude, not relative to the leader; see config/quadrotor.yaml's
+    # constraints.z_min comment and design_decisions.md's collision-clearance
+    # analysis for why), phi (idx 6), theta (idx 7) — running stages. No
+    # physical upper altitude limit, so z's upper bound is just a large
+    # permissive number, not a real constraint.
+    Z_MAX = 1.0e3
+    ocp.constraints.lbx    = np.array([Z_MIN, -ANGLE_MAX, -ANGLE_MAX])
+    ocp.constraints.ubx    = np.array([Z_MAX,  ANGLE_MAX,  ANGLE_MAX])
+    ocp.constraints.idxbx  = np.array([2, 6, 7])
 
-    # Same attitude limits at the terminal stage
+    # Same limits at the terminal stage
     ocp.constraints.lbx_e   = ocp.constraints.lbx
     ocp.constraints.ubx_e   = ocp.constraints.ubx
     ocp.constraints.idxbx_e = ocp.constraints.idxbx

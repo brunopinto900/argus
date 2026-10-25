@@ -625,6 +625,19 @@ int main(int argc, char** argv)
         // since CubicSpline extrapolates past its fitted sample domain
         // (late-horizon stages near the end of the run would otherwise
         // query beyond where the leader's path was ever actually defined).
+        //
+        // Velocity feedforward intentionally matches the leader's own
+        // velocity here, NOT the trailer/follower's goal-point velocity
+        // (horizon.VFx/VFy, computed in TrailerFollower.cpp but otherwise
+        // unused) -- tried swapping it in and it regressed badly (FOV
+        // exceedance 0% -> 40.8%, body_rate_accel_rms 2.77 -> 7.77
+        // rad/s^2, rate saturation newly nonzero) because p_target (what
+        // r_fov/r_dist actually track) is built from the leader's raw
+        // position below, not the trailer point -- VFx/VFy is only the
+        // *correct* velocity to pair with a trailer *position* target,
+        // which is zero-weighted in this cost (see design_decisions.md's
+        // collision-clearance analysis). Reverted; see that doc for the
+        // comparison data.
         std::vector<argus_mpc::TargetState> target_horizon(N);
         for (int k = 0; k < N; ++k) {
             const double t_k = std::min(t + k * control_dt, scenario.t_end);

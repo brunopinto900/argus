@@ -29,8 +29,8 @@ constexpr int kNp  = QUADROTOR_NP;
 // loudly instead of silently mis-packing state/yref arrays below.
 static_assert(kNx == 12, "State/step() packing assumes NX == 12 ([x,y,z,vx,vy,vz,phi,theta,psi,p,q,r])");
 static_assert(kNu == 4,  "Command/step() packing assumes NU == 4 ([T,p_cmd,q_cmd,r_cmd])");
-static_assert(kNy == 14, "step() yref packing assumes NY == 14 ([x,y,z,vx,vy,vz,phi,theta,r_fov,r_obs,T,p_cmd,q_cmd,r_cmd])");
-static_assert(kNyN == 10, "step() terminal yref packing assumes NYN == 10 ([x,y,z,vx,vy,vz,phi,theta,r_fov,r_obs])");
+static_assert(kNy == 15, "step() yref packing assumes NY == 15 ([x,y,z,vx,vy,vz,phi,theta,r_fov,r_obs,r_dist,T,p_cmd,q_cmd,r_cmd])");
+static_assert(kNyN == 11, "step() terminal yref packing assumes NYN == 11 ([x,y,z,vx,vy,vz,phi,theta,r_fov,r_obs,r_dist])");
 static_assert(kNp == 8,  "step() parameter packing assumes NP == 8 ([p_target_x,y,z, obs_p0_x,y, obs_d0, obs_grad_x,y]); run generate_mpc.py");
 
 using RawState = std::array<double, kNx>;
@@ -151,12 +151,13 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
                                    const_cast<double*>(x0_raw.data()));
 
     // ── Per-stage horizon reference ───────────────────────────────────────────
-    // yref layout: [x,y,z, vx,vy,vz, phi,theta, r_fov, r_obs, T, p_cmd,q_cmd,r_cmd]
+    // yref layout: [x,y,z, vx,vy,vz, phi,theta, r_fov, r_obs, r_dist, T, p_cmd,q_cmd,r_cmd]
     // Velocity yref is stage k's target velocity (target[k].vx/vy/vz) —
     // incentivises the drone to match the target's speed at that point in
     // the horizon, not just its speed as of this tick.
-    // r_obs reference is always 0 — "no hinge violation" is the only
-    // sensible target for a residual that's already 0 whenever safe.
+    // r_obs/r_dist references are always 0 — "no hinge violation" /
+    // "exactly at the desired standoff distance" are the only sensible
+    // targets for residuals that are already 0 at the desired state.
     for (int j = 0; j < kN; ++j) {
         const Reference& ref = horizon[j];
         const TargetState& tgt = target[j];
@@ -166,6 +167,7 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
             0.0, 0.0,             // phi, theta reference: level
             0.0,                  // r_fov reference: target inside the FOV cone
             0.0,                  // r_obs reference: clear of any obstacle
+            0.0,                  // r_dist reference: exactly at the desired standoff distance
             ARGUS_T_HOVER, 0.0, 0.0, 0.0,
         };
         ocp_nlp_cost_model_set(impl.config, impl.dims, impl.nlp_in, j, "yref", yref);
@@ -177,6 +179,7 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
             ref.x,  ref.y,  ref.z,
             tgt.vx, tgt.vy, tgt.vz,
             0.0, 0.0,
+            0.0,
             0.0,
             0.0,
         };
