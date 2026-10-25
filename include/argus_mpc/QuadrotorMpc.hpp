@@ -23,9 +23,21 @@ struct State
 
 // One horizon stage's position target for the drone.
 // vx/vy/vz are unused — velocity reference is taken from TargetState.
+//
+// azimuth_ux/azimuth_uy: desired horizontal DIRECTION from the leader to
+// the drone (unit vector, world frame) -- e.g. "behind" means pointing
+// opposite the leader's heading. Feeds r_azimuth, decoupled from x/y/z
+// above: this is direction only, not a position, so it can't pull the
+// drone toward a specific (possibly obstacle-colliding) point the way
+// x/y/z historically did (see design_decisions.md's collision-clearance
+// analysis -- same reasoning that split distance/elevation out of the
+// old single trailer-point tracking term). Default (0,0) makes
+// r_azimuth a harmless constant with zero gradient -- safe for any
+// caller that doesn't set it.
 struct Reference
 {
     double x = 0.0, y = 0.0, z = 0.0;
+    double azimuth_ux = 0.0, azimuth_uy = 0.0;
 };
 
 // Moving target state injected before every solve.

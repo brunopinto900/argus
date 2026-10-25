@@ -47,26 +47,34 @@ inner_loop:
   tau_yaw: 0.25   # yaw rate time constant [s]
 
 # Cost weights (NONLINEAR_LS: min Σ ‖h(x,u) − yref‖²_W)
-# W_stage layout:    [x, y, z,  vx, vy, vz,  phi, theta,  r_fov, r_obs, r_dist, r_elev,  T, p_cmd, q_cmd, r_cmd]
-# W_terminal layout: [x, y, z,  vx, vy, vz,  phi, theta,  r_fov_e, r_obs_e, r_dist_e, r_elev_e]
+# W_stage layout:    [x, y, z,  vx, vy, vz,  phi, theta,  r_fov, r_obs, r_dist, r_elev, r_azimuth,  T, p_cmd, q_cmd, r_cmd]
+# W_terminal layout: [x, y, z,  vx, vy, vz,  phi, theta,  r_fov_e, r_obs_e, r_dist_e, r_elev_e, r_azimuth_e]
 # r_fov = softplus(cos(alpha) - cos(gamma)) — zero inside the FOV cone, grows outside.
 # r_obs = max(0, d_safe - d_lin) — see obstacle_avoidance: below.
 # r_dist = horizontal ||p_drone_xy - p_leader_xy|| - trailer.distance_to_target
 # -- ground-plane standoff-distance cost (see generate_mpc.py). x/y/z
 # weights zeroed below: the trailer reference point (xt,yt,zt) is still
 # computed and still fed into yref every tick, it's just no longer
-# penalised directly -- r_dist/r_elev take over holding standoff distance
-# and look-down angle instead. See design_decisions.md's collision-
-# clearance analysis for why (the trailer point itself can be driven
-# through an obstacle).
+# penalised directly -- r_dist/r_elev/r_azimuth take over holding
+# standoff distance, look-down angle, and azimuth (which side of the
+# leader) instead. See design_decisions.md's collision-clearance
+# analysis for why (the trailer point itself can be driven through an
+# obstacle).
 # r_elev = (z_drone - z_leader) - horiz_dist*tan(trailer.target_bearing_deg)
 # -- dedicated elevation/pitch-angle cost, decoupled from r_dist so the
 # solver can't trade standoff distance for look-down angle (the "landing
 # zone" dive this replaces -- a single 3D-distance r_dist let horizontal
-# pressure steal from vertical freely; see design_decisions.md).
+# pressure steal from vertical freely; see design_decisions.md). Weight
+# 0 below -- see design_decisions.md's weight-0-vs-100 comparison.
+# r_azimuth = 1 - cos(phi_rel - azimuth_target) -- dedicated azimuth
+# (which side of the leader, e.g. "behind") cost, decoupled from
+# r_dist/r_elev for the same reason. azimuth_target is derived in
+# examples/online_mapping_demo.cpp from the trailer point's own
+# direction (reusing TrailerFollower's heading-gain smoothing, not a
+# fresh angle computation). See generate_mpc.py and design_decisions.md.
 cost:
-  W_stage:    [0.0, 0.0, 0.0,  10.0, 10.0, 10.0,  5.0, 5.0,  300.0, 100.0, 100.0, 0.0,  0.1, 1.0, 1.0, 1.0]
-  W_terminal: [0.0, 0.0, 0.0,  20.0, 20.0, 20.0,  10.0, 10.0,  150.0, 100.0, 100.0, 0.0]
+  W_stage:    [0.0, 0.0, 0.0,  10.0, 10.0, 10.0,  5.0, 5.0,  300.0, 100.0, 100.0, 0.0, 10.0,  0.1, 1.0, 1.0, 1.0]
+  W_terminal: [0.0, 0.0, 0.0,  20.0, 20.0, 20.0,  10.0, 10.0,  150.0, 100.0, 100.0, 0.0, 10.0]
 
 # Camera model: forward-facing (body +x axis), circular FOV cone
 camera:

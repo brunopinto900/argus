@@ -610,9 +610,27 @@ int main(int argc, char** argv)
         const double ref_x = horizon.PDx[0];
         const double ref_y = horizon.PDy[0];
 
+        // Desired azimuth direction (which side of the leader, e.g.
+        // "behind") derived directly from the trailer point's own
+        // direction from the leader -- not a fresh angle computation.
+        // PDx/PDy already carries TrailerFollower's heading_gain-filtered
+        // heading (see argus_follower/src/TrailerFollower.cpp), so this
+        // reuses that smoothing instead of chasing the leader's raw,
+        // potentially-jumpy instantaneous heading. Only the DIRECTION is
+        // used here, not PDx/PDy's position -- r_azimuth can't drag the
+        // drone toward a specific (possibly obstacle-colliding) point the
+        // way x/y/z tracking used to, see design_decisions.md.
         std::vector<argus_mpc::Reference> mpc_horizon(N);
         for (int j = 0; j < N; ++j) {
-            mpc_horizon[j] = {horizon.PDx[j], horizon.PDy[j], kFovZRef};
+            const double t_j = std::min(t + j * control_dt, scenario.t_end);
+            const double leader_xj = target.x(t_j);
+            const double leader_yj = target.y(t_j);
+            const double az_dx = horizon.PDx[j] - leader_xj;
+            const double az_dy = horizon.PDy[j] - leader_yj;
+            const double az_norm = std::hypot(az_dx, az_dy);
+            const double az_ux = (az_norm > 1e-6) ? az_dx / az_norm : 0.0;
+            const double az_uy = (az_norm > 1e-6) ? az_dy / az_norm : 0.0;
+            mpc_horizon[j] = {horizon.PDx[j], horizon.PDy[j], kFovZRef, az_ux, az_uy};
         }
         // FOV/bearing target, propagated per horizon stage -- the leader's
         // trajectory is a known closed-form function of time here, so each

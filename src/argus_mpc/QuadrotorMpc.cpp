@@ -29,9 +29,9 @@ constexpr int kNp  = QUADROTOR_NP;
 // loudly instead of silently mis-packing state/yref arrays below.
 static_assert(kNx == 12, "State/step() packing assumes NX == 12 ([x,y,z,vx,vy,vz,phi,theta,psi,p,q,r])");
 static_assert(kNu == 4,  "Command/step() packing assumes NU == 4 ([T,p_cmd,q_cmd,r_cmd])");
-static_assert(kNy == 16, "step() yref packing assumes NY == 16 ([x,y,z,vx,vy,vz,phi,theta,r_fov,r_obs,r_dist,r_elev,T,p_cmd,q_cmd,r_cmd])");
-static_assert(kNyN == 12, "step() terminal yref packing assumes NYN == 12 ([x,y,z,vx,vy,vz,phi,theta,r_fov,r_obs,r_dist,r_elev])");
-static_assert(kNp == 8,  "step() parameter packing assumes NP == 8 ([p_target_x,y,z, obs_p0_x,y, obs_d0, obs_grad_x,y]); run generate_mpc.py");
+static_assert(kNy == 17, "step() yref packing assumes NY == 17 ([x,y,z,vx,vy,vz,phi,theta,r_fov,r_obs,r_dist,r_elev,r_azimuth,T,p_cmd,q_cmd,r_cmd])");
+static_assert(kNyN == 13, "step() terminal yref packing assumes NYN == 13 ([x,y,z,vx,vy,vz,phi,theta,r_fov,r_obs,r_dist,r_elev,r_azimuth])");
+static_assert(kNp == 10,  "step() parameter packing assumes NP == 10 ([p_target_x,y,z, obs_p0_x,y, obs_d0, obs_grad_x,y, azimuth_ux,uy]); run generate_mpc.py");
 
 using RawState = std::array<double, kNx>;
 using RawInput = std::array<double, kNu>;
@@ -128,21 +128,25 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
         impl.warm_started = true;
     }
 
-    // ── Inject per-stage FOV target + obstacle linearization into model.p ───
-    // Both vary per stage now -- each stage's predicted drone pose can be
-    // evaluated against a different target position (if the caller
-    // propagated one) and a different part of (or distance from) the ESDF.
-    // Terminal stage reuses the last running stage's target/obstacle info,
-    // same convention as yref_e below reusing horizon[kN-1].
-    auto set_params = [&](int stage, const TargetState& tgt, const ObstacleLinearization& o) {
+    // ── Inject per-stage FOV target + obstacle linearization + desired
+    // azimuth direction into model.p ───────────────────────────────────────
+    // All three vary per stage now -- each stage's predicted drone pose can
+    // be evaluated against a different target position (if the caller
+    // propagated one), a different part of (or distance from) the ESDF, and
+    // a different desired azimuth direction. Terminal stage reuses the last
+    // running stage's info, same convention as yref_e below reusing
+    // horizon[kN-1].
+    auto set_params = [&](int stage, const Reference& ref, const TargetState& tgt,
+                           const ObstacleLinearization& o) {
         double p_param[kNp] = {
             tgt.x, tgt.y, tgt.z,
             o.p0_x, o.p0_y, o.distance, o.grad_x, o.grad_y,
+            ref.azimuth_ux, ref.azimuth_uy,
         };
         quadrotor_acados_update_params(impl.capsule, stage, p_param, kNp);
     };
-    for (int i = 0; i < kN; ++i) set_params(i, target[i], obs[i]);
-    set_params(kN, target[kN - 1], obs[kN - 1]);
+    for (int i = 0; i < kN; ++i) set_params(i, horizon[i], target[i], obs[i]);
+    set_params(kN, horizon[kN - 1], target[kN - 1], obs[kN - 1]);
 
     // ── Pin the measured state as the initial-stage equality constraint ─────
     ocp_nlp_constraints_model_set(impl.config, impl.dims, impl.nlp_in, impl.nlp_out, 0, "lbx",
@@ -151,14 +155,15 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
                                    const_cast<double*>(x0_raw.data()));
 
     // ── Per-stage horizon reference ───────────────────────────────────────────
-    // yref layout: [x,y,z, vx,vy,vz, phi,theta, r_fov, r_obs, r_dist, r_elev, T, p_cmd,q_cmd,r_cmd]
+    // yref layout: [x,y,z, vx,vy,vz, phi,theta, r_fov, r_obs, r_dist, r_elev, r_azimuth, T, p_cmd,q_cmd,r_cmd]
     // Velocity yref is stage k's target velocity (target[k].vx/vy/vz) —
     // incentivises the drone to match the target's speed at that point in
     // the horizon, not just its speed as of this tick.
-    // r_obs/r_dist/r_elev references are always 0 — "no hinge violation" /
-    // "exactly at the desired horizontal standoff distance" / "exactly at
-    // the designed look-down angle" are the only sensible targets for
-    // residuals that are already 0 at the desired state.
+    // r_obs/r_dist/r_elev/r_azimuth references are always 0 — "no hinge
+    // violation" / "exactly at the desired horizontal standoff distance" /
+    // "exactly at the designed look-down angle" / "exactly at the desired
+    // azimuth direction" are the only sensible targets for residuals that
+    // are already 0 at the desired state.
     for (int j = 0; j < kN; ++j) {
         const Reference& ref = horizon[j];
         const TargetState& tgt = target[j];
@@ -170,6 +175,7 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
             0.0,                  // r_obs reference: clear of any obstacle
             0.0,                  // r_dist reference: exactly at the desired horizontal standoff distance
             0.0,                  // r_elev reference: exactly at the designed look-down angle
+            0.0,                  // r_azimuth reference: exactly at the desired azimuth direction
             ARGUS_T_HOVER, 0.0, 0.0, 0.0,
         };
         ocp_nlp_cost_model_set(impl.config, impl.dims, impl.nlp_in, j, "yref", yref);
@@ -181,6 +187,7 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
             ref.x,  ref.y,  ref.z,
             tgt.vx, tgt.vy, tgt.vz,
             0.0, 0.0,
+            0.0,
             0.0,
             0.0,
             0.0,

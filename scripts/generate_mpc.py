@@ -9,8 +9,9 @@ Output: c_generated_code/   (C solver + CMakeLists, ready to link from C++)
 
 State vector  (nx = 12):  [x, y, z, vx, vy, vz, phi, theta, psi, p, q, r]
 Input vector  (nu =  4):  [T, p_cmd, q_cmd, r_cmd]
-Runtime param (np =  8):  [p_target_x, p_target_y, p_target_z,
-                           obs_p0_x, obs_p0_y, obs_d0, obs_grad_x, obs_grad_y]
+Runtime param (np = 10):  [p_target_x, p_target_y, p_target_z,
+                           obs_p0_x, obs_p0_y, obs_d0, obs_grad_x, obs_grad_y,
+                           azimuth_ux, azimuth_uy]
   — injected before every solve. The obs_* block is a per-stage local
   affine reconstruction of own_map's ESDF around a linearization point
   p0 (own_map.query() can't enter the OCP symbolically -- it's runtime
@@ -18,8 +19,12 @@ Runtime param (np =  8):  [p_target_x, p_target_y, p_target_z,
   code-gen time; see whiteboard.md). Unlike p_target (same value every
   stage today), obs_* is expected to differ per stage -- the caller
   queries the ESDF at each stage's predicted position separately.
+  azimuth_u{x,y} is the desired horizontal unit DIRECTION from the
+  leader to the drone (e.g. "behind" the leader's heading) -- feeds
+  r_azimuth below; direction only, not a position, see that residual's
+  comment for why.
 
-Cost output   (ny = 16):  [x, y, z, vx, vy, vz, phi, theta, r_fov, r_obs, r_dist, r_elev, T, p_cmd, q_cmd, r_cmd]
+Cost output   (ny = 17):  [x, y, z, vx, vy, vz, phi, theta, r_fov, r_obs, r_dist, r_elev, r_azimuth, T, p_cmd, q_cmd, r_cmd]
   - r_fov = softplus(cos(alpha_fov) - cos(gamma)) — zero inside FOV cone, grows outside
   - r_obs = max(0, d_safe - d_lin) — squared-hinge collision cost (NLS squares every
     residual automatically); d_lin = obs_d0 + obs_grad . (p - obs_p0)
@@ -32,6 +37,13 @@ Cost output   (ny = 16):  [x, y, z, vx, vy, vz, phi, theta, r_fov, r_obs, r_dist
     look-down angle each have their own target instead of competing for one shared
     3D-distance budget (the "landing zone" dive this replaces -- see
     design_decisions.md). horiz_dist reuses the same expression as r_dist.
+  - r_azimuth = 1 - cos(phi_rel - azimuth_target), expressed without atan2 as
+    1 - (dot of the drone's and the desired unit direction from the leader) --
+    dedicated azimuth (which side of the leader, e.g. "behind") residual,
+    decoupled from r_dist/r_elev for the same reason: a single trailer-point
+    position target couples distance+elevation+azimuth together, and any one
+    of them being forced off (e.g. by avoidance) used to drag the others with
+    it. See design_decisions.md.
   - phi, theta penalised to keep the drone roughly level
   - rate commands penalised to limit aggressiveness
 
@@ -109,15 +121,17 @@ def generate_mpc():
     ocp   = AcadosOcp()
     model = export_quadrotor_ode_model()
     # Runtime parameters: FOV target position (3) + per-stage obstacle
-    # ESDF linearization (5: p0_x, p0_y, d0, grad_x, grad_y) -- see the
-    # module docstring's "Runtime param" section for what obs_* means.
-    model.p = ca.SX.sym('p_runtime', 8)
+    # ESDF linearization (5: p0_x, p0_y, d0, grad_x, grad_y) + desired
+    # azimuth direction (2: ux, uy) -- see the module docstring's
+    # "Runtime param" section for what each block means.
+    model.p = ca.SX.sym('p_runtime', 10)
     p_target   = model.p[0:3]
     obs_p0     = model.p[3:5]
     obs_d0     = model.p[5]
     obs_grad   = model.p[6:8]
+    azimuth_u  = model.p[8:10]
     ocp.model = model
-    ocp.parameter_values = np.zeros(8)   # nominal; overwritten before every solve
+    ocp.parameter_values = np.zeros(10)   # nominal; overwritten before every solve
 
     nx = model.x.rows()   # 12
     nu = model.u.rows()   #  4
@@ -192,8 +206,25 @@ def generate_mpc():
     r_dist = horiz_dist - D_DESIRED
     r_elev = vert_offset - horiz_dist * ca.tan(TARGET_BEARING_RAD)
 
-    cost_y_expr   = ca.vertcat(x_sym[:8], r_fov, r_obs, r_dist, r_elev, u_sym)  # ny   = 16
-    cost_y_expr_e = ca.vertcat(x_sym[:8], r_fov, r_obs, r_dist, r_elev)          # ny_e = 12
+    # ── Azimuth residual: which side of the leader (e.g. "behind") ──────────
+    # r_azimuth = 1 - cos(phi_rel - azimuth_target), where phi_rel is the
+    # drone's actual bearing from the leader. Written as a dot product of
+    # unit vectors instead of atan2(...) to stay smooth everywhere (same
+    # trick r_fov already uses for its own angle, avoiding the wraparound/
+    # branch-cut problems atan2 would introduce): 0 when the drone sits
+    # exactly on the desired azimuth, grows smoothly as it swings away,
+    # independent of distance or elevation. azimuth_u is caller-supplied
+    # (unit vector from leader to the desired azimuth point, see
+    # QuadrotorMpc.hpp's Reference struct) -- derived, in this project's
+    # caller, directly from the already-heading-filtered trailer reference
+    # point (TrailerFollower's PDx/PDy), reusing its smoothing instead of
+    # recomputing a heading filter here. See design_decisions.md.
+    dx = x_sym[0] - p_target[0]
+    dy = x_sym[1] - p_target[1]
+    r_azimuth = 1.0 - (dx * azimuth_u[0] + dy * azimuth_u[1]) / horiz_dist
+
+    cost_y_expr   = ca.vertcat(x_sym[:8], r_fov, r_obs, r_dist, r_elev, r_azimuth, u_sym)  # ny   = 17
+    cost_y_expr_e = ca.vertcat(x_sym[:8], r_fov, r_obs, r_dist, r_elev, r_azimuth)          # ny_e = 13
 
     ocp.cost.cost_type   = 'NONLINEAR_LS'
     ocp.cost.cost_type_e = 'NONLINEAR_LS'
@@ -214,8 +245,9 @@ def generate_mpc():
                               0.0,                     # r_obs  (clear of any obstacle)
                               0.0,                     # r_dist (exactly D_DESIRED away, horizontal)
                               0.0,                     # r_elev (exactly at the designed look-down angle)
+                              0.0,                     # r_azimuth (exactly at the desired azimuth direction)
                               T_HOVER, 0.0, 0.0, 0.0]) # T, rates
-    yref_hover_e = yref_hover[:12]
+    yref_hover_e = yref_hover[:13]
 
     ocp.cost.yref   = yref_hover
     ocp.cost.yref_e = yref_hover_e
