@@ -24,7 +24,7 @@ Runtime param (np = 10):  [p_target_x, p_target_y, p_target_z,
   r_azimuth below; direction only, not a position, see that residual's
   comment for why.
 
-Cost output   (ny = 17):  [x, y, z, vx, vy, vz, phi, theta, r_fov, r_obs, r_dist, r_elev, r_azimuth, T, p_cmd, q_cmd, r_cmd]
+Cost output   (ny = 20):  [x, y, z, vx, vy, vz, phi, theta, p, q, r, r_fov, r_obs, r_dist, r_elev, r_azimuth, T, p_cmd, q_cmd, r_cmd]
   - r_fov = softplus(cos(alpha_fov) - cos(gamma)) — zero inside FOV cone, grows outside
   - r_obs = max(0, d_safe - d_lin) — squared-hinge collision cost (NLS squares every
     residual automatically); d_lin = obs_d0 + obs_grad . (p - obs_p0)
@@ -45,6 +45,12 @@ Cost output   (ny = 17):  [x, y, z, vx, vy, vz, phi, theta, r_fov, r_obs, r_dist
     of them being forced off (e.g. by avoidance) used to drag the others with
     it. See design_decisions.md.
   - phi, theta penalised to keep the drone roughly level
+  - p, q, r (REALIZED body rates, not commands) penalised directly -- distinct
+    from the rate-command penalty below: the plant is a second-order model
+    (intentional lag vs. the MPC's prediction model), so a smooth commanded
+    rate sequence can still produce an oscillatory realized rate. Only
+    phi/theta were in the cost among the states before this; p/q/r were not,
+    see design_decisions.md's roll-oscillation note.
   - rate commands penalised to limit aggressiveness
 
 The yref for each horizon step is updated at runtime in C++ via:
@@ -223,8 +229,9 @@ def generate_mpc():
     dy = x_sym[1] - p_target[1]
     r_azimuth = 1.0 - (dx * azimuth_u[0] + dy * azimuth_u[1]) / horiz_dist
 
-    cost_y_expr   = ca.vertcat(x_sym[:8], r_fov, r_obs, r_dist, r_elev, r_azimuth, u_sym)  # ny   = 17
-    cost_y_expr_e = ca.vertcat(x_sym[:8], r_fov, r_obs, r_dist, r_elev, r_azimuth)          # ny_e = 13
+    body_rates = x_sym[9:12]  # p, q, r -- realized rates, distinct from the u_sym rate commands below
+    cost_y_expr   = ca.vertcat(x_sym[:8], body_rates, r_fov, r_obs, r_dist, r_elev, r_azimuth, u_sym)  # ny   = 20
+    cost_y_expr_e = ca.vertcat(x_sym[:8], body_rates, r_fov, r_obs, r_dist, r_elev, r_azimuth)          # ny_e = 16
 
     ocp.cost.cost_type   = 'NONLINEAR_LS'
     ocp.cost.cost_type_e = 'NONLINEAR_LS'
@@ -241,13 +248,14 @@ def generate_mpc():
     yref_hover   = np.array([0.0, 0.0, HOVER_ALTITUDE,  # x, y, z
                               0.0, 0.0, 0.0,           # vx, vy, vz
                               0.0, 0.0,                # phi, theta
+                              0.0, 0.0, 0.0,           # p, q, r (realized body rates: no rotation)
                               0.0,                     # r_fov  (target inside cone)
                               0.0,                     # r_obs  (clear of any obstacle)
                               0.0,                     # r_dist (exactly D_DESIRED away, horizontal)
                               0.0,                     # r_elev (exactly at the designed look-down angle)
                               0.0,                     # r_azimuth (exactly at the desired azimuth direction)
                               T_HOVER, 0.0, 0.0, 0.0]) # T, rates
-    yref_hover_e = yref_hover[:13]
+    yref_hover_e = yref_hover[:16]
 
     ocp.cost.yref   = yref_hover
     ocp.cost.yref_e = yref_hover_e

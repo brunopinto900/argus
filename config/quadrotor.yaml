@@ -47,8 +47,15 @@ inner_loop:
   tau_yaw: 0.25   # yaw rate time constant [s]
 
 # Cost weights (NONLINEAR_LS: min Σ ‖h(x,u) − yref‖²_W)
-# W_stage layout:    [x, y, z,  vx, vy, vz,  phi, theta,  r_fov, r_obs, r_dist, r_elev, r_azimuth,  T, p_cmd, q_cmd, r_cmd]
-# W_terminal layout: [x, y, z,  vx, vy, vz,  phi, theta,  r_fov_e, r_obs_e, r_dist_e, r_elev_e, r_azimuth_e]
+# W_stage layout:    [x, y, z,  vx, vy, vz,  phi, theta,  p, q, r,  r_fov, r_obs, r_dist, r_elev, r_azimuth,  T, p_cmd, q_cmd, r_cmd]
+# W_terminal layout: [x, y, z,  vx, vy, vz,  phi, theta,  p, q, r,  r_fov_e, r_obs_e, r_dist_e, r_elev_e, r_azimuth_e]
+# p, q, r (realized body rates, weight below) -- distinct from the
+# p_cmd/q_cmd/r_cmd rate-COMMAND weights at the end: the plant is
+# second-order (intentional lag vs. the MPC's own prediction model), so
+# a smooth commanded-rate sequence doesn't guarantee a smooth realized
+# rate. Added after roll (p) was observed oscillating in forest.yaml
+# with nothing in the cost penalising the realized rate directly --
+# see design_decisions.md.
 # r_fov = softplus(cos(alpha) - cos(gamma)) — zero inside the FOV cone, grows outside.
 # r_obs = max(0, d_safe - d_lin) — see obstacle_avoidance: below.
 # r_dist = horizontal ||p_drone_xy - p_leader_xy|| - trailer.distance_to_target
@@ -73,8 +80,8 @@ inner_loop:
 # direction (reusing TrailerFollower's heading-gain smoothing, not a
 # fresh angle computation). See generate_mpc.py and design_decisions.md.
 cost:
-  W_stage:    [0.0, 0.0, 0.0,  10.0, 10.0, 10.0,  5.0, 5.0,  300.0, 100.0, 100.0, 0.0, 10.0,  0.1, 1.0, 1.0, 1.0]
-  W_terminal: [0.0, 0.0, 0.0,  20.0, 20.0, 20.0,  10.0, 10.0,  150.0, 100.0, 100.0, 0.0, 10.0]
+  W_stage:    [0.0, 0.0, 0.0,  10.0, 10.0, 10.0,  5.0, 5.0,  1.0, 1.0, 1.0,  300.0, 100.0, 100.0, 0.0, 10.0,  0.1, 1.0, 1.0, 1.0]
+  W_terminal: [0.0, 0.0, 0.0,  20.0, 20.0, 20.0,  10.0, 10.0,  2.0, 2.0, 2.0,  150.0, 100.0, 100.0, 0.0, 10.0]
 
 # Camera model: forward-facing (body +x axis), circular FOV cone
 camera:
