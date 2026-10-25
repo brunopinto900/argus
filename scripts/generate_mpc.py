@@ -19,13 +19,19 @@ Runtime param (np =  8):  [p_target_x, p_target_y, p_target_z,
   stage today), obs_* is expected to differ per stage -- the caller
   queries the ESDF at each stage's predicted position separately.
 
-Cost output   (ny = 15):  [x, y, z, vx, vy, vz, phi, theta, r_fov, r_obs, r_dist, T, p_cmd, q_cmd, r_cmd]
+Cost output   (ny = 16):  [x, y, z, vx, vy, vz, phi, theta, r_fov, r_obs, r_dist, r_elev, T, p_cmd, q_cmd, r_cmd]
   - r_fov = softplus(cos(alpha_fov) - cos(gamma)) — zero inside FOV cone, grows outside
   - r_obs = max(0, d_safe - d_lin) — squared-hinge collision cost (NLS squares every
     residual automatically); d_lin = obs_d0 + obs_grad . (p - obs_p0)
-  - r_dist = ||p_drone - p_leader|| - D_DESIRED — direct standoff-distance cost,
+  - r_dist = ||p_drone_xy - p_leader_xy|| - D_DESIRED — HORIZONTAL-only standoff-
+    distance cost (ground-plane distance, not 3D range -- see r_elev below for why),
     added alongside (not replacing) x/y/z tracking of the trailer reference point;
     see design_decisions.md's collision-clearance analysis for why
+  - r_elev = (z_drone - z_leader) - horiz_dist * tan(target_bearing) — dedicated
+    elevation/pitch-angle residual, decoupled from r_dist so standoff distance and
+    look-down angle each have their own target instead of competing for one shared
+    3D-distance budget (the "landing zone" dive this replaces -- see
+    design_decisions.md). horiz_dist reuses the same expression as r_dist.
   - phi, theta penalised to keep the drone roughly level
   - rate commands penalised to limit aggressiveness
 
@@ -86,12 +92,15 @@ FOV_BETA  = float(_cam_cfg['softplus_beta'])
 COS_ALPHA = float(np.cos(FOV_ALPHA))
 
 D_SAFE = float(_obs_cfg['d_safe_m'])
-# Desired drone-to-leader distance for the new r_dist cost term -- reuses
-# the same standoff distance the trailer reference point is built from
-# (config/quadrotor.yaml's trailer.distance_to_target), so both the
-# trailer xy/z tracking term (still computed, weight 0 for this
-# experiment) and r_dist are aiming at the same nominal standoff.
+# Desired horizontal drone-to-leader distance for r_dist -- reuses the
+# same standoff distance the trailer reference point is built from
+# (config/quadrotor.yaml's trailer.distance_to_target).
 D_DESIRED = float(_cfg['trailer']['distance_to_target'])
+# Desired look-down (elevation) angle for r_elev -- same design angle the
+# old kFovZRef altitude pin used (config/quadrotor.yaml's
+# trailer.target_bearing_deg), now targeted directly as its own residual
+# instead of only being realized indirectly via a fixed-z reference.
+TARGET_BEARING_RAD = float(np.deg2rad(_cfg['trailer']['target_bearing_deg']))
 
 
 
@@ -161,23 +170,30 @@ def generate_mpc():
     d_lin = obs_d0 + ca.dot(obs_grad, x_sym[:2] - obs_p0)
     r_obs = ca.fmax(0.0, D_SAFE - d_lin)
 
-    # ── Direct standoff-distance residual: r_dist = ||p_drone - p_leader|| - D_DESIRED ──
-    # Reuses `range_` already computed above for the FOV bearing term --
-    # same 3D distance-to-leader, just penalised directly instead of only
-    # going into a bearing ratio. This is the "fold standoff into the MPC
-    # cost" experiment from design_decisions.md's collision-clearance
-    # analysis: the trailer reference point (ref.x/y/z, still computed and
-    # still fed in as yref[0:3]) can be driven through an obstacle, and the
-    # x/y/z tracking term then pulls the drone toward that infeasible
-    # point. r_dist instead rewards the right *distance* to the leader
-    # regardless of which xy point achieves it, leaving the actual xy
-    # placement to avoidance/FOV. Experiment keeps the trailer term in the
-    # cost vector (W_stage[0:3] set to 0 in config, not removed) so this
-    # is a cost-term addition, not a rewrite.
-    r_dist = range_ - D_DESIRED
+    # ── Standoff-distance + elevation-angle residuals, decoupled ────────────
+    # Originally one 3D-distance residual (r_dist = ||p_drone - p_leader||
+    # - D_DESIRED, see design_decisions.md's collision-clearance analysis
+    # for why it replaced the trailer x/y/z tracking term). That single
+    # residual let the solver trade horizontal offset for vertical offset
+    # freely to hit the same 2m total -- under horizontal pressure (e.g. a
+    # sharp turn) it would dive toward the leader's own altitude to claw
+    # distance back, since nothing penalised *which* split it picked (the
+    # "landing zone" behaviour found on pedestrian_walk). Split into two
+    # residuals with independent targets, same decoupling real gimbal-
+    # follow systems use (control ground-plane distance and look-down
+    # angle/gimbal pitch separately, not one slant-range number):
+    #   r_dist  -- horizontal-only distance to the leader, target D_DESIRED
+    #   r_elev  -- vertical offset vs. the horizontal-distance-scaled value
+    #              that produces the designed TARGET_BEARING_RAD look-down
+    #              angle (same relation the old kFovZRef used, now a cost
+    #              target instead of a fixed yref pin)
+    horiz_dist = ca.sqrt(d_world[0]**2 + d_world[1]**2 + 1e-12)
+    vert_offset = x_sym[2] - p_target[2]  # drone z - leader z (+ve: drone above)
+    r_dist = horiz_dist - D_DESIRED
+    r_elev = vert_offset - horiz_dist * ca.tan(TARGET_BEARING_RAD)
 
-    cost_y_expr   = ca.vertcat(x_sym[:8], r_fov, r_obs, r_dist, u_sym)  # ny   = 15
-    cost_y_expr_e = ca.vertcat(x_sym[:8], r_fov, r_obs, r_dist)          # ny_e = 11
+    cost_y_expr   = ca.vertcat(x_sym[:8], r_fov, r_obs, r_dist, r_elev, u_sym)  # ny   = 16
+    cost_y_expr_e = ca.vertcat(x_sym[:8], r_fov, r_obs, r_dist, r_elev)          # ny_e = 12
 
     ocp.cost.cost_type   = 'NONLINEAR_LS'
     ocp.cost.cost_type_e = 'NONLINEAR_LS'
@@ -196,9 +212,10 @@ def generate_mpc():
                               0.0, 0.0,                # phi, theta
                               0.0,                     # r_fov  (target inside cone)
                               0.0,                     # r_obs  (clear of any obstacle)
-                              0.0,                     # r_dist (exactly D_DESIRED away)
+                              0.0,                     # r_dist (exactly D_DESIRED away, horizontal)
+                              0.0,                     # r_elev (exactly at the designed look-down angle)
                               T_HOVER, 0.0, 0.0, 0.0]) # T, rates
-    yref_hover_e = yref_hover[:11]
+    yref_hover_e = yref_hover[:12]
 
     ocp.cost.yref   = yref_hover
     ocp.cost.yref_e = yref_hover_e

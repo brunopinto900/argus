@@ -78,6 +78,15 @@ if _args.save_png:
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
+matplotlib.rcParams.update({
+    "font.size": 8,
+    "axes.titlesize": 9,
+    "axes.labelsize": 8,
+    "xtick.labelsize": 7,
+    "ytick.labelsize": 7,
+    "legend.fontsize": 7,
+})
+
 df = pd.read_csv(_args.csv_path)
 has_collision_cols = {"clearance_true", "occlusion_clearance", "solve_time_ms"} <= set(df.columns)
 
@@ -93,6 +102,7 @@ except FileNotFoundError:
 D_SAFE_M = (_cfg.get("obstacle_avoidance") or {}).get("d_safe_m")
 FOV_HALF_ANGLE_DEG = (_cfg.get("camera") or {}).get("fov_half_angle_deg")
 RATE_MAX = (_cfg.get("constraints") or {}).get("rate_max")
+ANGLE_MAX_DEG = (_cfg.get("constraints") or {}).get("angle_max_deg")
 DISTANCE_TO_TARGET = (_cfg.get("trailer") or {}).get("distance_to_target")
 # Design target for pitch bearing -- NOT 0 (see config/quadrotor.yaml's
 # trailer.target_bearing_deg comment). yaw has no such intentional offset
@@ -350,6 +360,23 @@ def compute_summary():
     s["body_rate_magnitude_mean_deg_s"] = float(np.mean(rate_mag_deg_s))
     s["body_rate_magnitude_max_deg_s"] = float(np.max(rate_mag_deg_s))
 
+    # Position smoothness: same structure as the body-rate pair above, but
+    # for the drone's actual XYZ position/velocity instead of attitude --
+    # catches smoothness issues the body-rate metrics can't see (e.g. a
+    # position that oscillates/reverses while attitude stays calm).
+    #  - linear_accel (d(vx,vy,vz)/dt): is the commanded translational
+    #    motion smooth, or jerking back and forth?
+    #  - linear_speed (|v|): how fast the drone is actually moving --
+    #    context for the accel number, not a smoothness measure itself.
+    dvx = np.diff(df["vx"]) / dt
+    dvy = np.diff(df["vy"]) / dt
+    dvz = np.diff(df["vz"]) / dt
+    s["linear_accel_rms_m_s2"] = float(np.sqrt(np.mean(dvx**2 + dvy**2 + dvz**2)))
+
+    speed_m_s = np.sqrt(df["vx"]**2 + df["vy"]**2 + df["vz"]**2).values
+    s["linear_speed_mean_m_s"] = float(np.mean(speed_m_s))
+    s["linear_speed_max_m_s"] = float(np.max(speed_m_s))
+
     return s
 
 
@@ -387,7 +414,7 @@ def plot_results(s):
                        label=f"d_safe knob (config) = {D_SAFE_M:.3f} m")
         a.set_xlabel("t [s]"); a.set_ylabel("distance [m]")
         a.set_title("Clearance to nearest obstacle")
-        a.legend(fontsize=8)
+        a.legend(fontsize=6.5)
     panels.append(clearance_panel)
 
     def occlusion_panel(a):
@@ -407,7 +434,7 @@ def plot_results(s):
         a.set_ylim(-5, 105)
         a.set_title(f"Occlusion -- 100*max(0, 1 - clearance/d_FOV={_args.d_fov:.1f}m) -- "
                     f"occluded {s['occluded_pct']:.1f}% of the run")
-        a.legend(fontsize=8)
+        a.legend(fontsize=6.5)
     panels.append(occlusion_panel)
 
     def occlusion_map_panel(a):
@@ -469,7 +496,7 @@ def plot_results(s):
         a.set_xlabel("x [m]"); a.set_ylabel("y [m]")
         a.set_title("Occlusion map")
         a.set_aspect("equal", adjustable="datalim")
-        a.legend(fontsize=7)
+        a.legend(fontsize=6)
     panels.append(occlusion_map_panel)
 
     def bearing_panel(a):
@@ -486,7 +513,7 @@ def plot_results(s):
             a.axhline(-FOV_HALF_ANGLE_DEG, color="tab:red", linestyle=":", linewidth=1)
         a.set_xlabel("t [s]"); a.set_ylabel("angle [deg]")
         a.set_title("Bearing offset from boresight")
-        a.legend(fontsize=8)
+        a.legend(fontsize=6.5)
     panels.append(bearing_panel)
 
     def tracking_panel(a):
@@ -495,18 +522,22 @@ def plot_results(s):
         a.plot(df["t"], (df["z"] - df["zt"]).abs(), color="tab:orange", label="|Z tracking error|")
         a.set_xlabel("t [s]"); a.set_ylabel("error [m]")
         a.set_title("Tracking error")
-        a.legend(fontsize=8)
+        a.legend(fontsize=6.5)
     panels.append(tracking_panel)
 
     def standoff_panel(a):
-        dist = np.hypot(df["x"] - df["fx"], df["y"] - df["fy"])
-        a.plot(df["t"], dist, color="tab:blue", label="|drone - target|")
+        horiz = np.hypot(df["x"] - df["fx"], df["y"] - df["fy"])
+        vert = (df["z"] - df["fz"]).abs()
+        dist_3d = np.hypot(horiz, vert)
+        a.plot(df["t"], dist_3d, color="tab:blue", label="|drone - target| (3D)")
+        a.plot(df["t"], horiz, color="tab:green", linestyle="-.", label="horizontal (XY)")
+        a.plot(df["t"], vert, color="tab:orange", linestyle=":", label="|vertical (Z)|")
         if DISTANCE_TO_TARGET is not None:
             a.axhline(DISTANCE_TO_TARGET, color="tab:red", linestyle="--",
                        label=f"standoff = {DISTANCE_TO_TARGET:.2f} m")
         a.set_xlabel("t [s]"); a.set_ylabel("distance [m]")
-        a.set_title("Standoff distance")
-        a.legend(fontsize=8)
+        a.set_title("Standoff distance (decomposed)")
+        a.legend(fontsize=6.5)
     panels.append(standoff_panel)
 
     def solver_panel(a):
@@ -529,7 +560,7 @@ def plot_results(s):
             a.scatter(fails["t"], fails["solve_time_ms"], color="red", zorder=5, label="solve failed")
         a.set_xlabel("t [s]"); a.set_ylabel("time [ms]")
         a.set_title("Onboard pipeline time per step (sensor-sim raycast excluded)")
-        a.legend(fontsize=8)
+        a.legend(fontsize=6.5)
     panels.append(solver_panel)
 
     def jerk_panel(a):
@@ -541,7 +572,7 @@ def plot_results(s):
         a.plot(df["t"][1:], dr, label="yaw rate accel (d(r)/dt)", alpha=0.7)
         a.set_xlabel("t [s]"); a.set_ylabel("body-rate angular accel [deg/s²]")
         a.set_title("Body-rate angular acceleration (control-smoothness / chatter proxy)")
-        a.legend(fontsize=8)
+        a.legend(fontsize=6.5)
     panels.append(jerk_panel)
 
     def rate_magnitude_panel(a):
@@ -555,10 +586,41 @@ def plot_results(s):
             a.axhline(BLUR_THRESHOLD_DEG_S, color="black", linestyle="--", linewidth=1,
                        label=f"blur threshold ({_BLUR_TOLERANCE_PX:.0f}px @ OAK-D-Lite "
                              f"640px/{_mapping_rate_hz:.0f}fps) = {BLUR_THRESHOLD_DEG_S:.1f} °/s")
-            a.legend(fontsize=7)
+            a.legend(fontsize=6)
         a.set_xlabel("t [s]"); a.set_ylabel("combined body-rate magnitude [deg/s]")
         a.set_title("Body-rate magnitude (blur proxy)")
     panels.append(rate_magnitude_panel)
+
+    def attitude_panel(a):
+        """Raw attitude, not rates/accel -- the jerk and blur-proxy panels
+        above show how fast attitude is changing, this shows where it
+        actually sits, e.g. to see a sustained steep pitch (not just a
+        brief spike) during a dive/climb or an aggressive maneuver."""
+        a.plot(df["t"], np.degrees(df["phi"]), label="roll (phi)", alpha=0.8)
+        a.plot(df["t"], np.degrees(df["theta"]), label="pitch (theta)", alpha=0.8)
+        a.plot(df["t"], np.degrees(df["psi"]), label="yaw (psi)", alpha=0.8)
+        if ANGLE_MAX_DEG is not None:
+            a.axhline(ANGLE_MAX_DEG, color="tab:red", linestyle=":", linewidth=1,
+                       label=f"roll/pitch limit (±{ANGLE_MAX_DEG:.0f}°)")
+            a.axhline(-ANGLE_MAX_DEG, color="tab:red", linestyle=":", linewidth=1)
+        a.set_xlabel("t [s]"); a.set_ylabel("angle [deg]")
+        a.set_title("Raw attitude (roll / pitch / yaw)")
+        a.legend(fontsize=6.5)
+    panels.append(attitude_panel)
+
+    def position_velocity_panel(a):
+        """Rate of change of x,y,z position -- the drone's actual velocity
+        components (vx,vy,vz), analogous to the attitude panel above but
+        for translational motion. Position-smoothness counterpart to the
+        attitude/body-rate panels: a position that oscillates/reverses
+        shows up here even if attitude itself stays calm."""
+        a.plot(df["t"], df["vx"], label="vx", alpha=0.8)
+        a.plot(df["t"], df["vy"], label="vy", alpha=0.8)
+        a.plot(df["t"], df["vz"], label="vz", alpha=0.8)
+        a.set_xlabel("t [s]"); a.set_ylabel("velocity [m/s]")
+        a.set_title("Position rate of change (vx / vy / vz)")
+        a.legend(fontsize=6.5)
+    panels.append(position_velocity_panel)
 
     def fnum(key, fmt="{:.3f}"):
         v = s.get(key)
@@ -625,6 +687,9 @@ def plot_results(s):
             ("body-rate accel, chatter proxy (rms)", fnum("body_rate_accel_rms_rad_s2") + " rad/s²", None),
             ("body-rate magnitude, blur proxy (mean / max)", f"{fnum('body_rate_magnitude_mean_deg_s', '{:.1f}')} / "
                                                               f"{fnum('body_rate_magnitude_max_deg_s', '{:.1f}')} °/s", None),
+            ("linear accel, position chatter proxy (rms)", fnum("linear_accel_rms_m_s2") + " m/s²", None),
+            ("linear speed (mean / max)", f"{fnum('linear_speed_mean_m_s', '{:.2f}')} / "
+                                           f"{fnum('linear_speed_max_m_s', '{:.2f}')} m/s", None),
         ]),
         ("Mapping coverage", [
             ("own_map resolved", fnum("own_map_resolved_fraction_pct", "{:.1f}") + " %", None),
@@ -654,14 +719,14 @@ def plot_results(s):
         for name in group_names:
             lines = dict(groups)[name]
             a.text(x0, y, name, transform=a.transAxes, va="top", ha="left",
-                   fontsize=9, fontweight="bold")
+                   fontsize=7.5, fontweight="bold")
             y -= header_step * scale
             for label, value, status in lines:
                 a.text(x0 + 0.02, y, label, transform=a.transAxes, va="top", ha="left",
-                       fontsize=7.5)
+                       fontsize=6.5)
                 color = status if status is not None else "black"
                 a.text(x0 + value_offset, y, value, transform=a.transAxes, va="top", ha="left",
-                       fontsize=7.5, color=color,
+                       fontsize=6.5, color=color,
                        fontweight="bold" if status is not None else "normal")
                 y -= line_step * scale
             y -= gap_step * scale
@@ -694,7 +759,7 @@ def plot_results(s):
     n_data_rows = (len(data_panels) + 1) // 2
     fig = plt.figure(figsize=(15.5, 4 * n_data_rows + 5.5))
     gs = fig.add_gridspec(n_data_rows + 1, 2, height_ratios=[1] * n_data_rows + [1.6])
-    fig.suptitle(f"Metrics -- {_args.csv_path}")
+    fig.suptitle(f"Metrics -- {_args.csv_path}", fontsize=11)
 
     for i, panel_fn in enumerate(data_panels):
         a = fig.add_subplot(gs[i // 2, i % 2])
