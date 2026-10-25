@@ -1,0 +1,158 @@
+# Scenario: Narrow Passage + Deep Orbit -- the leader squeezes through a
+# sustained double-sided corridor (walls on both sides, not a single
+# obstacle to dodge like every other scenario), goes deep inside to a
+# still-pinched chamber, executes a tight loop around an obstacle sitting
+# there, stops briefly right where it entered (flanked tightly on both
+# sides at that instant), then reverses and retraces the same corridor
+# back out. See docs/narrow_passage_deep_orbit_concept.png for the
+# original sketch and design_decisions.md for the geometric reasoning.
+#
+# Combines three things no other scenario in this suite does together:
+# sustained double-sided confinement (the approach corridor), a genuinely
+# tight orbit (0.85m radius, pinched by chamber walls on both sides, not
+# open like obstacle_roundabout.yaml's 1.6m loop in open space), and a
+# there-and-back structure (the drone has to reverse its own committed
+# direction, not just continue through).
+#
+# NOTE: a straight approach can never be tangent to a loop centered on
+# the same line (the same lesson as obstacle_roundabout.yaml, hit again
+# here). Fixed the same way: the loop is centered at (R_loop, chamber_y)
+# instead of directly on the approach line (x=0), so the entry point is
+# the loop's leftmost point, naturally tangent. A second, new wrinkle:
+# a loop that returns to its own entry point and then reverses direction
+# to retrace its way out cannot avoid a velocity-direction conflict at
+# that instant by geometry alone (the tangent at a point on a closed
+# curve is the same whether arriving or about to leave on another lap) --
+# resolved with the same technique as target_reversal.yaml's fix: bring
+# the leader to a smooth stop exactly as the loop closes (arc-length-
+# derived, not guessed), then reverse from rest, so there's no
+# instantaneous flip, just a deliberate pause. Verified via
+# scripts/test_motion_profile.py: vector-accel max only 2.06 m/s^2,
+# scalar 1.58 m/s^2 -- clean, no patching needed either time.
+#
+# shape: circle   -> center [x, y], radius
+# shape: square   -> center [x, y], half_size
+obstacles:
+  - shape: square
+    center: [-1.1, 2.5]
+    half_size: 0.5
+  - shape: square
+    center: [1.1, 2.5]
+    half_size: 0.5
+  - shape: square
+    center: [-1.1, 3.4]
+    half_size: 0.5
+  - shape: square
+    center: [1.1, 3.4]
+    half_size: 0.5
+  - shape: square
+    center: [-0.9, 5.3]
+    half_size: 0.5
+  - shape: square
+    center: [2.6, 5.3]
+    half_size: 0.5
+  - shape: circle
+    center: [0.85, 5.3]
+    radius: 0.45
+
+leader:
+  # NOTE: speed_profile's time-integral must match waypoints' total path
+  # length (27.94m here) -- see stop_and_go.yaml's comment and
+  # design_decisions.md's "Path-length / speed-profile mismatch". The
+  # brief stop ([14.051,0.0]..[15.551,0.0]) is arc-length-derived to land
+  # exactly at the loop's closure point (11.3 + 2*pi*0.85 = 16.64m), same
+  # technique as target_reversal.yaml.
+  t_end: 25.5110
+  waypoints:
+    - [0.0000, -6.0000]
+    - [0.0000, 5.3000]
+    - [0.0027, 5.3675]
+    - [0.0107, 5.4346]
+    - [0.0241, 5.5009]
+    - [0.0427, 5.5659]
+    - [0.0663, 5.6292]
+    - [0.0950, 5.6904]
+    - [0.1284, 5.7492]
+    - [0.1663, 5.8051]
+    - [0.2086, 5.8578]
+    - [0.2550, 5.9070]
+    - [0.3051, 5.9523]
+    - [0.3586, 5.9936]
+    - [0.4153, 6.0304]
+    - [0.4747, 6.0627]
+    - [0.5365, 6.0901]
+    - [0.6002, 6.1125]
+    - [0.6656, 6.1297]
+    - [0.7321, 6.1418]
+    - [0.7993, 6.1485]
+    - [0.8669, 6.1498]
+    - [0.9344, 6.1458]
+    - [1.0013, 6.1364]
+    - [1.0673, 6.1218]
+    - [1.1319, 6.1019]
+    - [1.1947, 6.0770]
+    - [1.2553, 6.0471]
+    - [1.3134, 6.0126]
+    - [1.3686, 5.9735]
+    - [1.4204, 5.9302]
+    - [1.4687, 5.8828]
+    - [1.5130, 5.8319]
+    - [1.5532, 5.7775]
+    - [1.5889, 5.7201]
+    - [1.6200, 5.6601]
+    - [1.6461, 5.5978]
+    - [1.6673, 5.5336]
+    - [1.6833, 5.4679]
+    - [1.6940, 5.4012]
+    - [1.6993, 5.3338]
+    - [1.6993, 5.2662]
+    - [1.6940, 5.1988]
+    - [1.6833, 5.1321]
+    - [1.6673, 5.0664]
+    - [1.6461, 5.0022]
+    - [1.6200, 4.9399]
+    - [1.5889, 4.8799]
+    - [1.5532, 4.8225]
+    - [1.5130, 4.7681]
+    - [1.4687, 4.7172]
+    - [1.4204, 4.6698]
+    - [1.3686, 4.6265]
+    - [1.3134, 4.5874]
+    - [1.2553, 4.5529]
+    - [1.1947, 4.5230]
+    - [1.1319, 4.4981]
+    - [1.0673, 4.4782]
+    - [1.0013, 4.4636]
+    - [0.9344, 4.4542]
+    - [0.8669, 4.4502]
+    - [0.7993, 4.4515]
+    - [0.7321, 4.4582]
+    - [0.6656, 4.4703]
+    - [0.6002, 4.4875]
+    - [0.5365, 4.5099]
+    - [0.4747, 4.5373]
+    - [0.4153, 4.5696]
+    - [0.3586, 4.6064]
+    - [0.3051, 4.6477]
+    - [0.2550, 4.6930]
+    - [0.2086, 4.7422]
+    - [0.1663, 4.7949]
+    - [0.1284, 4.8508]
+    - [0.0950, 4.9096]
+    - [0.0663, 4.9708]
+    - [0.0427, 5.0341]
+    - [0.0241, 5.0991]
+    - [0.0107, 5.1654]
+    - [0.0027, 5.2325]
+    - [0.0000, 5.3000]
+    - [0.0000, -6.0000]
+  speed_profile:
+    - [0.0000, 0.0000]
+    - [1.5000, 1.3000]
+    - [13.0510, 1.3000]
+    - [14.0510, 0.0000]
+    - [15.5510, 0.0000]
+    - [16.5510, 1.3000]
+    - [24.0110, 1.3000]
+    - [25.0110, 0.4000]
+    - [25.5110, 0.0000]

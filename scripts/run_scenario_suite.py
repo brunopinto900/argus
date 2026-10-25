@@ -94,6 +94,10 @@ SCENARIOS = [
     ("running_person", "running_person.yaml",
      "Jogging pace (~2.4 m/s), moderate clearance, no deliberate slowdown -- "
      "the first scenario in the suite to leave walking pace."),
+    ("narrow_passage_deep_orbit", "narrow_passage_deep_orbit.yaml",
+     "Sustained double-sided corridor leading to a pinched chamber with a "
+     "tight orbit around an obstacle, then a reversal back out -- combines "
+     "confinement, a tight loop, and a there-and-back direction change."),
 ]
 
 REAL_TARGET_M = 0.27
