@@ -13,6 +13,7 @@ extern "C" {
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace argus_mpc {
 
@@ -50,6 +51,13 @@ struct QuadrotorMpc::Impl
     double timing_sum_ms  = 0.0;
     long   timing_count   = 0;
     double timing_last_ms = 0.0;
+
+    // The solver's full predicted horizon (stages 0..N) from the most
+    // recent step() call, captured before the warm-start shift loop
+    // overwrites its scratch buffer -- the open-loop plan the MPC actually
+    // optimized, as opposed to the single realized closed-loop state a
+    // caller sees per tick. kN+1 entries, each kNx-wide (see RawState).
+    std::vector<RawState> last_horizon_x;
 
     Impl()
     {
@@ -190,6 +198,13 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
     RawInput u{};
     ocp_nlp_out_get(impl.config, impl.dims, impl.nlp_out, 0, "u", u.data());
 
+    // ── Capture the full predicted horizon (the open-loop plan) before the
+    // shift loop below reuses its scratch buffer ───────────────────────────
+    impl.last_horizon_x.assign(kN + 1, RawState{});
+    for (int i = 0; i <= kN; ++i) {
+        ocp_nlp_out_get(impl.config, impl.dims, impl.nlp_out, i, "x", impl.last_horizon_x[i].data());
+    }
+
     // ── Shift warm-start: stage i+1 → stage i ────────────────────────────────
     RawState x_s{};
     RawInput u_s{};
@@ -227,6 +242,22 @@ SolverTiming QuadrotorMpc::solverTiming() const
 }
 
 double QuadrotorMpc::lastSolveTimeMs() const { return impl_->timing_last_ms; }
+
+std::vector<State> QuadrotorMpc::lastPredictedHorizon() const
+{
+    const Impl& impl = *impl_;
+    std::vector<State> horizon;
+    horizon.reserve(impl.last_horizon_x.size());
+    for (const RawState& xs : impl.last_horizon_x) {
+        horizon.push_back(State{
+            xs[0], xs[1], xs[2],
+            xs[3], xs[4], xs[5],
+            xs[6], xs[7], xs[8],
+            xs[9], xs[10], xs[11],
+        });
+    }
+    return horizon;
+}
 
 void QuadrotorMpc::resetSolverTiming()
 {

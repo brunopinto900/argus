@@ -493,6 +493,18 @@ int main(int argc, char** argv)
     // actually reached its end-of-step position (p1). See
     // design_decisions.md's "Staleness error -- formula and which sign is
     // dangerous".
+    // Full predicted horizon (the solver's own open-loop plan) per control
+    // tick, for diagnosing whether a closed-loop constraint violation (e.g.
+    // obstacle clearance) was already present in the plan itself, or only
+    // appeared after low-level tracking/plant dynamics diverged from it --
+    // see QuadrotorMpc::lastPredictedHorizon()'s doc comment and
+    // design_decisions.md's collision-clearance analysis. One row per
+    // (control tick, horizon stage) pair.
+    const std::string horizon_path = "logs/online_mapping_horizon.csv";
+    std::ofstream horizon_log(horizon_path);
+    horizon_log << std::fixed << std::setprecision(6);
+    horizon_log << "step,t,stage,hx,hy,hz\n";
+
     const std::string staleness_path = "logs/staleness_log.csv";
     std::ofstream staleness(staleness_path);
     staleness << "t,p0_x,p0_y,p1_x,p1_y,step_dist,"
@@ -657,6 +669,14 @@ int main(int argc, char** argv)
 
         const argus_mpc::Command cmd = mpc.step(x0_mpc, mpc_horizon, target_horizon, obstacle);
         u = {cmd.thrust * kTHover, cmd.roll_rate, cmd.pitch_rate, cmd.yaw_rate};
+
+        {
+            const auto predicted = mpc.lastPredictedHorizon();
+            for (std::size_t s = 0; s < predicted.size(); ++s) {
+                horizon_log << step << ',' << t << ',' << s << ','
+                            << predicted[s].x << ',' << predicted[s].y << ',' << predicted[s].z << '\n';
+            }
+        }
 
         // Plant (and therefore the mapping sensor riding it) integrates at
         // the faster sensor rate, holding this control step's command

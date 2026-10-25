@@ -127,6 +127,16 @@ public:
     // the run-long aggregate.
     double lastSolveTimeMs() const;
 
+    // The full predicted horizon (stages 0..N, so horizonLength()+1 states)
+    // from the most recent step() call -- the open-loop plan the solver
+    // actually optimized, not just the single realized closed-loop state a
+    // caller normally sees per tick. Empty before the first step() call.
+    // For diagnosing whether a closed-loop constraint violation (e.g.
+    // obstacle clearance) was already present in the solver's own plan, or
+    // only appeared after low-level tracking/plant dynamics diverged from
+    // it -- see design_decisions.md's collision-clearance analysis.
+    std::vector<State> lastPredictedHorizon() const;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
