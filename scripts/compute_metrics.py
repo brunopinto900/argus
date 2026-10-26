@@ -48,15 +48,17 @@ def _parse_args():
                     help="occ_pct above this counts as an occlusion EVENT worth "
                          "flagging red, not just some nonzero degradation "
                          "(default: %(default)s %%)")
-    p.add_argument("--real-target-m", type=float, default=0.27,
+    p.add_argument("--real-target-m", type=float, default=0.29,
                     help="Actual physical safety requirement, distinct from "
-                         "--config-path's d_safe_m knob (which is already "
-                         "inflated 2.7x to compensate for the soft hinge cost's "
-                         "own undershoot, see design_decisions.md's 'd_safe "
-                         "inflation') -- collision/d_safe_violation metrics are "
+                         "--config-path's d_safe_m knob (0.32, a slacked-"
+                         "constraint target, not a cost weight any more -- "
+                         "see design_decisions.md's 'd_safe bumped 0.27 -> "
+                         "0.32') -- collision/d_safe_violation metrics are "
                          "measured against THIS, same convention as "
-                         "plot_telemetry_dashboard.py's --real-target-m "
-                         "(default: %(default)s m)")
+                         "plot_telemetry_dashboard.py's --real-target-m. "
+                         "0.29 = d_safe minus the measured ground-truth "
+                         "quantization gap (see 'REAL_TARGET_M decoupled "
+                         "from d_safe') (default: %(default)s m)")
     p.add_argument("--scenario-config", default="config/forest.yaml",
                     help="Scenario file (online_mapping_demo's obstacles: "
                          "section) to draw obstacle outlines on the occlusion "

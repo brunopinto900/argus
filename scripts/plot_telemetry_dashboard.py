@@ -64,13 +64,14 @@ def _parse_args():
     p.add_argument("--config-path", default="config/quadrotor.yaml",
                     help="Source of obstacle_avoidance.d_safe_m, used only when "
                          "the CSV has a dist_obstacle column")
-    p.add_argument("--real-target-m", type=float, default=0.27,
+    p.add_argument("--real-target-m", type=float, default=0.29,
                     help="Actual physical safety requirement, distinct from "
-                         "--config-path's d_safe_m knob -- see "
-                         "design_decisions.md's 'd_safe inflation' section "
-                         "(default: 0.27, the drone-size + voxel + lidar-"
-                         "noise derived margin from that section). Only "
-                         "drawn when the CSV has a dist_obstacle column.")
+                         "--config-path's d_safe_m knob (0.32) -- see "
+                         "design_decisions.md's 'REAL_TARGET_M decoupled "
+                         "from d_safe' section (default: 0.29 -- d_safe "
+                         "minus the measured ground-truth quantization gap, "
+                         "not the same quantity d_safe is). Only drawn when "
+                         "the CSV has a dist_obstacle column.")
     p.add_argument("--scenario-config", default="config/forest.yaml",
                     help="Scenario file (online_mapping_demo's obstacles: "
                          "section -- same file passed as that demo's CLI arg) "

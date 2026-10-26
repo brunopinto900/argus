@@ -37,7 +37,10 @@ import yaml
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 CONFIG_DIR = REPO_ROOT / "config"
 LOGS_DIR = REPO_ROOT / "logs"
-REAL_TARGET_M = 0.27
+# See run_scenario_suite.py's REAL_TARGET_M comment -- decoupled from
+# config/quadrotor.yaml's d_safe_m (0.32) on purpose, accounts for
+# ground-truth measurement quantization, not a safety margin itself.
+REAL_TARGET_M = 0.29
 
 # generate_mpc.py's AcadosOcpSolver dlopen()s libacados/libqpOASES_e at
 # import time -- needs ACADOS_SOURCE_DIR/lib on LD_LIBRARY_PATH, which is

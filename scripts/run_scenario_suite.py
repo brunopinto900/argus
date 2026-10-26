@@ -100,7 +100,21 @@ SCENARIOS = [
      "confinement, a tight loop, and a there-and-back direction change."),
 ]
 
-REAL_TARGET_M = 0.27
+# 0.29, not config/quadrotor.yaml's obstacle_avoidance.d_safe_m=0.32 --
+# deliberately different values measuring different things. d_safe is
+# what the solver enforces on its BELIEF (own_map's ESDF). This gate
+# checks GROUND TRUTH (clearance_true, distanceAtPoint() -- floors to
+# the nearest voxel, no interpolation), which always reads up to ~1
+# voxel (0.0245-0.0328m measured worst case across the suite) below
+# whatever the solver actually achieved on belief, even on ticks where
+# the constraint was never violated (slack=0) -- a measurement-
+# resolution gap, not a real safety shortfall. Gating ground truth at
+# the full d_safe value spuriously fails on that gap alone. 0.29 =
+# d_safe(0.32) - ~0.03 (the measured gap, with a little margin), so this
+# only fails on gaps bigger than what quantization alone explains --
+# see design_decisions.md's "d_safe bumped 0.27 -> 0.32" /
+# "REAL_TARGET_M decoupled from d_safe" entries.
+REAL_TARGET_M = 0.29
 D_FOV = 4.0
 OCCLUSION_EVENT_PCT = 80.0
 
