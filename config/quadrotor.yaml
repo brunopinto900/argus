@@ -47,8 +47,8 @@ inner_loop:
   tau_yaw: 0.25   # yaw rate time constant [s]
 
 # Cost weights (NONLINEAR_LS: min Σ ‖h(x,u) − yref‖²_W)
-# W_stage layout:    [x, y, z,  vx, vy, vz,  phi, theta,  p, q, r,  r_fov, r_obs, r_dist, r_elev, r_azimuth,  T, p_cmd, q_cmd, r_cmd]
-# W_terminal layout: [x, y, z,  vx, vy, vz,  phi, theta,  p, q, r,  r_fov_e, r_obs_e, r_dist_e, r_elev_e, r_azimuth_e]
+# W_stage layout:    [x, y, z,  vx, vy, vz,  phi, theta,  p, q, r,  r_fov, r_dist, r_elev, r_azimuth,  T, p_cmd, q_cmd, r_cmd]
+# W_terminal layout: [x, y, z,  vx, vy, vz,  phi, theta,  p, q, r,  r_fov_e, r_dist_e, r_elev_e, r_azimuth_e]
 # p, q, r (realized body rates, weight below) -- distinct from the
 # p_cmd/q_cmd/r_cmd rate-COMMAND weights at the end: the plant is
 # second-order (intentional lag vs. the MPC's own prediction model), so
@@ -57,16 +57,21 @@ inner_loop:
 # with nothing in the cost penalising the realized rate directly --
 # see design_decisions.md.
 # r_fov = softplus(cos(alpha) - cos(gamma)) — zero inside the FOV cone, grows outside.
-# r_obs = max(0, d_safe - d_lin) — see obstacle_avoidance: below.
+# Collision avoidance is NO LONGER a cost term here -- it's a slacked
+# nonlinear constraint (see obstacle_avoidance: below for its weights,
+# generate_mpc.py for the constraint itself). The old r_obs squared-hinge
+# cost term never guaranteed d_safe for any finite weight (gradient
+# vanishes at the boundary) -- see design_decisions.md's slack-variable
+# collision constraint entry.
 # r_dist = horizontal ||p_drone_xy - p_leader_xy|| - trailer.distance_to_target
-# -- ground-plane standoff-distance cost (see generate_mpc.py). x/y/z
-# weights zeroed below: the trailer reference point (xt,yt,zt) is still
-# computed and still fed into yref every tick, it's just no longer
-# penalised directly -- r_dist/r_elev/r_azimuth take over holding
-# standoff distance, look-down angle, and azimuth (which side of the
-# leader) instead. See design_decisions.md's collision-clearance
-# analysis for why (the trailer point itself can be driven through an
-# obstacle).
+# -- ground-plane standoff-distance cost (see generate_mpc.py), kept
+# alongside x/y/z trailer tracking (re-enabled below, non-zero again) --
+# now that collision avoidance is a hard-ish constraint on the drone's
+# actual state rather than a cost fighting the trailer-point tracking
+# cost, the trailer point driving through an obstacle (see
+# design_decisions.md's collision-clearance analysis) no longer drags
+# the drone with it the way it used to: the constraint acts on the
+# drone's own predicted state, independent of what x/y/z tracking wants.
 # r_elev = (z_drone - z_leader) - horiz_dist*tan(trailer.target_bearing_deg)
 # -- dedicated elevation/pitch-angle cost, decoupled from r_dist so the
 # solver can't trade standoff distance for look-down angle (the "landing
@@ -79,9 +84,26 @@ inner_loop:
 # examples/online_mapping_demo.cpp from the trailer point's own
 # direction (reusing TrailerFollower's heading-gain smoothing, not a
 # fresh angle computation). See generate_mpc.py and design_decisions.md.
+# r_dist/r_elev/r_azimuth weights zeroed below (not removed -- still
+# computed every solve, still in cost_y_expr/yref, just no longer
+# penalised) now that trailer x/y/z tracking is live again: both were
+# independently claiming authority over "where the drone sits relative
+# to the leader," and that double-authority is what caused the
+# suite-wide body_rate_magnitude_max regression (uniform across
+# scenarios regardless of obstacle presence -- see design_decisions.md's
+# "Slack-variable collision constraint" section for the isolation).
+# Trailer tracking is the sole position/azimuth authority again;
+# collision avoidance no longer needs a competing cost term to hand
+# that job to -- it's the slacked constraint now (see
+# obstacle_avoidance: below).
 cost:
-  W_stage:    [0.0, 0.0, 0.0,  10.0, 10.0, 10.0,  5.0, 5.0,  1.0, 1.0, 1.0,  300.0, 100.0, 100.0, 0.0, 10.0,  0.1, 1.0, 1.0, 1.0]
-  W_terminal: [0.0, 0.0, 0.0,  20.0, 20.0, 20.0,  10.0, 10.0,  2.0, 2.0, 2.0,  150.0, 100.0, 100.0, 0.0, 10.0]
+  # p,q,r (realized body rates) bumped 1.0/2.0 -> 5.0/10.0 (5x) -- first
+  # test of a direct response to the body_rate_magnitude_max suite
+  # regression found after re-enabling trailer tracking (see
+  # design_decisions.md's "Solver wall-clock time" / hypothesis-disproven
+  # entries above this weight change). Not a swept/final value yet.
+  W_stage:    [100.0, 100.0, 100.0,  10.0, 10.0, 10.0,  5.0, 5.0,  5.0, 5.0, 5.0,  300.0, 0.0, 0.0, 0.0,  0.1, 1.0, 1.0, 1.0]
+  W_terminal: [200.0, 200.0, 200.0,  20.0, 20.0, 20.0,  10.0, 10.0,  10.0, 10.0, 10.0,  150.0, 0.0, 0.0, 0.0]
 
 # Camera model: forward-facing (body +x axis), circular FOV cone
 camera:
@@ -125,14 +147,13 @@ mapping_sensor:
   num_rays:       1006   # ceil(2*pi * max_range_m / voxel_size), voxel_size=0.05m — see design_decisions.md
   update_rate_hz: 60.0   # matches real camera fps; decoupled from mpc.Ts (the 20Hz control loop)
 
-# Collision-avoidance hinge cost: r_obs = max(0, d_safe - d_lin), where
-# d_lin is a per-stage local affine reconstruction of own_map's ESDF
-# (own_map.query() can't enter the OCP symbolically -- see whiteboard.md),
-# injected as a runtime parameter alongside the FOV target. d_safe here is
-# baked in at code-generation time (not a runtime parameter) since it's
-# not expected to vary per solve. Its weight lives in cost.W_stage/
-# W_terminal above (the r_obs entry), same convention as r_fov's weight --
-# not duplicated here.
+# Collision-avoidance constraint: d_lin >= d_safe, SLACKED (see
+# generate_mpc.py's con_h_expr) -- d_lin is a per-stage local affine
+# reconstruction of own_map's ESDF (own_map.query() can't enter the OCP
+# symbolically -- see whiteboard.md), injected as a runtime parameter
+# alongside the FOV target. d_safe here is baked in at code-generation
+# time (not a runtime parameter) since it's not expected to vary per
+# solve.
 #
 # Base value: d_safe_m = r_drone + delta_voxel + delta_stale =
 # 0.15 + 0.05 + 0.07 = 0.27 -- see design_decisions.md's "d_safe -- first
@@ -141,14 +162,35 @@ mapping_sensor:
 # placeholder (no actual drone physical size is defined anywhere in this
 # repo) -- swap it for the real value.
 #
-# Inflated by 2.7x (= 0.27 / observed closest-approach at weight=100 from
-# the r_obs weight sweep) to compensate for the squared-hinge cost's
-# known undershoot: a finite soft-cost weight asymptotically approaches
-# but never guarantees d_safe is actually respected (the penalty near
-# the threshold stays small, unlike e.g. an exponential barrier) -- see
-# design_decisions.md's "r_obs weight" sweep and its "cost vs constraint"
-# discussion. This compensation is an empirical fit at weight=100 for ONE
-# scenario, not a general correction -- needs a Monte Carlo sweep before
-# trusting this in deployment, same as delta_stale above.
+# NOT inflated 2.7x any more. That factor compensated for the old
+# squared-hinge COST term's known undershoot (a finite quadratic weight
+# only asymptotically approaches d_safe, never guarantees it -- see
+# design_decisions.md's "r_obs weight" sweep). The constraint below is a
+# slacked inequality instead: with slack_linear_weight large enough, this
+# is an exact penalty (enforces d_safe exactly, not asymptotically,
+# whenever the problem is actually feasible), so the inflation hack is
+# gone. BUT: bumped 0.27 -> 0.32 after the full-suite test showed the
+# un-inflated value failing the ground-truth collision gate in 8/16
+# scenarios -- not staleness (delta_stale=0.07m, only ever measured on
+# one scenario), but a consistent ~0.025-0.033m belief-vs-ground-truth
+# gap across ALL of them, matching the voxel size (0.05m): ground truth
+# (clearance_true, distanceAtPoint()) floors to the nearest voxel index,
+# belief (dist_obstacle, queryPlanar()) bilinearly interpolates -- same
+# grid, two different sampling methods, diverging by up to about one
+# voxel near a boundary. Worst observed gap across the 8 failing
+# scenarios was 0.0328m (narrow_passage_deep_orbit) -- 0.32 = 0.27 +
+# 0.05, comfortably past that with margin, not the razor-thin 0.30 that
+# was first proposed. See design_decisions.md's "d_safe bumped 0.27 ->
+# 0.32" entry.
+#
+# Slack-penalty weights for the d_lin >= d_safe constraint above (see
+# generate_mpc.py's con_h_expr / idxsh). slack_linear_weight is the exact-
+# penalty term that actually provides the guarantee (must exceed the
+# constraint's Lagrange multiplier to bind exactly); slack_quadratic_weight
+# just smooths the QP near the boundary and isn't what's doing the
+# enforcing. Untuned starting values -- see design_decisions.md's
+# slack-variable collision constraint entry for the first test of this.
 obstacle_avoidance:
-  d_safe_m: 0.729
+  d_safe_m: 0.32
+  slack_linear_weight:    10000.0
+  slack_quadratic_weight:   100.0
