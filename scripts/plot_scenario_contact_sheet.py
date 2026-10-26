@@ -90,6 +90,30 @@ def _blur_threshold_deg_s(cfg):
     return math.degrees(tol_px / (t_exposure * f_px))
 
 
+def _point_in_obstacle(o, x, y):
+    cx, cy = o["center"]
+    if o["shape"] == "circle":
+        return np.hypot(x - cx, y - cy) <= o["radius"]
+    h = o["half_size"]
+    return (np.abs(x - cx) <= h) & (np.abs(y - cy) <= h)
+
+
+def trailer_ref_collides(df, obstacles):
+    """Whether the trailer/follower REFERENCE point (xt,yt -- the goal
+    point the MPC tracks, not the drone's actual flown position) ever
+    passes through an obstacle. Informational only, not a suite gate --
+    the reference point is known to be able to cross obstacles (see
+    design_decisions.md's collision-clearance analysis: that's exactly
+    why the drone no longer tracks it directly), so this flags it on the
+    contact sheet without failing anything."""
+    if not obstacles:
+        return None
+    hit = np.zeros(len(df), dtype=bool)
+    for o in obstacles:
+        hit |= _point_in_obstacle(o, df["xt"].values, df["yt"].values)
+    return bool(hit.any())
+
+
 def _draw_obstacles(ax, obstacles):
     for o in obstacles:
         cx, cy = o["center"]
@@ -114,6 +138,7 @@ def plot_cell(ax, name, scenario_file, df, cfg, blur_threshold_deg_s):
 
     ax.plot(df["x"], df["y"], color="tab:blue", linewidth=1.0, alpha=0.8, label="drone")
     ax.plot(df["fx"], df["fy"], "--", color="tab:red", linewidth=1.0, alpha=0.8, label="target")
+    ax.plot(df["xt"], df["yt"], ":", color="tab:green", linewidth=1.0, alpha=0.8, label="trailer ref")
 
     # No obstacles -> clearance_true/occlusion_clearance are both the
     # ESDF's "nothing nearby" sentinel, so their argmin is an arbitrary
@@ -155,8 +180,21 @@ def plot_cell(ax, name, scenario_file, df, cfg, blur_threshold_deg_s):
     clear_str = ("n/a (no obstacles)" if m["min_clearance_true_m"] > 1000.0
                  else f"{m['min_clearance_true_m']:.2f}m")
 
+    # Informational only -- NOT a gate, doesn't affect border color or
+    # gates_pass. The reference point is known to be able to cross
+    # obstacles (see trailer_ref_collides()'s docstring); this just
+    # surfaces whether it did here.
+    trailer_collides = trailer_ref_collides(df, obstacles)
+    if trailer_collides is None:
+        trailer_flag_str, trailer_flag_color = "n/a (no obstacles)", "black"
+    elif trailer_collides:
+        trailer_flag_str, trailer_flag_color = "trailer ref CROSSES obstacle (informational)", "tab:orange"
+    else:
+        trailer_flag_str, trailer_flag_color = "trailer ref clear", "black"
+
     lines = [
         (f"clear {clear_str} [{clear_flag}]", clear_color),
+        (trailer_flag_str, trailer_flag_color),
         (f"track {m['drone_target_dist_mean_m']:.2f}±{m['drone_target_dist_std_m']:.2f}m  "
          f"reacq {m['reacquisition_events']}", "black"),
         (f"FOV {m['fov_exceedance_pct']:.0f}%  onboard {m['pipeline_onboard_time_mean_ms']:.1f}/"
