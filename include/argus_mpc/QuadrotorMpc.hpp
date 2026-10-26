@@ -78,6 +78,15 @@ struct Command
     double pitch_rate = 0.0;
     double yaw_rate   = 0.0;
     int    solve_status = 0;  // acados status; 0 == success
+    // Largest collision-avoidance slack value (the "s" in d_lin >= d_safe
+    // - s) across every stage of the just-solved horizon. Zero means the
+    // constraint was satisfied everywhere in the plan with no help from
+    // the slack; nonzero means the solver found at least one stage where
+    // d_safe was genuinely unreachable (not a tuning artifact -- the
+    // slack is an exact penalty, see design_decisions.md) and had to
+    // relax it there instead of returning an infeasible solve. Log this
+    // per tick -- nonzero ticks are real conflicts worth looking at.
+    double max_obstacle_slack = 0.0;
 };
 
 // Wall-clock timing of the acados solve call itself (i.e. just

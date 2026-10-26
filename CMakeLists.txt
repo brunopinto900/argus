@@ -38,6 +38,7 @@ file(GLOB SOLVER_SRCS
     "${GENERATED_CODE_DIR}/acados_sim_solver_quadrotor.c"
     "${GENERATED_CODE_DIR}/quadrotor_model/*.c"
     "${GENERATED_CODE_DIR}/quadrotor_cost/*.c"
+    "${GENERATED_CODE_DIR}/quadrotor_constraints/*.c"
 )
 
 add_library(quadrotor_solver STATIC ${SOLVER_SRCS})

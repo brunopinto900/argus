@@ -24,10 +24,15 @@ Runtime param (np = 10):  [p_target_x, p_target_y, p_target_z,
   r_azimuth below; direction only, not a position, see that residual's
   comment for why.
 
-Cost output   (ny = 20):  [x, y, z, vx, vy, vz, phi, theta, p, q, r, r_fov, r_obs, r_dist, r_elev, r_azimuth, T, p_cmd, q_cmd, r_cmd]
+Cost output   (ny = 19):  [x, y, z, vx, vy, vz, phi, theta, p, q, r, r_fov, r_dist, r_elev, r_azimuth, T, p_cmd, q_cmd, r_cmd]
   - r_fov = softplus(cos(alpha_fov) - cos(gamma)) — zero inside FOV cone, grows outside
-  - r_obs = max(0, d_safe - d_lin) — squared-hinge collision cost (NLS squares every
-    residual automatically); d_lin = obs_d0 + obs_grad . (p - obs_p0)
+  - collision avoidance is NOT a cost term any more -- see "Collision-avoidance
+    constraint" below: d_lin = obs_d0 + obs_grad . (p - obs_p0) is now a slacked
+    nonlinear constraint (con_h_expr), not an NLS residual. See
+    design_decisions.md's "slack-variable collision constraint" entry for why
+    (the squared-hinge cost version never guaranteed d_safe for any finite
+    weight -- its gradient vanishes at the boundary; a slacked constraint's
+    linear slack penalty does not).
   - r_dist = ||p_drone_xy - p_leader_xy|| - D_DESIRED — HORIZONTAL-only standoff-
     distance cost (ground-plane distance, not 3D range -- see r_elev below for why),
     added alongside (not replacing) x/y/z tracking of the trailer reference point;
@@ -110,6 +115,14 @@ FOV_BETA  = float(_cam_cfg['softplus_beta'])
 COS_ALPHA = float(np.cos(FOV_ALPHA))
 
 D_SAFE = float(_obs_cfg['d_safe_m'])
+# Slack-penalty weights for the collision-avoidance constraint below --
+# linear term is the one that matters (an exact penalty: once it exceeds
+# the constraint's Lagrange multiplier, d_safe is enforced exactly, not
+# asymptotically, unlike the old squared-hinge cost term it replaces).
+# Quadratic term only smooths the QP near the boundary, not what provides
+# the guarantee. See design_decisions.md.
+SLACK_LINEAR    = float(_obs_cfg.get('slack_linear_weight', 1.0e4))
+SLACK_QUADRATIC = float(_obs_cfg.get('slack_quadratic_weight', 100.0))
 # Desired horizontal drone-to-leader distance for r_dist -- reuses the
 # same standoff distance the trailer reference point is built from
 # (config/quadrotor.yaml's trailer.distance_to_target).
@@ -179,16 +192,27 @@ def generate_mpc():
     soft  = (1.0 / FOV_BETA) * (ca.fmax(_u, 0) + ca.log(1.0 + ca.exp(-ca.fabs(_u))))
     r_fov = soft
 
-    # ── Collision-avoidance hinge: r_obs = max(0, d_safe - d_lin) ───────────
+    # ── Collision-avoidance constraint: d_lin >= d_safe, slacked ─────────────
     # d_lin is the local affine reconstruction of own_map's ESDF around the
     # per-stage linearization point obs_p0, built from (obs_d0, obs_grad)
     # supplied as runtime parameters by the caller (own_map.query(), done
     # in C++ -- the ESDF itself can't be expressed symbolically here, see
-    # the module docstring and whiteboard.md). NLS squares this residual
-    # automatically, same as r_fov -- this is the "squared" in squared
-    # hinge, not something done explicitly here.
+    # the module docstring and whiteboard.md).
+    #
+    # Previously an NLS cost residual r_obs = max(0, d_safe - d_lin) (a
+    # squared hinge, since NLS squares every residual). That never
+    # guaranteed d_safe for any finite weight: the squared penalty's
+    # gradient vanishes at the boundary, so nothing pushes back until
+    # you're already meaningfully inside it (see design_decisions.md's
+    # d_safe-inflation note -- the 2.7x fudge factor that was compensating
+    # for exactly this). Replaced with a slacked nonlinear constraint
+    # (con_h_expr below): d_lin >= d_safe - s, s >= 0, with a slack
+    # penalty that includes a LINEAR term (SLACK_LINEAR) -- an exact
+    # penalty, not an asymptotic one. This is what lets trailer x/y/z
+    # tracking be re-enabled (below) without the old cost-vs-cost fight:
+    # the constraint acts on the drone's actual predicted state at every
+    # stage, independent of what the tracking cost wants.
     d_lin = obs_d0 + ca.dot(obs_grad, x_sym[:2] - obs_p0)
-    r_obs = ca.fmax(0.0, D_SAFE - d_lin)
 
     # ── Standoff-distance + elevation-angle residuals, decoupled ────────────
     # Originally one 3D-distance residual (r_dist = ||p_drone - p_leader||
@@ -230,8 +254,8 @@ def generate_mpc():
     r_azimuth = 1.0 - (dx * azimuth_u[0] + dy * azimuth_u[1]) / horiz_dist
 
     body_rates = x_sym[9:12]  # p, q, r -- realized rates, distinct from the u_sym rate commands below
-    cost_y_expr   = ca.vertcat(x_sym[:8], body_rates, r_fov, r_obs, r_dist, r_elev, r_azimuth, u_sym)  # ny   = 20
-    cost_y_expr_e = ca.vertcat(x_sym[:8], body_rates, r_fov, r_obs, r_dist, r_elev, r_azimuth)          # ny_e = 16
+    cost_y_expr   = ca.vertcat(x_sym[:8], body_rates, r_fov, r_dist, r_elev, r_azimuth, u_sym)  # ny   = 19
+    cost_y_expr_e = ca.vertcat(x_sym[:8], body_rates, r_fov, r_dist, r_elev, r_azimuth)          # ny_e = 15
 
     ocp.cost.cost_type   = 'NONLINEAR_LS'
     ocp.cost.cost_type_e = 'NONLINEAR_LS'
@@ -242,20 +266,19 @@ def generate_mpc():
     ocp.cost.W_e = W_TERMINAL
 
     # Nominal yref: hover at origin, level, target inside FOV (r_fov
-    # reference = 0), clear of any obstacle (r_obs reference = 0 -- the
-    # hinge's "no violation" state). C++ overwrites this every step with
-    # the actual reference.
+    # reference = 0). C++ overwrites this every step with the actual
+    # reference. No r_obs entry any more -- collision avoidance is a
+    # constraint now, not a cost residual, see above.
     yref_hover   = np.array([0.0, 0.0, HOVER_ALTITUDE,  # x, y, z
                               0.0, 0.0, 0.0,           # vx, vy, vz
                               0.0, 0.0,                # phi, theta
                               0.0, 0.0, 0.0,           # p, q, r (realized body rates: no rotation)
                               0.0,                     # r_fov  (target inside cone)
-                              0.0,                     # r_obs  (clear of any obstacle)
                               0.0,                     # r_dist (exactly D_DESIRED away, horizontal)
                               0.0,                     # r_elev (exactly at the designed look-down angle)
                               0.0,                     # r_azimuth (exactly at the desired azimuth direction)
                               T_HOVER, 0.0, 0.0, 0.0]) # T, rates
-    yref_hover_e = yref_hover[:16]
+    yref_hover_e = yref_hover[:15]
 
     ocp.cost.yref   = yref_hover
     ocp.cost.yref_e = yref_hover_e
@@ -281,6 +304,33 @@ def generate_mpc():
     ocp.constraints.lbx_e   = ocp.constraints.lbx
     ocp.constraints.ubx_e   = ocp.constraints.ubx
     ocp.constraints.idxbx_e = ocp.constraints.idxbx
+
+    # Collision-avoidance: slacked nonlinear constraint d_lin >= D_SAFE
+    # (see the r_obs -> con_h_expr comment above for why this replaced the
+    # squared-hinge cost term). uh is a large permissive number -- only the
+    # lower bound is ever meaningfully active, d_lin has no real upper
+    # limit. idxsh marks it soft: acados adds a slack s>=0 to lh with
+    # penalty zl*s + 0.5*Zl*s^2 (zu/Zu are for the upper-bound slack, which
+    # never activates here, so left at 0). SLACK_LINEAR is the exact-
+    # penalty term that actually provides the guarantee; SLACK_QUADRATIC
+    # just smooths the QP near the boundary.
+    H_UB = 1.0e6
+    ocp.model.con_h_expr   = ca.vertcat(d_lin)
+    ocp.model.con_h_expr_e = ca.vertcat(d_lin)
+    ocp.constraints.lh     = np.array([D_SAFE])
+    ocp.constraints.uh     = np.array([H_UB])
+    ocp.constraints.lh_e   = np.array([D_SAFE])
+    ocp.constraints.uh_e   = np.array([H_UB])
+    ocp.constraints.idxsh  = np.array([0])
+    ocp.constraints.idxsh_e = np.array([0])
+    ocp.cost.zl   = np.array([SLACK_LINEAR])
+    ocp.cost.zu   = np.array([0.0])
+    ocp.cost.Zl   = np.array([SLACK_QUADRATIC])
+    ocp.cost.Zu   = np.array([0.0])
+    ocp.cost.zl_e = np.array([SLACK_LINEAR])
+    ocp.cost.zu_e = np.array([0.0])
+    ocp.cost.Zl_e = np.array([SLACK_QUADRATIC])
+    ocp.cost.Zu_e = np.array([0.0])
 
     # Initial state (placeholder; set at runtime in C++ before every solve)
     ocp.constraints.x0 = np.array([0.0, 0.0, HOVER_ALTITUDE,  # position

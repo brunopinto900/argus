@@ -29,8 +29,8 @@ constexpr int kNp  = QUADROTOR_NP;
 // loudly instead of silently mis-packing state/yref arrays below.
 static_assert(kNx == 12, "State/step() packing assumes NX == 12 ([x,y,z,vx,vy,vz,phi,theta,psi,p,q,r])");
 static_assert(kNu == 4,  "Command/step() packing assumes NU == 4 ([T,p_cmd,q_cmd,r_cmd])");
-static_assert(kNy == 20, "step() yref packing assumes NY == 20 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_obs,r_dist,r_elev,r_azimuth,T,p_cmd,q_cmd,r_cmd])");
-static_assert(kNyN == 16, "step() terminal yref packing assumes NYN == 16 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_obs,r_dist,r_elev,r_azimuth])");
+static_assert(kNy == 19, "step() yref packing assumes NY == 19 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_dist,r_elev,r_azimuth,T,p_cmd,q_cmd,r_cmd])");
+static_assert(kNyN == 15, "step() terminal yref packing assumes NYN == 15 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_dist,r_elev,r_azimuth])");
 static_assert(kNp == 10,  "step() parameter packing assumes NP == 10 ([p_target_x,y,z, obs_p0_x,y, obs_d0, obs_grad_x,y, azimuth_ux,uy]); run generate_mpc.py");
 
 using RawState = std::array<double, kNx>;
@@ -155,18 +155,20 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
                                    const_cast<double*>(x0_raw.data()));
 
     // ── Per-stage horizon reference ───────────────────────────────────────────
-    // yref layout: [x,y,z, vx,vy,vz, phi,theta, p,q,r, r_fov, r_obs, r_dist, r_elev, r_azimuth, T, p_cmd,q_cmd,r_cmd]
+    // yref layout: [x,y,z, vx,vy,vz, phi,theta, p,q,r, r_fov, r_dist, r_elev, r_azimuth, T, p_cmd,q_cmd,r_cmd]
     // Velocity yref is stage k's target velocity (target[k].vx/vy/vz) —
     // incentivises the drone to match the target's speed at that point in
     // the horizon, not just its speed as of this tick.
     // p,q,r reference is always 0 -- "not rotating" is the only sensible
     // target for the realized body rates (distinct from the p_cmd/q_cmd/
     // r_cmd rate-COMMAND penalty at the end of the array).
-    // r_obs/r_dist/r_elev/r_azimuth references are always 0 — "no hinge
-    // violation" / "exactly at the desired horizontal standoff distance" /
-    // "exactly at the designed look-down angle" / "exactly at the desired
-    // azimuth direction" are the only sensible targets for residuals that
-    // are already 0 at the desired state.
+    // r_dist/r_elev/r_azimuth references are always 0 — "exactly at the
+    // desired horizontal standoff distance" / "exactly at the designed
+    // look-down angle" / "exactly at the desired azimuth direction" are
+    // the only sensible targets for residuals that are already 0 at the
+    // desired state. No r_obs entry any more -- collision avoidance is a
+    // slacked constraint now, not a cost residual, see QuadrotorMpc.hpp's
+    // Command::max_obstacle_slack and generate_mpc.py.
     for (int j = 0; j < kN; ++j) {
         const Reference& ref = horizon[j];
         const TargetState& tgt = target[j];
@@ -176,7 +178,6 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
             0.0, 0.0,             // phi, theta reference: level
             0.0, 0.0, 0.0,        // p, q, r reference: not rotating
             0.0,                  // r_fov reference: target inside the FOV cone
-            0.0,                  // r_obs reference: clear of any obstacle
             0.0,                  // r_dist reference: exactly at the desired horizontal standoff distance
             0.0,                  // r_elev reference: exactly at the designed look-down angle
             0.0,                  // r_azimuth reference: exactly at the desired azimuth direction
@@ -192,7 +193,6 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
             tgt.vx, tgt.vy, tgt.vz,
             0.0, 0.0,
             0.0, 0.0, 0.0,
-            0.0,
             0.0,
             0.0,
             0.0,
@@ -223,6 +223,19 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
         ocp_nlp_out_get(impl.config, impl.dims, impl.nlp_out, i, "x", impl.last_horizon_x[i].data());
     }
 
+    // ── Collision-avoidance slack: max over the whole plan ──────────────────
+    // "sl" is the slack on d_lin's lower bound (d_safe) at each stage -- see
+    // generate_mpc.py's idxsh/idxsh_e. One soft constraint per stage here,
+    // so a length-1 buffer. Max (not just stage 0) surfaces any genuine
+    // conflict anywhere in the plan, not only at the currently-realized
+    // state.
+    double max_slack = 0.0;
+    for (int i = 0; i <= kN; ++i) {
+        double sl[1] = {0.0};
+        ocp_nlp_out_get(impl.config, impl.dims, impl.nlp_out, i, "sl", sl);
+        max_slack = std::max(max_slack, sl[0]);
+    }
+
     // ── Shift warm-start: stage i+1 → stage i ────────────────────────────────
     RawState x_s{};
     RawInput u_s{};
@@ -243,6 +256,7 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
         u[2],
         u[3],
         status,
+        max_slack,
     };
 }
 

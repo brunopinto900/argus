@@ -484,7 +484,7 @@ int main(int argc, char** argv)
             "solve_status,"
             "dist_obstacle,"
             "clearance_true,occlusion_clearance,solve_time_ms,pipeline_time_ms,"
-            "pipeline_onboard_time_ms,esdf_time_ms\n";
+            "pipeline_onboard_time_ms,esdf_time_ms,obstacle_slack\n";
 
     // Staleness measurement -- a separate concern from the hinge cost
     // actually wired into step() above: this measures, per control tick,
@@ -782,7 +782,8 @@ int main(int argc, char** argv)
              << ',' << cmd.solve_status << ',';
         if (q1.valid) traj << q1.distance; else traj << "nan";
         traj << ',' << clearance_true << ',' << occlusion_clear << ',' << mpc.lastSolveTimeMs()
-             << ',' << pipeline_ms << ',' << pipeline_onboard_ms << ',' << esdf_delta_ms << '\n';
+             << ',' << pipeline_ms << ',' << pipeline_onboard_ms << ',' << esdf_delta_ms
+             << ',' << cmd.max_obstacle_slack << '\n';
 
         if (q0.valid && q1.valid) {
             const double step_dist = (p1 - p0).norm();
