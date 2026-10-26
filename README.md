@@ -335,6 +335,63 @@ python3 argus_follower/scripts/plot_online_mapping.py
 python3 argus_follower/scripts/plot_online_mapping.py --save-gif docs/online_mapping.gif --fps 10
 ```
 
+### Offline 3-D viewer and camera footage (no Gazebo)
+
+Real rendered 3-D playback and camera footage from a logged trajectory CSV
+— ground (trees for circle obstacles, boxes for square ones; a low-poly
+person for the leader; a real quadrotor mesh for the drone), and (for the
+footage renderer) the drone's own forward-facing camera view at the
+OAK-D-Lite's native 640x400 resolution, with real motion blur from
+sub-frame temporal sampling, not an analytic estimate. Needs its own
+dependencies (`scripts/requirements-viz.txt`, separate from
+`requirements.txt` — only needed for these four scripts):
+
+```bash
+pip install -r scripts/requirements-viz.txt
+```
+
+Interactive/scrubbable 3-D scene (PyVista; `--off-screen --save-png` for a
+headless single-frame export, no display needed). Two extra panels
+auto-enable alongside the main 3-D view: own_map's live 2-D ESDF heatmap
+(auto-detected next to `--csv-path`, silently skipped if there's no
+snapshot log — e.g. `online_mapping_demo`'s other, non-mapping logs), and
+the drone's own live camera footage (`--no-camera-panel` to drop it for a
+faster interactive frame rate). Space toggles real-time play/pause once
+the window is open; the slider scrubs manually at any time:
+
+```bash
+python3 scripts/view_scene3d.py --csv-path logs/online_mapping_trajectory.csv \
+    --scenario-config config/forest.yaml --animate
+```
+
+Camera-footage frames (Open3D `OffscreenRenderer`, always headless) —
+`--blur-subsamples 1` for a sharp baseline, higher for visible motion
+blur (default 8), `--video PATH` to assemble an mp4 instead of a PNG
+sequence, `--output-fps 30` to resample smoothly instead of one frame
+per 20Hz control tick. Includes a telemetry HUD (`dist_obstacle`/slack/
+solve time/occlusion%, red badge when close or heavily occluded) by
+default — `--no-hud` for a clean shot:
+
+```bash
+python3 scripts/render_camera_footage.py --csv-path logs/online_mapping_trajectory.csv \
+    --scenario-config config/forest.yaml --video logs/camera_footage/forest.mp4
+```
+
+This is a separate, visual-inspection tool — it doesn't feed back into
+`run_scenario_suite.py`'s gates or replace `compute_metrics.py`'s
+analytic blur-from-body-rate estimate, which stays the fast, suite-wide
+metric.
+
+Composite "hero" demo video — chase-cam 3-D view (drone mesh + leader +
+trees) with the camera footage picture-in-picture, a light cinematic
+grade applied (saturation/contrast/vignette) — the actual portfolio/CV
+deliverable, not a diagnostic tool:
+
+```bash
+python3 scripts/render_hero_video.py --csv-path logs/online_mapping_trajectory.csv \
+    --scenario-config config/forest.yaml --video logs/camera_footage/forest_hero.mp4
+```
+
 ### Run metrics
 
 `online_mapping_demo` only (needs its `clearance_true`/`occlusion_clearance`/
