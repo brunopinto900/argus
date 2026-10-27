@@ -5,17 +5,18 @@ extruded obstacles, a leader marker, and an orientation-legible drone
 marker + its forward camera FOV cone, all driven off the same trajectory
 CSV scripts/render_camera_footage.py reads.
 
-Two extra panels, each independently auto-enabled:
-  - Own_map's actual 2-D ESDF (same red-close/blue-far heatmap + grey
-    ground-truth overlay as animate_xy.py's right panel) -- auto-detected
-    next to --csv-path, silently skipped if there's no snapshot log.
-  - Live camera footage: the drone's own forward view, rendered each
-    frame via render_camera_footage.py's Open3D scene (single-sample,
-    no motion blur -- that's render_camera_footage.py's job for an
-    offline, frame-by-frame look; this panel trades blur for interactive
-    frame rate). Disable with --no-camera-panel.
+Own_map's actual 2-D ESDF (same red-close/blue-far heatmap + grey
+ground-truth overlay as animate_xy.py's right panel) colors the 3-D
+ground plane itself -- not a separate flat top-down panel -- auto-
+detected next to --csv-path, falls back to a flat grey ground if there's
+no snapshot log. A second, optional panel stacked above it shows live
+camera footage: the drone's own forward view, rendered each frame via
+render_camera_footage.py's Open3D scene (single-sample, no motion blur
+-- that's render_camera_footage.py's job for an offline, frame-by-frame
+look; this panel trades blur for interactive frame rate). Disable with
+--no-camera-panel, leaving just the 3-D view full-window.
 
-All panels share one slider; space toggles real-time auto-play.
+Both panels share one slider; space toggles real-time auto-play.
 
 Run (interactive window, needs a display):
     python3 scripts/view_scene3d.py --csv-path logs/online_mapping_trajectory.csv \\
@@ -74,12 +75,37 @@ def _pose_matrix(pos, quat):
     return m
 
 
-def build_static_scene(plotter, obstacles, bounds, obstacle_height):
-    ground = scene3d.build_ground_plane_pv(bounds)
-    plotter.add_mesh(ground, color="dimgray", opacity=0.9)
+def build_static_scene(plotter, obstacles, bounds, obstacle_height, esdf_bounds=None):
+    """Ground + obstacles. When esdf_bounds is given (own_map's own grid
+    extent, not the trajectory-fitted `bounds`), the ground is sized to
+    match it and returned as a textured actor the caller re-textures with
+    the live ESDF heatmap each frame -- this replaces the old separate
+    flat top-down ESDF panel: the same coloring, baked onto the actual
+    ground the obstacles stand on, viewed from the same oblique 3-D
+    camera as everything else instead of a disconnected second view."""
+    if esdf_bounds is not None:
+        ground = scene3d.build_ground_plane_pv(esdf_bounds)
+        blank = pv.Texture(np.full((2, 2, 3), 110, dtype=np.uint8))
+        ground_actor = plotter.add_mesh(ground, texture=blank)
+        grid_bounds = esdf_bounds
+    else:
+        ground = scene3d.build_ground_plane_pv(bounds, tile_m=scene3d.GROUND_TILE_M)
+        grass = pv.Texture(scene3d.procedural_grass_texture())
+        ground_actor = plotter.add_mesh(ground, texture=grass)
+        grid_bounds = bounds
+    grid = scene3d.build_grid_lines_pv(grid_bounds)
+    plotter.add_mesh(grid, color="white", opacity=0.3, line_width=1)
     for obstacle in obstacles:
         for mesh, color in scene3d.build_obstacle_parts_pv(obstacle, obstacle_height):
             plotter.add_mesh(mesh, color=color)
+    return ground_actor
+
+
+def update_ground_esdf(ground_actor, esdf_times, esdf_distances, ground_truth_state,
+                        sensor_max_range, t):
+    idx = int(np.argmin(np.abs(esdf_times - t)))
+    img = scene3d.esdf_panel_image(esdf_distances[idx], ground_truth_state, sensor_max_range)
+    ground_actor.texture = pv.Texture(np.flipud(img))
 
 
 def build_dynamic_actors(plotter):
@@ -87,6 +113,12 @@ def build_dynamic_actors(plotter):
                      for mesh, color, opacity in scene3d.build_drone_parts_pv(DRONE_BODY_LEN)]
     leader_actors = [plotter.add_mesh(mesh, color=color)
                       for mesh, color in scene3d.build_person_parts_pv()]
+    # TF-style coordinate-frame gizmos (RViz convention: red/green/blue = X/Y/Z),
+    # posed by the same rigid-body transform as the rest of each actor group.
+    drone_actors.append(plotter.add_mesh(scene3d.build_axis_gizmo_pv(0.5), scalars="colors",
+                                          rgb=True, line_width=3))
+    leader_actors.append(plotter.add_mesh(scene3d.build_axis_gizmo_pv(0.4), scalars="colors",
+                                           rgb=True, line_width=3))
     return drone_actors, leader_actors
 
 
@@ -122,39 +154,6 @@ def render_frame(df, step, drone_actors, leader_actors, frustum_actor, h_fov, v_
     return pos, quat, leader_pos
 
 
-def build_esdf_panel(plotter, esdf_xs, esdf_ys):
-    """Flat textured plane spanning own_map's grid, viewed top-down with
-    parallel projection (the ESDF has no z-extent -- this is a 2-D panel
-    living inside the same 3-D plotter, not a real 3-D surface)."""
-    xmin, xmax = esdf_xs[0], esdf_xs[-1]
-    ymin, ymax = esdf_ys[0], esdf_ys[-1]
-    plane = pv.Plane(center=((xmin + xmax) / 2, (ymin + ymax) / 2, 0), direction=(0, 0, 1),
-                      i_size=xmax - xmin, j_size=ymax - ymin)
-    blank = pv.Texture(np.zeros((2, 2, 3), dtype=np.uint8))
-    plane_actor = plotter.add_mesh(plane, texture=blank)
-
-    drone_marker = plotter.add_mesh(pv.PolyData(np.array([[0.0, 0.0, 0.01]])),
-                                     color="royalblue", point_size=16,
-                                     render_points_as_spheres=True)
-    leader_marker = plotter.add_mesh(pv.PolyData(np.array([[0.0, 0.0, 0.01]])),
-                                      color="crimson", point_size=16,
-                                      render_points_as_spheres=True)
-
-    plotter.camera_position = "xy"
-    plotter.enable_parallel_projection()
-    plotter.reset_camera()
-    return plane_actor, drone_marker, leader_marker
-
-
-def update_esdf_panel(plane_actor, drone_marker, leader_marker, esdf_times, esdf_distances,
-                       ground_truth_state, sensor_max_range, t, drone_pos, leader_pos):
-    idx = int(np.argmin(np.abs(esdf_times - t)))
-    img = scene3d.esdf_panel_image(esdf_distances[idx], ground_truth_state, sensor_max_range)
-    plane_actor.texture = pv.Texture(np.flipud(img))
-    drone_marker.mapper.dataset.points = np.array([[drone_pos[0], drone_pos[1], 0.01]])
-    leader_marker.mapper.dataset.points = np.array([[leader_pos[0], leader_pos[1], 0.01]])
-
-
 def build_camera_panel(plotter, obstacles, bounds, obstacle_height, width, height):
     """Live forward-camera view: a persistent Open3D OffscreenRenderer
     (built once, reused every frame -- same reused-renderer pattern
@@ -166,6 +165,7 @@ def build_camera_panel(plotter, obstacles, bounds, obstacle_height, width, heigh
     tool for an offline, properly motion-blurred look."""
     renderer = o3d.visualization.rendering.OffscreenRenderer(width, height)
     leader_name = camfeed.build_scene(renderer, obstacles, bounds, obstacle_height, width, height)
+    renderer.scene.view.set_ambient_occlusion(True)
 
     plane = pv.Plane(center=(0, 0, 0), direction=(0, 0, 1), i_size=1.0, j_size=height / width)
     blank = pv.Texture(np.zeros((2, 2, 3), dtype=np.uint8))
@@ -206,17 +206,31 @@ def main():
     esdf_data = scene3d.load_snapshot_log(snapshot_path) if snapshot_path else None
     show_camera_panel = not args.no_camera_panel
 
-    panels = ["3d"] + (["esdf"] if esdf_data is not None else []) + \
-        (["camera"] if show_camera_panel else [])
+    # Camera footage (top, wide) stacked over the 3-D view (bottom, wide)
+    # -- a vertical 2x1 grid, not the old side-by-side 1x3 (3-D/ESDF/
+    # camera) layout; the ESDF panel is gone as a separate view, folded
+    # into the 3-D ground's own texture instead (see build_static_scene).
     off_screen = args.off_screen or bool(args.save_png)
-    plotter = pv.Plotter(shape=(1, len(panels)), off_screen=off_screen) if len(panels) > 1 \
-        else pv.Plotter(off_screen=off_screen)
+    if show_camera_panel:
+        plotter = pv.Plotter(shape=(2, 1), off_screen=off_screen)
+        camera_subplot, three_d_subplot = (0, 0), (1, 0)
+    else:
+        plotter = pv.Plotter(off_screen=off_screen)
+        camera_subplot, three_d_subplot = None, (0, 0)
 
-    plotter.subplot(0, 0)
+    plotter.subplot(*three_d_subplot)
     plotter.set_background("lightsteelblue")
-    build_static_scene(plotter, obstacles, bounds, args.obstacle_height)
+    esdf_bounds = None
+    if esdf_data is not None:
+        (esdf_times, esdf_distances, esdf_xs, esdf_ys, ground_truth_state, _, sensor_max_range,
+         own_map_states) = esdf_data
+        esdf_bounds = (esdf_xs[0], esdf_xs[-1], esdf_ys[0], esdf_ys[-1])
+    ground_actor = build_static_scene(plotter, obstacles, bounds, args.obstacle_height,
+                                       esdf_bounds)
     drone_actors, leader_actors = build_dynamic_actors(plotter)
     frustum_actor = init_frustum_actor(plotter)
+    points_actor = [None]  # own_map's live occupied-voxel point cloud (RViz-style),
+                            # rebuilt each frame since its point count grows over time
 
     if horizon_df is not None:
         plotter.add_mesh(pv.PolyData(horizon_df[["hx", "hy", "hz"]].to_numpy()),
@@ -226,45 +240,45 @@ def main():
     plotter.camera.azimuth = 200
     plotter.camera.elevation = 20
 
-    esdf_panel = None
-    if esdf_data is not None:
-        esdf_times, esdf_distances, esdf_xs, esdf_ys, ground_truth_state, _, sensor_max_range \
-            = esdf_data
-        plotter.subplot(0, panels.index("esdf"))
-        plane_actor, drone_marker, leader_marker = build_esdf_panel(plotter, esdf_xs, esdf_ys)
-        esdf_panel = (plane_actor, drone_marker, leader_marker, esdf_times, esdf_distances,
-                      ground_truth_state, sensor_max_range)
-
     camera_panel = None
     if show_camera_panel:
-        plotter.subplot(0, panels.index("camera"))
+        plotter.subplot(*camera_subplot)
         renderer, leader_name, cam_plane_actor = build_camera_panel(
             plotter, obstacles, bounds, args.obstacle_height, args.camera_width,
             args.camera_height)
         camera_panel = (renderer, leader_name, cam_plane_actor)
 
     def _update_all(step):
-        plotter.subplot(0, 0)
+        plotter.subplot(*three_d_subplot)
         t = t_arr[step]
         pos, quat, leader_pos = render_frame(df, step, drone_actors, leader_actors,
                                               frustum_actor, h_fov, v_fov)
-        if esdf_panel is not None:
-            plane_actor, drone_marker, leader_marker, esdf_times, esdf_distances, \
-                ground_truth_state, sensor_max_range = esdf_panel
-            update_esdf_panel(plane_actor, drone_marker, leader_marker, esdf_times,
-                               esdf_distances, ground_truth_state, sensor_max_range, t,
-                               pos, leader_pos)
+        if esdf_data is not None:
+            update_ground_esdf(ground_actor, esdf_times, esdf_distances, ground_truth_state,
+                                sensor_max_range, t)
+            idx = int(np.argmin(np.abs(esdf_times - t)))
+            pts = scene3d.occupied_points_at(own_map_states, idx, esdf_xs, esdf_ys)
+            if points_actor[0] is not None:
+                plotter.remove_actor(points_actor[0])
+            if len(pts):
+                points_actor[0] = plotter.add_mesh(
+                    pv.PolyData(pts), color="orange", point_size=4,
+                    render_points_as_spheres=True, opacity=0.85)
         if camera_panel is not None:
             renderer, leader_name, cam_plane_actor = camera_panel
             update_camera_panel(renderer, leader_name, cam_plane_actor, fov_half_deg,
                                  pos, quat, leader_pos)
 
     if args.animate and not off_screen:
-        plotter.subplot(0, 0)
+        plotter.subplot(*three_d_subplot)
         slider = plotter.add_slider_widget(lambda v: _update_all(int(v)), [0, n_frames - 1],
                                             value=0, title="step")
-        plotter.add_text("space: play/pause", position="upper_right", font_size=10,
-                          name="status")
+        status_suffix = ""
+
+        def _status_text():
+            return "space: play/pause   1/2/3: chase/top/side view" + status_suffix
+
+        plotter.add_text(_status_text(), position="upper_right", font_size=10, name="status")
         _update_all(0)
 
         dt_ms = max(1000.0 / args.fps, 15.0) if args.fps else \
@@ -272,9 +286,10 @@ def main():
         state = {"playing": False, "step": 0}
 
         def _toggle_play():
+            nonlocal status_suffix
             state["playing"] = not state["playing"]
-            label = "space: play/pause" + ("  [PLAYING]" if state["playing"] else "  [PAUSED]")
-            plotter.add_text(label, position="upper_right", font_size=10, name="status")
+            status_suffix = "  [PLAYING]" if state["playing"] else "  [PAUSED]"
+            plotter.add_text(_status_text(), position="upper_right", font_size=10, name="status")
 
         def _on_tick(_step_count):
             if not state["playing"]:
@@ -284,7 +299,22 @@ def main():
             slider.GetRepresentation().SetValue(state["step"])
             plotter.render()
 
+        def _set_view(mode):
+            plotter.subplot(*three_d_subplot)
+            if mode == "top":
+                plotter.view_xy()
+            elif mode == "side":
+                plotter.view_yz()
+            else:
+                plotter.camera.azimuth = 200
+                plotter.camera.elevation = 20
+                plotter.reset_camera()
+            plotter.render()
+
         plotter.add_key_event("space", _toggle_play)
+        plotter.add_key_event("1", lambda: _set_view("chase"))
+        plotter.add_key_event("2", lambda: _set_view("top"))
+        plotter.add_key_event("3", lambda: _set_view("side"))
         plotter.add_timer_event(max_steps=10_000_000, duration=int(dt_ms), callback=_on_tick)
         plotter.show()
         return

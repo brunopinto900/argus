@@ -176,21 +176,137 @@ def sky_gradient_image(width=64, height=64):
     return o3d.geometry.Image((img * 255).astype(np.uint8))
 
 
-def build_ground_plane_o3d(bounds):
+GROUND_TILE_M = 1.5  # texture repeat period [m] -- see procedural_grass_texture()
+
+
+def procedural_grass_texture(size=256, seed=0):
+    """Tileable-ish grass texture: layered value noise (no external asset
+    -- avoids a download dependency and licensing questions for a
+    generated demo asset). Not a real tiling texture (edges don't
+    perfectly wrap), but at GROUND_TILE_M's repeat period the seam is
+    not visually obvious once lit/shaded."""
+    from scipy.ndimage import gaussian_filter
+    rng = np.random.default_rng(seed)
+    base = np.array([0.20, 0.45, 0.16])
+    img = np.zeros((size, size, 3))
+    for octave, (scale, amp) in enumerate([(2, 0.22), (8, 0.12), (32, 0.06)]):
+        noise = rng.normal(size=(size, size))
+        noise = gaussian_filter(noise, sigma=size / (scale * 4))
+        noise = (noise - noise.min()) / (noise.max() - noise.min() + 1e-9)
+        img += (noise[..., None] - 0.5) * amp
+    img = np.clip(base[None, None, :] + img, 0.0, 1.0)
+    return (img * 255).astype(np.uint8)
+
+
+def procedural_bark_texture(width=64, height=256, seed=1):
+    """Vertical-streak bark texture for tree trunks."""
+    from scipy.ndimage import gaussian_filter
+    rng = np.random.default_rng(seed)
+    base = np.array([0.36, 0.23, 0.12])
+    noise = rng.normal(size=(height, width))
+    noise = gaussian_filter(noise, sigma=(height / 6, width / 20))
+    noise = (noise - noise.min()) / (noise.max() - noise.min() + 1e-9)
+    img = np.clip(base[None, None, :] + (noise[..., None] - 0.5) * 0.3, 0.0, 1.0)
+    return (img * 255).astype(np.uint8)
+
+
+def _assign_planar_uv_xy_o3d(mesh, x0, y0, tile_m):
+    """Per-vertex UVs from world (x,y) position, repeated every tile_m
+    meters (Filament/OpenGL default-wraps UVs > 1, so this tiles the
+    texture across a large ground instead of stretching one image across
+    it) -- only correct for a flat, axis-aligned mesh like the ground."""
+    import open3d as o3d
+    verts = np.asarray(mesh.vertices)
+    tris = np.asarray(mesh.triangles)
+    uv_per_vertex = np.stack([(verts[:, 0] - x0) / tile_m, (verts[:, 1] - y0) / tile_m], axis=1)
+    mesh.triangle_uvs = o3d.utility.Vector2dVector(uv_per_vertex[tris.reshape(-1)])
+
+
+def build_ground_plane_o3d(bounds, textured=False):
     import open3d as o3d
     xmin, xmax, ymin, ymax = bounds
     mesh = o3d.geometry.TriangleMesh.create_box(
         width=xmax - xmin, height=ymax - ymin, depth=0.01)
     mesh.translate((xmin, ymin, -0.01))
     mesh.compute_vertex_normals()
+    if textured:
+        _assign_planar_uv_xy_o3d(mesh, xmin, ymin, GROUND_TILE_M)
     return mesh
 
 
-def build_person_parts_o3d(height=1.75):
+def grid_line_segments(bounds, spacing=1.0, z=0.01):
+    """(N, 2, 3) array of (start, end) line segments for a reference grid
+    over bounds, spaced every `spacing` meters -- RViz's signature
+    ground-plane look."""
+    xmin, xmax, ymin, ymax = bounds
+    xs = np.arange(np.floor(xmin / spacing) * spacing, xmax + spacing, spacing)
+    ys = np.arange(np.floor(ymin / spacing) * spacing, ymax + spacing, spacing)
+    segs = [[[x, ymin, z], [x, ymax, z]] for x in xs]
+    segs += [[[xmin, y, z], [xmax, y, z]] for y in ys]
+    return np.array(segs)
+
+
+def build_grid_lineset_o3d(bounds, spacing=1.0, z=0.01, color=(0.85, 0.85, 0.85)):
+    import open3d as o3d
+    segs = grid_line_segments(bounds, spacing, z)
+    points = segs.reshape(-1, 3)
+    lines = [[2 * i, 2 * i + 1] for i in range(len(segs))]
+    ls = o3d.geometry.LineSet(points=o3d.utility.Vector3dVector(points),
+                               lines=o3d.utility.Vector2iVector(lines))
+    ls.colors = o3d.utility.Vector3dVector(np.tile(color, (len(lines), 1)))
+    return ls
+
+
+def build_grid_lines_pv(bounds, spacing=1.0, z=0.01):
+    import pyvista as pv
+    segs = grid_line_segments(bounds, spacing, z)
+    return pv.MultiBlock([pv.Line(s[0], s[1]) for s in segs]).combine()
+
+
+AXIS_COLORS = ((0.85, 0.1, 0.1), (0.15, 0.75, 0.15), (0.15, 0.35, 0.95))  # X, Y, Z -- RViz convention
+
+
+def axis_gizmo_segments(length=0.4):
+    """((3, 2, 3)) X/Y/Z axis line segments from the origin, in LOCAL
+    frame -- a small TF-style coordinate frame, same red/green/blue
+    convention RViz uses for its TF display."""
+    return np.array([
+        [[0, 0, 0], [length, 0, 0]],
+        [[0, 0, 0], [0, length, 0]],
+        [[0, 0, 0], [0, 0, length]],
+    ])
+
+
+def build_axis_gizmo_o3d(length=0.4):
+    import open3d as o3d
+    segs = axis_gizmo_segments(length)
+    points = segs.reshape(-1, 3)
+    lines = [[0, 1], [2, 3], [4, 5]]
+    ls = o3d.geometry.LineSet(points=o3d.utility.Vector3dVector(points),
+                               lines=o3d.utility.Vector2iVector(lines))
+    ls.colors = o3d.utility.Vector3dVector(np.array(AXIS_COLORS))
+    return ls
+
+
+def build_axis_gizmo_pv(length=0.4):
+    """Axis gizmo mesh with a per-line "colors" cell-data array (RGB
+    uint8) -- pass scalars="colors", rgb=True to add_mesh for the X/Y/Z
+    red/green/blue coloring."""
+    import pyvista as pv
+    segs = axis_gizmo_segments(length)
+    lines = pv.MultiBlock([pv.Line(s[0], s[1]) for s in segs]).combine()
+    lines.cell_data["colors"] = (np.array(AXIS_COLORS) * 255).astype(np.uint8)
+    return lines
+
+
+def build_person_parts_o3d(height=1.3):
     """List of (name, mesh, rgba) low-poly person parts (legs/torso/head)
     in LOCAL FRAME (feet at z=0) -- Open3D counterpart of
     build_person_parts_pv(), used for the leader marker in rendered
-    camera footage."""
+    camera footage. height=1.3 (not a real human's ~1.75m) is a
+    deliberate cosmetic shrink so the marker reads as smaller than the
+    DEFAULT_OBSTACLE_HEIGHT_M=2.5 obstacles instead of nearly matching
+    them."""
     import open3d as o3d
     leg_h = height * 0.45
     torso_h = height * 0.33
@@ -261,10 +377,11 @@ def build_drone_parts_pv(body_len):
     return parts
 
 
-def build_person_parts_pv(height=1.75):
+def build_person_parts_pv(height=1.3):
     """List of (mesh, color) low-poly person parts (legs/torso/head) in
     LOCAL FRAME (feet at z=0) -- the leader marker, translation-only
-    (no attitude to track for a person on the ground)."""
+    (no attitude to track for a person on the ground). height=1.3, same
+    cosmetic shrink as build_person_parts_o3d()."""
     import pyvista as pv
     leg_h = height * 0.45
     torso_h = height * 0.33
@@ -277,11 +394,19 @@ def build_person_parts_pv(height=1.75):
     return [(legs, "dimgray"), (torso, "orangered"), (head, "navajowhite")]
 
 
-def build_ground_plane_pv(bounds):
+def build_ground_plane_pv(bounds, tile_m=None):
+    """Flat ground plane. With tile_m given, its default [0,1]-spanning
+    texture coordinates are rescaled to repeat the texture every tile_m
+    meters instead of stretching one image across the whole plane (same
+    idea as _assign_planar_uv_xy_o3d, PyVista's Plane already ships UVs
+    so no per-vertex rebuild needed, just a scale)."""
     import pyvista as pv
     xmin, xmax, ymin, ymax = bounds
-    return pv.Plane(center=((xmin + xmax) / 2, (ymin + ymax) / 2, 0), direction=(0, 0, 1),
-                     i_size=xmax - xmin, j_size=ymax - ymin)
+    plane = pv.Plane(center=((xmin + xmax) / 2, (ymin + ymax) / 2, 0), direction=(0, 0, 1),
+                      i_size=xmax - xmin, j_size=ymax - ymin)
+    if tile_m:
+        plane.active_texture_coordinates *= [(xmax - xmin) / tile_m, (ymax - ymin) / tile_m]
+    return plane
 
 
 # ── Pose interpolation (for both playback and motion blur) ───────────────
@@ -328,8 +453,14 @@ def find_snapshot_log(csv_path):
 
 def load_snapshot_log(path):
     """(times, distances[T,ny,nx], xs, ys, ground_truth_state[ny,nx],
-    voxel_size, sensor_max_range) -- own_map's ESDF over time plus the
-    ground-truth occupancy grid, same loader as animate_xy.py's."""
+    voxel_size, sensor_max_range, own_map_states[T,ny,nx]) -- own_map's
+    ESDF AND per-voxel belief state (kUnknown=0/kFree=1/kOccupied=2,
+    VoxelGrid.hpp) over time, plus the static ground-truth occupancy
+    grid. own_map_states is what a live point-cloud display should plot
+    (the sensor's own growing belief, not the ground truth it hasn't
+    necessarily seen yet) -- animate_xy.py's loader discards this same
+    per-tick state field; kept here since the point-cloud panel needs
+    it."""
     with open(path, "rb") as f:
         nx, ny = struct.unpack("<ii", f.read(8))
         voxel_size, origin_x, origin_y = struct.unpack("<ddd", f.read(24))
@@ -339,14 +470,36 @@ def load_snapshot_log(path):
         (num_snapshots,) = struct.unpack("<i", f.read(4))
         times = np.empty(num_snapshots)
         distances = np.empty((num_snapshots, ny, nx), dtype=np.float32)
+        own_map_states = np.empty((num_snapshots, ny, nx), dtype=np.uint8)
         voxel_dtype = np.dtype([("distance", "<f4"), ("state", "u1")])
         for i in range(num_snapshots):
             (times[i],) = struct.unpack("<d", f.read(8))
             voxels = np.frombuffer(f.read(n_voxels * voxel_dtype.itemsize), dtype=voxel_dtype)
             distances[i] = voxels["distance"].reshape(ny, nx)
+            own_map_states[i] = voxels["state"].reshape(ny, nx)
     xs = origin_x + (np.arange(nx) + 0.5) * voxel_size
     ys = origin_y + (np.arange(ny) + 0.5) * voxel_size
-    return times, distances, xs, ys, ground_truth_state, voxel_size, sensor_max_range
+    return (times, distances, xs, ys, ground_truth_state, voxel_size, sensor_max_range,
+            own_map_states)
+
+
+K_OCCUPIED = 2  # argus_esdf::VoxelState::kOccupied, see include/argus_esdf/VoxelGrid.hpp
+
+
+def occupied_points_at(own_map_states, idx, xs, ys, z=0.05, stride=2):
+    """World (x, y, z) points for own_map's kOccupied voxels at snapshot
+    idx -- a live, growing point cloud of what the sensor has actually
+    mapped so far (not the ground truth), same idea as RViz's
+    PointCloud2/occupancy-grid lethal-cell display. stride downsamples
+    (every Nth voxel per axis) -- the full grid is too many points to
+    render smoothly per frame."""
+    state = own_map_states[idx, ::stride, ::stride]
+    iy, ix = np.nonzero(state == K_OCCUPIED)
+    if len(iy) == 0:
+        return np.zeros((0, 3))
+    pts_x = xs[::stride][ix]
+    pts_y = ys[::stride][iy]
+    return np.stack([pts_x, pts_y, np.full_like(pts_x, z)], axis=1)
 
 
 def esdf_to_rgb(distance, max_distance):
@@ -366,7 +519,6 @@ def esdf_panel_image(distance, ground_truth_state, sensor_max_range):
     whether own_map has observed it yet), same composition as
     plot_online_mapping.py's 2-D panel. Row 0 = ys[0] (south); flipped by
     the caller if the texture needs north-up."""
-    K_OCCUPIED = 2  # argus_esdf::VoxelState::kOccupied -- see VoxelGrid.hpp, animate_xy.py
     rgb = esdf_to_rgb(distance, sensor_max_range)
     occupied = ground_truth_state == K_OCCUPIED
     rgb[occupied] = [0.4, 0.4, 0.4]
@@ -423,10 +575,10 @@ def build_drone_parts_o3d(body_len=0.35):
 
 def apply_post_process(frame, vignette_strength=0.35, saturation=1.12, contrast=1.06):
     """Light cinematic grade -- a touch more saturation/contrast and a
-    soft vignette -- for render_hero_video.py's portfolio deliverable.
-    Deliberately NOT applied in render_camera_footage.py's standalone
-    output: that tool is for inspecting what the pipeline actually saw
-    (HUD included), so its frames stay unstylized."""
+    soft vignette -- used by both render_hero_video.py and (by default)
+    render_camera_footage.py's standalone output, since that footage now
+    doubles as a portfolio clip, not just a diagnostic one. Pass
+    --no-post-process to either script for the raw, unstylized frames."""
     from PIL import Image, ImageEnhance
     img = Image.fromarray(frame)
     img = ImageEnhance.Color(img).enhance(saturation)

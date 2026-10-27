@@ -15,9 +15,11 @@ Depth frames (--depth) are always single-sample -- averaging a depth
 buffer across sub-poses has no clean physical meaning, so they stay
 sharp by design.
 
-Camera model: --width/--height default to 640x400, the OAK-D-Lite's
-native stereo-depth resolution (same sensor compute_metrics.py's blur
-estimate and config/quadrotor.yaml's mapping_sensor assume). The FOV
+Camera model: --width/--height default to 1280x800 -- 2x the OAK-D-
+Lite's native stereo-depth resolution (640x400, same sensor
+compute_metrics.py's blur estimate and config/quadrotor.yaml's
+mapping_sensor assume), same 1.6:1 aspect, real rendered pixels rather
+than a resize. The FOV
 stays the solver's own circular cone (config/quadrotor.yaml's
 camera.fov_half_angle_deg) rather than a literal rectangular lens
 frustum -- the r_fov cost is rotationally symmetric by construction (see
@@ -80,11 +82,15 @@ def _parse_args():
     p.add_argument("--blur-subsamples", type=int, default=scene3d.DEFAULT_BLUR_SUBSAMPLES,
                    help="Sub-poses rendered and averaged per output frame "
                         "(1 = no blur, sharp)")
-    p.add_argument("--width", type=int, default=640,
-                   help="Matches the OAK-D-Lite's native stereo-depth resolution "
-                        "(640x400), the sensor compute_metrics.py's blur estimate "
-                        "and config/quadrotor.yaml's mapping_sensor assume")
-    p.add_argument("--height", type=int, default=400)
+    p.add_argument("--width", type=int, default=1280,
+                   help="2x the OAK-D-Lite's native stereo-depth resolution (640x400, "
+                        "the sensor compute_metrics.py's blur estimate and "
+                        "config/quadrotor.yaml's mapping_sensor assume), kept at the same "
+                        "1.6:1 aspect -- this is real rendered pixels, not a resize, so "
+                        "the extra resolution is free sharpness for the portfolio clip. "
+                        "The analytic blur-px estimate in compute_metrics.py is a "
+                        "separate code path and unaffected by this.")
+    p.add_argument("--height", type=int, default=800)
     p.add_argument("--supersample", type=int, default=2,
                    help="MSAA sample count factor for anti-aliased edges (Open3D's "
                         "View.set_sample_count/set_antialiasing). 1 = off. NOT a "
@@ -92,10 +98,18 @@ def _parse_args():
                         "downsampling turned out to trigger an exposure bug in this "
                         "Open3D/Filament/llvmpipe combination (ground washed out "
                         "near-white at 2x resolution, confirmed before any "
-                        "downsampling ran) -- MSAA sidesteps it entirely.")
+                        "downsampling ran) -- MSAA sidesteps it entirely. Keep this <=2: "
+                        "sample_count=6 (--supersample 3) was confirmed to corrupt frames "
+                        "into a tiled/ghosted mess (near-black single-sample renders "
+                        "that go to tiled garbage once blur-averaged) on this same "
+                        "llvmpipe backend, independent of resolution.")
     p.add_argument("--rgb", action="store_true")
     p.add_argument("--depth", action="store_true")
     p.add_argument("--both", action="store_true", help="Shorthand for --rgb --depth")
+    p.add_argument("--no-post-process", action="store_true",
+                   help="Disable the cinematic grade (saturation/contrast/vignette) applied "
+                        "by default -- this footage doubles as a portfolio clip now, not "
+                        "just a diagnostic one; pass this to get the raw, unstylized frames")
     p.add_argument("--no-hud", action="store_true",
                    help="Disable the telemetry HUD overlay (dist_obstacle/slack/solve "
                         "time/occlusion, with a red status badge when close or heavily "
@@ -143,9 +157,16 @@ def build_scene(renderer, obstacles, bounds, obstacle_height, width=640, height=
         (0.35, -0.55, -1.0))
     renderer.scene.scene.set_sun_light((0.35, -0.55, -1.0), (1.0, 0.98, 0.92), 50000)
 
-    ground = scene3d.build_ground_plane_o3d(bounds)
-    renderer.scene.add_geometry("ground", ground, _material([0.42, 0.42, 0.40, 1.0],
-                                                              roughness=0.95))
+    ground = scene3d.build_ground_plane_o3d(bounds, textured=True)
+    ground_mat = _material([1.0, 1.0, 1.0, 1.0], roughness=0.95)
+    ground_mat.albedo_img = o3d.geometry.Image(scene3d.procedural_grass_texture(size=512))
+    renderer.scene.add_geometry("ground", ground, ground_mat)
+
+    grid = scene3d.build_grid_lineset_o3d(bounds)
+    grid_mat = o3d.visualization.rendering.MaterialRecord()
+    grid_mat.shader = "unlitLine"
+    grid_mat.line_width = 1.0
+    renderer.scene.add_geometry("grid", grid, grid_mat)
 
     for i, obstacle in enumerate(obstacles):
         for part_name, mesh, color in scene3d.build_obstacle_parts_o3d(obstacle, obstacle_height):
@@ -159,6 +180,13 @@ def build_scene(renderer, obstacles, bounds, obstacle_height, width=640, height=
         roughness = 0.5 if part_name == "head" else 0.85
         renderer.scene.add_geometry(name, mesh, _material(color, roughness=roughness))
         leader_names.append(name)
+
+    axes_mat = o3d.visualization.rendering.MaterialRecord()
+    axes_mat.shader = "unlitLine"
+    axes_mat.line_width = 3.0
+    renderer.scene.add_geometry("leader_axes", scene3d.build_axis_gizmo_o3d(), axes_mat)
+    leader_names.append("leader_axes")  # TF-style gizmo at the leader's origin, same
+                                         # translation-only transform as the rest of it
     return leader_names
 
 
@@ -252,7 +280,7 @@ def main():
         else:
             fps = 1.0 / ((df["t"][1] - df["t"][0]) * args.stride)
         video_writer = imageio.get_writer(args.video, fps=fps, codec="libx264",
-                                           quality=8, macro_block_size=None)
+                                           quality=10, macro_block_size=None)
     if video_writer is None or do_depth:
         os.makedirs(args.out_dir, exist_ok=True)
 
@@ -261,6 +289,7 @@ def main():
                                args.width, args.height)
     renderer.scene.view.set_antialiasing(args.supersample > 1, temporal=False)
     renderer.scene.view.set_sample_count(max(1, args.supersample) * 2)
+    renderer.scene.view.set_ambient_occlusion(True)
     renderer.setup_camera(2 * fov_half_deg, [0, 0, 1], [0, 0, 0], [0, 0, 1])
 
     n_sub = max(1, args.blur_subsamples)
@@ -285,6 +314,8 @@ def main():
             if not args.no_hud:
                 nearest_row = df.iloc[int(np.argmin(np.abs(t_arr - t_center)))]
                 frame = draw_hud(frame, nearest_row, args.d_fov)
+            if not args.no_post_process:
+                frame = scene3d.apply_post_process(frame)
             if video_writer is not None:
                 video_writer.append_data(frame)
             else:

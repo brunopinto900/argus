@@ -113,6 +113,9 @@ def main():
     n_out = max(1, int(round((t_end - t_start) * args.output_fps)) + 1)
     sample_times = np.linspace(t_start, t_end, n_out)
 
+    snapshot_path = scene3d.find_snapshot_log(args.csv_path)
+    esdf_data = scene3d.load_snapshot_log(snapshot_path) if snapshot_path else None
+
     renderer = o3d.visualization.rendering.OffscreenRenderer(args.width, args.height)
     leader_names = camfeed.build_scene(renderer, obstacles, bounds, args.obstacle_height,
                                         args.width, args.height)
@@ -121,8 +124,19 @@ def main():
         name = f"drone_{part_name}"
         renderer.scene.add_geometry(name, mesh, camfeed._material(color, roughness=0.35))
         drone_names.append(name)
+    axes_mat = o3d.visualization.rendering.MaterialRecord()
+    axes_mat.shader = "unlitLine"
+    axes_mat.line_width = 3.0
+    renderer.scene.add_geometry("drone_axes", scene3d.build_axis_gizmo_o3d(0.5), axes_mat)
+    drone_names.append("drone_axes")
     renderer.scene.view.set_antialiasing(True)
     renderer.scene.view.set_sample_count(4)
+    renderer.scene.view.set_ambient_occlusion(True)
+
+    points_mat = o3d.visualization.rendering.MaterialRecord()
+    points_mat.shader = "defaultUnlit"
+    points_mat.point_size = 4.0
+    points_present = False
 
     inset_h = int(round(args.inset_width * args.height / args.width))
 
@@ -140,6 +154,20 @@ def main():
         drone_matrix = _pose_matrix(pos, quat)
         for name in drone_names:
             renderer.scene.set_geometry_transform(name, drone_matrix)
+
+        if esdf_data is not None:
+            (esdf_times, esdf_distances, esdf_xs, esdf_ys, ground_truth_state, _,
+             sensor_max_range, own_map_states) = esdf_data
+            idx = int(np.argmin(np.abs(esdf_times - t_center)))
+            pts = scene3d.occupied_points_at(own_map_states, idx, esdf_xs, esdf_ys)
+            if points_present:
+                renderer.scene.remove_geometry("points")
+                points_present = False
+            if len(pts):
+                pc = o3d.geometry.PointCloud(points=o3d.utility.Vector3dVector(pts))
+                pc.paint_uniform_color([1.0, 0.55, 0.1])
+                renderer.scene.add_geometry("points", pc, points_mat)
+                points_present = True
 
         for name in drone_names:
             renderer.scene.show_geometry(name, True)
