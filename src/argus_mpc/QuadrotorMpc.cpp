@@ -26,11 +26,19 @@ constexpr int kNyN = QUADROTOR_NYN;
 constexpr int kNp  = QUADROTOR_NP;
 
 // If the generated model's dimensions ever change, this fails the build
-// loudly instead of silently mis-packing state/yref arrays below.
+// loudly instead of silently mis-packing state/yref arrays below. Two
+// variants (slack vs. legacy cost mode, see ARGUS_OBS_SLACK_MODE in
+// argus_params.h / generate_mpc.py's OBS_MODE) since the r_obs cost slot
+// changes ny/ny_e between them.
 static_assert(kNx == 12, "State/step() packing assumes NX == 12 ([x,y,z,vx,vy,vz,phi,theta,psi,p,q,r])");
 static_assert(kNu == 4,  "Command/step() packing assumes NU == 4 ([T,p_cmd,q_cmd,r_cmd])");
+#if ARGUS_OBS_SLACK_MODE
 static_assert(kNy == 19, "step() yref packing assumes NY == 19 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_dist,r_elev,r_azimuth,T,p_cmd,q_cmd,r_cmd])");
 static_assert(kNyN == 15, "step() terminal yref packing assumes NYN == 15 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_dist,r_elev,r_azimuth])");
+#else
+static_assert(kNy == 20, "step() yref packing (cost mode) assumes NY == 20 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_obs,r_dist,r_elev,r_azimuth,T,p_cmd,q_cmd,r_cmd])");
+static_assert(kNyN == 16, "step() terminal yref packing (cost mode) assumes NYN == 16 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_obs,r_dist,r_elev,r_azimuth])");
+#endif
 static_assert(kNp == 10,  "step() parameter packing assumes NP == 10 ([p_target_x,y,z, obs_p0_x,y, obs_d0, obs_grad_x,y, azimuth_ux,uy]); run generate_mpc.py");
 
 using RawState = std::array<double, kNx>;
@@ -178,6 +186,9 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
             0.0, 0.0,             // phi, theta reference: level
             0.0, 0.0, 0.0,        // p, q, r reference: not rotating
             0.0,                  // r_fov reference: target inside the FOV cone
+#if !ARGUS_OBS_SLACK_MODE
+            0.0,                  // r_obs reference: clear of any obstacle (cost mode only)
+#endif
             0.0,                  // r_dist reference: exactly at the desired horizontal standoff distance
             0.0,                  // r_elev reference: exactly at the designed look-down angle
             0.0,                  // r_azimuth reference: exactly at the desired azimuth direction
@@ -194,6 +205,9 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
             0.0, 0.0,
             0.0, 0.0, 0.0,
             0.0,
+#if !ARGUS_OBS_SLACK_MODE
+            0.0,                  // r_obs reference (cost mode only)
+#endif
             0.0,
             0.0,
             0.0,
@@ -230,11 +244,16 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
     // conflict anywhere in the plan, not only at the currently-realized
     // state.
     double max_slack = 0.0;
+#if ARGUS_OBS_SLACK_MODE
     for (int i = 0; i <= kN; ++i) {
         double sl[1] = {0.0};
         ocp_nlp_out_get(impl.config, impl.dims, impl.nlp_out, i, "sl", sl);
         max_slack = std::max(max_slack, sl[0]);
     }
+#endif
+    // In cost mode there's no soft constraint at all -- max_slack stays 0.0
+    // (Command::max_obstacle_slack means nothing there; collision avoidance
+    // shows up in r_obs's cost contribution instead, not logged per-tick).
 
     // ── Shift warm-start: stage i+1 → stage i ────────────────────────────────
     RawState x_s{};

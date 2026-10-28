@@ -31,12 +31,20 @@ import subprocess
 
 import numpy as np
 import pandas as pd
-import yaml
+
+import config_variants
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 VENV_PYTHON = os.path.expanduser("~/.venv/bin/python3")
 ACADOS_DIR = os.path.expanduser("~/acados")
 SUITE_DIR = os.path.join(REPO_ROOT, "logs", "suite")
+# Per-scenario result cache, keyed by a hash of (resolved config +
+# everything that affects what a solve computes) + scenario name -- see
+# config_variants.build_hash(). A scenario whose inputs haven't changed
+# since the last run is loaded from here instead of re-simulated; run with
+# --no-cache to force a fresh run regardless (e.g. to measure fresh
+# wall-clock timing, which the cache can't give you -- see run_scenario()).
+CACHE_DIR = os.path.join(REPO_ROOT, "logs", "suite_cache")
 
 _ENV = dict(os.environ)
 _ENV["ACADOS_SOURCE_DIR"] = ACADOS_DIR
@@ -276,7 +284,43 @@ def compute_gate_and_stats(df, cfg):
     return m
 
 
-def run_scenario(name, scenario_file):
+def _scenario_cache_dir(build_hash, name):
+    return os.path.join(CACHE_DIR, build_hash, name)
+
+
+def run_scenario(name, scenario_file, build_hash=None, use_cache=True, render_plots=True):
+    """build_hash=None disables caching entirely (always simulate fresh) --
+    used when the caller hasn't resolved a config (e.g. ad hoc scripts
+    still calling this the old way). With a hash, a prior run's
+    trajectory/summary CSVs for the SAME (resolved config + source +
+    scenario) are reused instead of re-invoking the binary -- note this
+    means solve_time_ms/pipeline_onboard_time_ms on a cache hit are
+    whatever wall-clock the machine measured last time, not this instant;
+    fine for "did this scenario's behavior change", not for a fresh
+    timing measurement (pass --no-cache for that)."""
+    cache_dir = _scenario_cache_dir(build_hash, name) if build_hash else None
+    cached_traj = os.path.join(cache_dir, "trajectory.csv") if cache_dir else None
+
+    if use_cache and cached_traj and os.path.exists(cached_traj):
+        df = pd.read_csv(cached_traj)
+        os.makedirs(SUITE_DIR, exist_ok=True)
+        traj_dst = os.path.join(SUITE_DIR, f"{name}_trajectory.csv")
+        shutil.copy(cached_traj, traj_dst)
+        cached_summary = os.path.join(cache_dir, "summary.csv")
+        summary_dst = os.path.join(SUITE_DIR, f"{name}_summary.csv")
+        if os.path.exists(cached_summary):
+            shutil.copy(cached_summary, summary_dst)
+        if render_plots:
+            subprocess.run(
+                [VENV_PYTHON, "scripts/compute_metrics.py",
+                 "--csv-path", traj_dst,
+                 "--scenario-config", f"config/{scenario_file}",
+                 "--summary-path", summary_dst,
+                 "--save-png", os.path.join(SUITE_DIR, f"{name}_dashboard.png")],
+                cwd=REPO_ROOT, env=_ENV, check=True,
+                stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        return df, True
+
     subprocess.run(["./build/online_mapping_demo", f"config/{scenario_file}"],
                     cwd=REPO_ROOT, env=_ENV, check=True,
                     stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
@@ -286,17 +330,26 @@ def run_scenario(name, scenario_file):
     traj_dst = os.path.join(SUITE_DIR, f"{name}_trajectory.csv")
     shutil.copy(os.path.join(REPO_ROOT, "logs", "online_mapping_trajectory.csv"), traj_dst)
     summary_src = os.path.join(REPO_ROOT, "logs", "online_mapping_summary.csv")
+    summary_dst = os.path.join(SUITE_DIR, f"{name}_summary.csv")
     if os.path.exists(summary_src):
-        shutil.copy(summary_src, os.path.join(SUITE_DIR, f"{name}_summary.csv"))
+        shutil.copy(summary_src, summary_dst)
 
-    subprocess.run(
-        [VENV_PYTHON, "scripts/compute_metrics.py",
-         "--csv-path", traj_dst,
-         "--scenario-config", f"config/{scenario_file}",
-         "--summary-path", os.path.join(SUITE_DIR, f"{name}_summary.csv"),
-         "--save-png", os.path.join(SUITE_DIR, f"{name}_dashboard.png")],
-        cwd=REPO_ROOT, env=_ENV, check=True,
-        stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    if cache_dir:
+        os.makedirs(cache_dir, exist_ok=True)
+        shutil.copy(traj_dst, os.path.join(cache_dir, "trajectory.csv"))
+        if os.path.exists(summary_dst):
+            shutil.copy(summary_dst, os.path.join(cache_dir, "summary.csv"))
+
+    if render_plots:
+        subprocess.run(
+            [VENV_PYTHON, "scripts/compute_metrics.py",
+             "--csv-path", traj_dst,
+             "--scenario-config", f"config/{scenario_file}",
+             "--summary-path", summary_dst,
+             "--save-png", os.path.join(SUITE_DIR, f"{name}_dashboard.png")],
+            cwd=REPO_ROOT, env=_ENV, check=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    return df, False
 
     return df
 
@@ -335,16 +388,28 @@ def main():
     p.add_argument("--save-baseline", action="store_true",
                     help="Overwrite logs/suite/baseline.json with this run's results "
                          "instead of just comparing against it")
+    p.add_argument("--no-cache", action="store_true",
+                    help="Always re-simulate every scenario, even if a cached result "
+                         "for the exact same (config + source + scenario) already "
+                         "exists under logs/suite_cache/ -- use this when you need a "
+                         "fresh wall-clock timing measurement, not just current behavior")
+    p.add_argument("--no-plots", action="store_true",
+                    help="Skip compute_metrics.py's per-scenario dashboard PNG -- faster "
+                         "when you only want the printed gate/metric table (or are just "
+                         "after raw trajectory CSVs, e.g. scripts/run_variant.py)")
     args = p.parse_args()
 
-    with open(os.path.join(REPO_ROOT, "config", "quadrotor.yaml")) as f:
-        cfg = yaml.safe_load(f)
+    cfg = config_variants.load_base_config()
+    build_hash = config_variants.build_hash(cfg)
+    print(f"build_hash={build_hash}  (cache: logs/suite_cache/{build_hash}/)")
 
     baseline = None if args.save_baseline else load_baseline()
     results = {}
     for name, scenario_file, _ in SCENARIOS:
-        print(f"--- {name} ({scenario_file}) ---")
-        df = run_scenario(name, scenario_file)
+        df, from_cache = run_scenario(name, scenario_file, build_hash=build_hash,
+                                       use_cache=not args.no_cache,
+                                       render_plots=not args.no_plots)
+        print(f"--- {name} ({scenario_file}) {'[cached]' if from_cache else '[ran]'} ---")
         results[name] = compute_gate_and_stats(df, cfg)
 
     print("\n" + "=" * 100)

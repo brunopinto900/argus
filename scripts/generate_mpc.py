@@ -24,15 +24,19 @@ Runtime param (np = 10):  [p_target_x, p_target_y, p_target_z,
   r_azimuth below; direction only, not a position, see that residual's
   comment for why.
 
-Cost output   (ny = 19):  [x, y, z, vx, vy, vz, phi, theta, p, q, r, r_fov, r_dist, r_elev, r_azimuth, T, p_cmd, q_cmd, r_cmd]
+Cost output, obstacle_avoidance.mode='slack' (default, ny=19): [x, y, z, vx, vy,
+vz, phi, theta, p, q, r, r_fov, r_dist, r_elev, r_azimuth, T, p_cmd, q_cmd, r_cmd]
+Cost output, obstacle_avoidance.mode='cost' (legacy, ny=20): same with an r_obs
+entry inserted right after r_fov -- see OBS_MODE above D_SAFE.
   - r_fov = softplus(cos(alpha_fov) - cos(gamma)) — zero inside FOV cone, grows outside
-  - collision avoidance is NOT a cost term any more -- see "Collision-avoidance
-    constraint" below: d_lin = obs_d0 + obs_grad . (p - obs_p0) is now a slacked
+  - mode='slack': collision avoidance is NOT a cost term -- see "Collision-avoidance
+    constraint" below: d_lin = obs_d0 + obs_grad . (p - obs_p0) is a slacked
     nonlinear constraint (con_h_expr), not an NLS residual. See
     design_decisions.md's "slack-variable collision constraint" entry for why
-    (the squared-hinge cost version never guaranteed d_safe for any finite
+    (mode='cost''s squared-hinge residual never guaranteed d_safe for any finite
     weight -- its gradient vanishes at the boundary; a slacked constraint's
-    linear slack penalty does not).
+    linear slack penalty does not). mode='cost' is kept only for A/B comparison
+    (scripts/run_variant.py), not recommended for actual use.
   - r_dist = ||p_drone_xy - p_leader_xy|| - D_DESIRED — HORIZONTAL-only standoff-
     distance cost (ground-plane distance, not 3D range -- see r_elev below for why),
     added alongside (not replacing) x/y/z tracking of the trailer reference point;
@@ -113,6 +117,17 @@ W_TERMINAL = np.diag(_cost_cfg['W_terminal'])
 FOV_ALPHA = float(np.deg2rad(_cam_cfg['fov_half_angle_deg']))
 FOV_BETA  = float(_cam_cfg['softplus_beta'])
 COS_ALPHA = float(np.cos(FOV_ALPHA))
+
+# 'slack' (default): d_lin >= d_safe as a slacked nonlinear constraint.
+# 'cost': the old squared-hinge r_obs = max(0, d_safe - d_lin) NLS residual
+# instead -- kept only so the two formulations can be A/B compared from one
+# codebase (scripts/run_variant.py) without git worktree surgery. Changes
+# ny/ny_e (adds/removes the r_obs slot), so W_stage/W_terminal in whatever
+# config is loaded must already be shaped for the selected mode -- see the
+# shape assertions in generate_mpc() below.
+OBS_MODE = str(_obs_cfg.get('mode', 'slack')).lower()
+assert OBS_MODE in ('slack', 'cost'), \
+    f"obstacle_avoidance.mode must be 'slack' or 'cost', got {OBS_MODE!r}"
 
 D_SAFE = float(_obs_cfg['d_safe_m'])
 # Slack-penalty weights for the collision-avoidance constraint below --
@@ -254,8 +269,27 @@ def generate_mpc():
     r_azimuth = 1.0 - (dx * azimuth_u[0] + dy * azimuth_u[1]) / horiz_dist
 
     body_rates = x_sym[9:12]  # p, q, r -- realized rates, distinct from the u_sym rate commands below
-    cost_y_expr   = ca.vertcat(x_sym[:8], body_rates, r_fov, r_dist, r_elev, r_azimuth, u_sym)  # ny   = 19
-    cost_y_expr_e = ca.vertcat(x_sym[:8], body_rates, r_fov, r_dist, r_elev, r_azimuth)          # ny_e = 15
+
+    if OBS_MODE == 'cost':
+        # Legacy squared-hinge collision cost -- see the OBS_MODE comment
+        # above D_SAFE. Never guarantees d_safe for any finite weight (the
+        # NLS-squared penalty's gradient vanishes at the boundary).
+        r_obs = ca.fmax(0.0, D_SAFE - d_lin)
+        cost_y_expr   = ca.vertcat(x_sym[:8], body_rates, r_fov, r_obs, r_dist, r_elev, r_azimuth, u_sym)  # ny   = 20
+        cost_y_expr_e = ca.vertcat(x_sym[:8], body_rates, r_fov, r_obs, r_dist, r_elev, r_azimuth)          # ny_e = 16
+    else:
+        cost_y_expr   = ca.vertcat(x_sym[:8], body_rates, r_fov, r_dist, r_elev, r_azimuth, u_sym)  # ny   = 19
+        cost_y_expr_e = ca.vertcat(x_sym[:8], body_rates, r_fov, r_dist, r_elev, r_azimuth)          # ny_e = 15
+
+    expected_ny  = 20 if OBS_MODE == 'cost' else 19
+    expected_nye = 16 if OBS_MODE == 'cost' else 15
+    assert W_STAGE.shape[0] == expected_ny, (
+        f"obstacle_avoidance.mode={OBS_MODE!r} needs cost.W_stage with {expected_ny} "
+        f"entries (got {W_STAGE.shape[0]}) -- see config/variants.yaml for ready-made "
+        f"W_stage/W_terminal pairs per mode")
+    assert W_TERMINAL.shape[0] == expected_nye, (
+        f"obstacle_avoidance.mode={OBS_MODE!r} needs cost.W_terminal with {expected_nye} "
+        f"entries (got {W_TERMINAL.shape[0]})")
 
     ocp.cost.cost_type   = 'NONLINEAR_LS'
     ocp.cost.cost_type_e = 'NONLINEAR_LS'
@@ -269,16 +303,19 @@ def generate_mpc():
     # reference = 0). C++ overwrites this every step with the actual
     # reference. No r_obs entry any more -- collision avoidance is a
     # constraint now, not a cost residual, see above.
-    yref_hover   = np.array([0.0, 0.0, HOVER_ALTITUDE,  # x, y, z
-                              0.0, 0.0, 0.0,           # vx, vy, vz
-                              0.0, 0.0,                # phi, theta
-                              0.0, 0.0, 0.0,           # p, q, r (realized body rates: no rotation)
-                              0.0,                     # r_fov  (target inside cone)
-                              0.0,                     # r_dist (exactly D_DESIRED away, horizontal)
-                              0.0,                     # r_elev (exactly at the designed look-down angle)
-                              0.0,                     # r_azimuth (exactly at the desired azimuth direction)
-                              T_HOVER, 0.0, 0.0, 0.0]) # T, rates
-    yref_hover_e = yref_hover[:15]
+    yref_hover_list = [0.0, 0.0, HOVER_ALTITUDE,  # x, y, z
+                        0.0, 0.0, 0.0,            # vx, vy, vz
+                        0.0, 0.0,                 # phi, theta
+                        0.0, 0.0, 0.0,            # p, q, r (realized body rates: no rotation)
+                        0.0]                      # r_fov  (target inside cone)
+    if OBS_MODE == 'cost':
+        yref_hover_list.append(0.0)  # r_obs (clear of any obstacle)
+    yref_hover_list += [0.0,         # r_dist (exactly D_DESIRED away, horizontal)
+                         0.0,        # r_elev (exactly at the designed look-down angle)
+                         0.0,        # r_azimuth (exactly at the desired azimuth direction)
+                         T_HOVER, 0.0, 0.0, 0.0]  # T, rates
+    yref_hover   = np.array(yref_hover_list)
+    yref_hover_e = yref_hover[:expected_nye]
 
     ocp.cost.yref   = yref_hover
     ocp.cost.yref_e = yref_hover_e
@@ -314,23 +351,26 @@ def generate_mpc():
     # never activates here, so left at 0). SLACK_LINEAR is the exact-
     # penalty term that actually provides the guarantee; SLACK_QUADRATIC
     # just smooths the QP near the boundary.
-    H_UB = 1.0e6
-    ocp.model.con_h_expr   = ca.vertcat(d_lin)
-    ocp.model.con_h_expr_e = ca.vertcat(d_lin)
-    ocp.constraints.lh     = np.array([D_SAFE])
-    ocp.constraints.uh     = np.array([H_UB])
-    ocp.constraints.lh_e   = np.array([D_SAFE])
-    ocp.constraints.uh_e   = np.array([H_UB])
-    ocp.constraints.idxsh  = np.array([0])
-    ocp.constraints.idxsh_e = np.array([0])
-    ocp.cost.zl   = np.array([SLACK_LINEAR])
-    ocp.cost.zu   = np.array([0.0])
-    ocp.cost.Zl   = np.array([SLACK_QUADRATIC])
-    ocp.cost.Zu   = np.array([0.0])
-    ocp.cost.zl_e = np.array([SLACK_LINEAR])
-    ocp.cost.zu_e = np.array([0.0])
-    ocp.cost.Zl_e = np.array([SLACK_QUADRATIC])
-    ocp.cost.Zu_e = np.array([0.0])
+    # Only added in 'slack' mode -- in 'cost' mode, collision avoidance is
+    # entirely the r_obs NLS residual above, no constraint/slack at all.
+    if OBS_MODE == 'slack':
+        H_UB = 1.0e6
+        ocp.model.con_h_expr   = ca.vertcat(d_lin)
+        ocp.model.con_h_expr_e = ca.vertcat(d_lin)
+        ocp.constraints.lh     = np.array([D_SAFE])
+        ocp.constraints.uh     = np.array([H_UB])
+        ocp.constraints.lh_e   = np.array([D_SAFE])
+        ocp.constraints.uh_e   = np.array([H_UB])
+        ocp.constraints.idxsh  = np.array([0])
+        ocp.constraints.idxsh_e = np.array([0])
+        ocp.cost.zl   = np.array([SLACK_LINEAR])
+        ocp.cost.zu   = np.array([0.0])
+        ocp.cost.Zl   = np.array([SLACK_QUADRATIC])
+        ocp.cost.Zu   = np.array([0.0])
+        ocp.cost.zl_e = np.array([SLACK_LINEAR])
+        ocp.cost.zu_e = np.array([0.0])
+        ocp.cost.Zl_e = np.array([SLACK_QUADRATIC])
+        ocp.cost.Zu_e = np.array([0.0])
 
     # Initial state (placeholder; set at runtime in C++ before every solve)
     ocp.constraints.x0 = np.array([0.0, 0.0, HOVER_ALTITUDE,  # position
@@ -407,7 +447,11 @@ def generate_cpp_params_header(out_dir: str):
         f.write(f"static constexpr double ARGUS_PLANT_WN_YAW   = {_plant_cfg['wn_yaw']};\n")
         f.write(f"static constexpr double ARGUS_PLANT_ZETA_YAW = {_plant_cfg['zeta_yaw']};\n\n")
         f.write(f"static constexpr double ARGUS_FOV_HALF_ANGLE_DEG = {_cam_cfg['fov_half_angle_deg']};\n")
-        f.write(f"static constexpr double ARGUS_SOFTPLUS_BETA      = {FOV_BETA};\n")
+        f.write(f"static constexpr double ARGUS_SOFTPLUS_BETA      = {FOV_BETA};\n\n")
+        f.write("// 1 = collision avoidance is the slacked d_lin >= d_safe constraint;\n")
+        f.write("// 0 = legacy squared-hinge r_obs cost residual. See generate_mpc.py's\n")
+        f.write("// OBS_MODE / config/quadrotor.yaml's obstacle_avoidance.mode.\n")
+        f.write(f"#define ARGUS_OBS_SLACK_MODE {1 if OBS_MODE == 'slack' else 0}\n")
     print(f"C++ params header written to: {path}")
 
 

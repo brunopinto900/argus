@@ -409,6 +409,16 @@ python3 scripts/compute_metrics.py
 python3 scripts/compute_metrics.py --save-png docs/metrics.png   # headless export
 ```
 
+### Config variants (A/B comparisons)
+
+Named config overlays in **[`config/variants.yaml`](config/variants.yaml)** (merged onto `config/quadrotor.yaml`, including `obstacle_avoidance.mode: slack|cost` — see `generate_mpc.py`'s `OBS_MODE`) let you A/B two formulations without hand-editing weights or checking out old commits — e.g. isolating whether a solve-time regression came from re-enabling trailer tracking or from the slacked collision constraint. `scripts/run_variant.py` applies one or more variants, rebuilds only if the resolved config actually changed, runs the scenario suite (loading cached per-scenario results when available — see `run_scenario_suite.py`'s `--no-cache`), restores the committed config afterward, and prints a pooled solve/onboard-time comparison table. Results are cached under `logs/variants/<name>/<hash>/` (config + metrics together, keyed by a hash of the resolved config and solver source).
+
+```bash
+python3 scripts/run_variant.py --list
+python3 scripts/run_variant.py --variant trailer_on_slack_on --variant trailer_on_slack_off
+python3 scripts/run_variant.py --variant trailer_on_slack_on --fresh   # ignore caches, fresh timing
+```
+
 ---
 
 ## How to tune

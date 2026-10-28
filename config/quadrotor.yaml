@@ -190,7 +190,13 @@ mapping_sensor:
 # just smooths the QP near the boundary and isn't what's doing the
 # enforcing. Untuned starting values -- see design_decisions.md's
 # slack-variable collision constraint entry for the first test of this.
+# mode: 'slack' (default) or 'cost' (legacy squared-hinge r_obs residual,
+# kept only for A/B comparison via scripts/run_variant.py -- see
+# generate_mpc.py's OBS_MODE). Changes ny/ny_e, so cost.W_stage/W_terminal
+# above must already be shaped for whichever mode is selected (ready-made
+# pairs for both live in config/variants.yaml).
 obstacle_avoidance:
+  mode: slack
   d_safe_m: 0.32
   slack_linear_weight:    10000.0
   slack_quadratic_weight:   100.0

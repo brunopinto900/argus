@@ -1,0 +1,72 @@
+# Named config overlays, merged onto config/quadrotor.yaml at run time by
+# scripts/run_variant.py (see scripts/config_variants.py's deep_merge()) --
+# each entry only lists the keys it changes from the base config.
+#
+# A variant can touch obstacle_avoidance.mode (see generate_mpc.py's
+# OBS_MODE: 'slack' the real constraint, 'cost' the legacy squared-hinge
+# residual, kept only for A/B comparison) -- changing mode changes ny/ny_e,
+# so any variant that sets mode must also supply a cost.W_stage/W_terminal
+# already shaped for that mode (20/16 entries for 'cost', 19/15 for
+# 'slack' -- see generate_mpc.py's shape assertions).
+#
+# All four below hold p,q,r at the SAME unbumped weights (1.0/2.0, not the
+# committed config's retuned 5.0/10.0) so toggling trailer/slack is isolated
+# from the separate body-rate retune -- see design_decisions.md's "which
+# change is causing the solver time increase" investigation.
+
+trailer_off_slack_off:
+  # Pre-2422d2c formulation: trailer tracking off (standoff held via
+  # r_dist/r_elev/r_azimuth instead of x/y/z position tracking), legacy
+  # squared-hinge r_obs cost. Equivalent to the repo's own history before
+  # the slack constraint existed -- one command instead of a git worktree.
+  obstacle_avoidance:
+    mode: cost
+  cost:
+    W_stage:    [0.0, 0.0, 0.0,  10.0, 10.0, 10.0,  5.0, 5.0,  1.0, 1.0, 1.0,  300.0, 100.0, 100.0, 0.0, 10.0,  0.1, 1.0, 1.0, 1.0]
+    W_terminal: [0.0, 0.0, 0.0,  20.0, 20.0, 20.0,  10.0, 10.0,  2.0, 2.0, 2.0,  150.0, 100.0, 100.0, 0.0, 10.0]
+
+trailer_off_slack_on:
+  # Trailer tracking off, slacked collision constraint on.
+  obstacle_avoidance:
+    mode: slack
+  cost:
+    W_stage:    [0.0, 0.0, 0.0,  10.0, 10.0, 10.0,  5.0, 5.0,  1.0, 1.0, 1.0,  300.0, 100.0, 0.0, 10.0,  0.1, 1.0, 1.0, 1.0]
+    W_terminal: [0.0, 0.0, 0.0,  20.0, 20.0, 20.0,  10.0, 10.0,  2.0, 2.0, 2.0,  150.0, 100.0, 0.0, 10.0]
+
+trailer_on_slack_off:
+  # Trailer tracking on, legacy squared-hinge r_obs cost. r_obs kept at
+  # 100 since, without the constraint, it's the ONLY thing providing
+  # collision avoidance here.
+  obstacle_avoidance:
+    mode: cost
+  cost:
+    W_stage:    [100.0, 100.0, 100.0,  10.0, 10.0, 10.0,  5.0, 5.0,  1.0, 1.0, 1.0,  300.0, 100.0, 0.0, 0.0, 0.0,  0.1, 1.0, 1.0, 1.0]
+    W_terminal: [200.0, 200.0, 200.0,  20.0, 20.0, 20.0,  10.0, 10.0,  2.0, 2.0, 2.0,  150.0, 100.0, 0.0, 0.0, 0.0]
+
+trailer_on_slack_on:
+  # Trailer tracking on, slacked collision constraint on -- same shape as
+  # the committed config/quadrotor.yaml, repeated explicitly (not an empty
+  # overlay) so all five variants stay equally self-contained even if the
+  # base config's weights drift later.
+  obstacle_avoidance:
+    mode: slack
+  cost:
+    W_stage:    [100.0, 100.0, 100.0,  10.0, 10.0, 10.0,  5.0, 5.0,  1.0, 1.0, 1.0,  300.0, 0.0, 0.0, 0.0,  0.1, 1.0, 1.0, 1.0]
+    W_terminal: [200.0, 200.0, 200.0,  20.0, 20.0, 20.0,  10.0, 10.0,  2.0, 2.0, 2.0,  150.0, 0.0, 0.0, 0.0]
+
+trailer_on_slack_linear_only:
+  # Same as trailer_on_slack_on, but slack_quadratic_weight -> 0: only the
+  # linear exact-penalty term is active, no quadratic smoothing near the
+  # boundary (see config/quadrotor.yaml's obstacle_avoidance comment --
+  # slack_linear_weight is what actually enforces d_safe; slack_quadratic_
+  # weight only smooths the QP, isn't load-bearing for the guarantee).
+  # Tests whether that smoothing term is itself contributing to the
+  # slack-mode solve-time increase, or whether it's all from having an
+  # active inequality constraint at all.
+  obstacle_avoidance:
+    mode: slack
+    slack_linear_weight:    10000.0
+    slack_quadratic_weight:     0.0
+  cost:
+    W_stage:    [100.0, 100.0, 100.0,  10.0, 10.0, 10.0,  5.0, 5.0,  1.0, 1.0, 1.0,  300.0, 0.0, 0.0, 0.0,  0.1, 1.0, 1.0, 1.0]
+    W_terminal: [200.0, 200.0, 200.0,  20.0, 20.0, 20.0,  10.0, 10.0,  2.0, 2.0, 2.0,  150.0, 0.0, 0.0, 0.0]
