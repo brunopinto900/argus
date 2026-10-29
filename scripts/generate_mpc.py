@@ -9,9 +9,10 @@ Output: c_generated_code/   (C solver + CMakeLists, ready to link from C++)
 
 State vector  (nx = 12):  [x, y, z, vx, vy, vz, phi, theta, psi, p, q, r]
 Input vector  (nu =  4):  [T, p_cmd, q_cmd, r_cmd]
-Runtime param (np = 10):  [p_target_x, p_target_y, p_target_z,
+Runtime param (np = 13):  [p_target_x, p_target_y, p_target_z,
                            obs_p0_x, obs_p0_y, obs_d0, obs_grad_x, obs_grad_y,
-                           azimuth_ux, azimuth_uy]
+                           azimuth_ux, azimuth_uy,
+                           occ_d0, occ_grad_x_scaled, occ_grad_y_scaled]
   — injected before every solve. The obs_* block is a per-stage local
   affine reconstruction of own_map's ESDF around a linearization point
   p0 (own_map.query() can't enter the OCP symbolically -- it's runtime
@@ -23,11 +24,27 @@ Runtime param (np = 10):  [p_target_x, p_target_y, p_target_z,
   leader to the drone (e.g. "behind" the leader's heading) -- feeds
   r_azimuth below; direction only, not a position, see that residual's
   comment for why.
+  occ_* linearizes the ESDF's minimum along the drone->target sightline
+  (the worst occlusion point), NOT at the drone's own position like
+  obs_* -- see design_decisions.md's "Occlusion-aware cost term"
+  planning notes. The caller marches own_map along that segment, finds
+  s* (how far along it the worst point sits), and the point itself is
+  occ_p0 = (1-s*)*drone_p0 + s*p_target -- a function of the drone's own
+  position with coefficient (1-s*), not 1, since the target end of the
+  segment is fixed. occ_grad_x/y_scaled are already pre-multiplied by
+  (1-s*) by the caller (QuadrotorMpc.cpp), so the symbolic graph here
+  only ever needs a plain dot product against (x_sym[:2] - obs_p0) --
+  reusing obs_p0 as the linearization point for occ_lin too, since both
+  are first-order expansions around the same "drone's predicted position
+  this stage" point.
 
-Cost output, obstacle_avoidance.mode='slack' (default, ny=19): [x, y, z, vx, vy,
-vz, phi, theta, p, q, r, r_fov, r_dist, r_elev, r_azimuth, T, p_cmd, q_cmd, r_cmd]
-Cost output, obstacle_avoidance.mode='cost' (legacy, ny=20): same with an r_obs
-entry inserted right after r_fov -- see OBS_MODE above D_SAFE.
+Cost output, obstacle_avoidance.mode='slack', occlusion_avoidance.mode='disabled'
+(both default, ny=19): [x, y, z, vx, vy, vz, phi, theta, p, q, r, r_fov,
+r_dist, r_elev, r_azimuth, T, p_cmd, q_cmd, r_cmd]
+Each mode flipped to its non-default value inserts one more residual into
+the slot right after r_fov (r_obs for obstacle_avoidance.mode='cost',
+r_occ for occlusion_avoidance.mode='cost', in that order if both are on)
+-- ny grows by 1 per flipped mode, see OBS_MODE/OCC_MODE below.
   - r_fov = softplus(cos(alpha_fov) - cos(gamma)) — zero inside FOV cone, grows outside
   - mode='slack': collision avoidance is NOT a cost term -- see "Collision-avoidance
     constraint" below: d_lin = obs_d0 + obs_grad . (p - obs_p0) is a slacked
@@ -37,6 +54,13 @@ entry inserted right after r_fov -- see OBS_MODE above D_SAFE.
     weight -- its gradient vanishes at the boundary; a slacked constraint's
     linear slack penalty does not). mode='cost' is kept only for A/B comparison
     (scripts/run_variant.py), not recommended for actual use.
+  - r_occ = max(0, tau_occ - occ_lin), a squared-hinge residual (NLS squares
+    every residual automatically) -- chosen over exponential/softplus, see
+    design_decisions.md's "Occlusion-cost shape: squared hinge chosen over
+    softplus and exponential". Soft cost, not a constraint (unlike collision
+    avoidance): occlusion is a shot-quality concern, not a collision risk, so
+    exact enforcement isn't the goal. occlusion_avoidance.mode='disabled' (default)
+    omits this residual entirely -- untested in the real pipeline, opt-in only.
   - r_dist = ||p_drone_xy - p_leader_xy|| - D_DESIRED — HORIZONTAL-only standoff-
     distance cost (ground-plane distance, not 3D range -- see r_elev below for why),
     added alongside (not replacing) x/y/z tracking of the trailer reference point;
@@ -91,6 +115,7 @@ _cost_cfg   = _cfg['cost']
 _plant_cfg  = _cfg['plant']
 _cam_cfg    = _cfg['camera']
 _obs_cfg    = _cfg['obstacle_avoidance']
+_occ_cfg    = _cfg.get('occlusion_avoidance', {})
 
 # ── Target trajectory (config/target.yaml) — only the circle radius/period/
 #    height are needed at codegen time; waypoints are loaded at runtime.
@@ -148,6 +173,18 @@ D_DESIRED = float(_cfg['trailer']['distance_to_target'])
 # instead of only being realized indirectly via a fixed-z reference.
 TARGET_BEARING_RAD = float(np.deg2rad(_cfg['trailer']['target_bearing_deg']))
 
+# 'disabled' (default): no occlusion residual, ny unchanged -- opt-in, untested
+# in the real pipeline yet. 'cost': adds the squared-hinge r_occ residual
+# (see the module docstring and design_decisions.md's "Occlusion-aware
+# cost term" / "Occlusion-cost shape" entries).
+OCC_MODE = str(_occ_cfg.get('mode', 'disabled')).lower()
+assert OCC_MODE in ('disabled', 'cost'), \
+    f"occlusion_avoidance.mode must be 'disabled' or 'cost', got {OCC_MODE!r}"
+# Derived, not picked -- see design_decisions.md's "d_FOV/tau_occ changed
+# to 1.68m, derived" entry. Default matches scripts/compute_metrics.py's
+# --d-fov default so the cost and the metric describe the same threshold.
+TAU_OCC = float(_occ_cfg.get('tau_occ_m', 1.68))
+
 
 
 
@@ -156,16 +193,23 @@ def generate_mpc():
     model = export_quadrotor_ode_model()
     # Runtime parameters: FOV target position (3) + per-stage obstacle
     # ESDF linearization (5: p0_x, p0_y, d0, grad_x, grad_y) + desired
-    # azimuth direction (2: ux, uy) -- see the module docstring's
-    # "Runtime param" section for what each block means.
-    model.p = ca.SX.sym('p_runtime', 10)
+    # azimuth direction (2: ux, uy) + per-stage occlusion-sightline ESDF
+    # linearization (3: d0, grad_x_scaled, grad_y_scaled -- see the module
+    # docstring's "Runtime param" section for what each block means).
+    # occ_* is always present (np=13 regardless of OCC_MODE) -- in 'disabled'
+    # mode it's simply never referenced by any symbolic expression below,
+    # same "unused param is a harmless no-op" convention obs_* already
+    # relies on.
+    model.p = ca.SX.sym('p_runtime', 13)
     p_target   = model.p[0:3]
     obs_p0     = model.p[3:5]
     obs_d0     = model.p[5]
     obs_grad   = model.p[6:8]
     azimuth_u  = model.p[8:10]
+    occ_d0           = model.p[10]
+    occ_grad_scaled  = model.p[11:13]
     ocp.model = model
-    ocp.parameter_values = np.zeros(10)   # nominal; overwritten before every solve
+    ocp.parameter_values = np.zeros(13)   # nominal; overwritten before every solve
 
     nx = model.x.rows()   # 12
     nu = model.u.rows()   #  4
@@ -270,26 +314,45 @@ def generate_mpc():
 
     body_rates = x_sym[9:12]  # p, q, r -- realized rates, distinct from the u_sym rate commands below
 
+    # ── Occlusion-aware cost: squared-hinge on the sightline's worst ESDF
+    # point, linearized exactly like d_lin but around a point that only
+    # partially co-moves with the drone (see the module docstring's
+    # "occ_*" paragraph and design_decisions.md's "Occlusion-aware cost
+    # term" planning notes for the (1-s*) chain-rule derivation). The
+    # (1-s*) scaling is applied by the caller before this param is set
+    # (QuadrotorMpc.cpp), not here -- occ_grad_scaled already IS
+    # (1-s*)*occ_grad, so this is a plain dot product, same shape as d_lin.
+    occ_lin = occ_d0 + ca.dot(occ_grad_scaled, x_sym[:2] - obs_p0)
+    r_occ = ca.fmax(0.0, TAU_OCC - occ_lin)
+
+    # Build cost_y_expr/cost_y_expr_e incrementally so the two independent
+    # mode flags (OBS_MODE, OCC_MODE) each contribute their own optional
+    # residual slot without a 4-way combinatorial branch -- ny/ny_e fall
+    # out of how many parts ended up in the list, not a hardcoded number
+    # per combination.
+    middle_parts = [r_fov]
     if OBS_MODE == 'cost':
         # Legacy squared-hinge collision cost -- see the OBS_MODE comment
         # above D_SAFE. Never guarantees d_safe for any finite weight (the
         # NLS-squared penalty's gradient vanishes at the boundary).
         r_obs = ca.fmax(0.0, D_SAFE - d_lin)
-        cost_y_expr   = ca.vertcat(x_sym[:8], body_rates, r_fov, r_obs, r_dist, r_elev, r_azimuth, u_sym)  # ny   = 20
-        cost_y_expr_e = ca.vertcat(x_sym[:8], body_rates, r_fov, r_obs, r_dist, r_elev, r_azimuth)          # ny_e = 16
-    else:
-        cost_y_expr   = ca.vertcat(x_sym[:8], body_rates, r_fov, r_dist, r_elev, r_azimuth, u_sym)  # ny   = 19
-        cost_y_expr_e = ca.vertcat(x_sym[:8], body_rates, r_fov, r_dist, r_elev, r_azimuth)          # ny_e = 15
+        middle_parts.append(r_obs)
+    if OCC_MODE == 'cost':
+        middle_parts.append(r_occ)
+    middle_parts += [r_dist, r_elev, r_azimuth]
 
-    expected_ny  = 20 if OBS_MODE == 'cost' else 19
-    expected_nye = 16 if OBS_MODE == 'cost' else 15
+    cost_y_expr   = ca.vertcat(x_sym[:8], body_rates, *middle_parts, u_sym)
+    cost_y_expr_e = ca.vertcat(x_sym[:8], body_rates, *middle_parts)
+
+    expected_ny  = 19 + (OBS_MODE == 'cost') + (OCC_MODE == 'cost')
+    expected_nye = 15 + (OBS_MODE == 'cost') + (OCC_MODE == 'cost')
     assert W_STAGE.shape[0] == expected_ny, (
-        f"obstacle_avoidance.mode={OBS_MODE!r} needs cost.W_stage with {expected_ny} "
-        f"entries (got {W_STAGE.shape[0]}) -- see config/variants.yaml for ready-made "
-        f"W_stage/W_terminal pairs per mode")
+        f"obstacle_avoidance.mode={OBS_MODE!r}, occlusion_avoidance.mode={OCC_MODE!r} "
+        f"needs cost.W_stage with {expected_ny} entries (got {W_STAGE.shape[0]}) -- "
+        f"see config/variants.yaml for ready-made W_stage/W_terminal pairs per mode")
     assert W_TERMINAL.shape[0] == expected_nye, (
-        f"obstacle_avoidance.mode={OBS_MODE!r} needs cost.W_terminal with {expected_nye} "
-        f"entries (got {W_TERMINAL.shape[0]})")
+        f"obstacle_avoidance.mode={OBS_MODE!r}, occlusion_avoidance.mode={OCC_MODE!r} "
+        f"needs cost.W_terminal with {expected_nye} entries (got {W_TERMINAL.shape[0]})")
 
     ocp.cost.cost_type   = 'NONLINEAR_LS'
     ocp.cost.cost_type_e = 'NONLINEAR_LS'
@@ -310,6 +373,8 @@ def generate_mpc():
                         0.0]                      # r_fov  (target inside cone)
     if OBS_MODE == 'cost':
         yref_hover_list.append(0.0)  # r_obs (clear of any obstacle)
+    if OCC_MODE == 'cost':
+        yref_hover_list.append(0.0)  # r_occ (sightline clear of any obstacle)
     yref_hover_list += [0.0,         # r_dist (exactly D_DESIRED away, horizontal)
                          0.0,        # r_elev (exactly at the designed look-down angle)
                          0.0,        # r_azimuth (exactly at the desired azimuth direction)
@@ -452,6 +517,11 @@ def generate_cpp_params_header(out_dir: str):
         f.write("// 0 = legacy squared-hinge r_obs cost residual. See generate_mpc.py's\n")
         f.write("// OBS_MODE / config/quadrotor.yaml's obstacle_avoidance.mode.\n")
         f.write(f"#define ARGUS_OBS_SLACK_MODE {1 if OBS_MODE == 'slack' else 0}\n")
+        f.write("// 1 = occlusion-aware squared-hinge r_occ cost residual is in the\n")
+        f.write("// cost vector; 0 = no occlusion residual at all (ny unchanged). See\n")
+        f.write("// generate_mpc.py's OCC_MODE / config/quadrotor.yaml's\n")
+        f.write("// occlusion_avoidance.mode.\n")
+        f.write(f"#define ARGUS_OCC_COST_MODE {1 if OCC_MODE == 'cost' else 0}\n")
     print(f"C++ params header written to: {path}")
 
 

@@ -27,19 +27,30 @@ constexpr int kNp  = QUADROTOR_NP;
 
 // If the generated model's dimensions ever change, this fails the build
 // loudly instead of silently mis-packing state/yref arrays below. Two
-// variants (slack vs. legacy cost mode, see ARGUS_OBS_SLACK_MODE in
-// argus_params.h / generate_mpc.py's OBS_MODE) since the r_obs cost slot
-// changes ny/ny_e between them.
+// independent mode flags (ARGUS_OBS_SLACK_MODE, ARGUS_OCC_COST_MODE, see
+// argus_params.h / generate_mpc.py's OBS_MODE/OCC_MODE) each optionally
+// add one residual slot (r_obs, r_occ) right after r_fov, so ny/ny_e has
+// four possible values.
 static_assert(kNx == 12, "State/step() packing assumes NX == 12 ([x,y,z,vx,vy,vz,phi,theta,psi,p,q,r])");
 static_assert(kNu == 4,  "Command/step() packing assumes NU == 4 ([T,p_cmd,q_cmd,r_cmd])");
 #if ARGUS_OBS_SLACK_MODE
-static_assert(kNy == 19, "step() yref packing assumes NY == 19 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_dist,r_elev,r_azimuth,T,p_cmd,q_cmd,r_cmd])");
-static_assert(kNyN == 15, "step() terminal yref packing assumes NYN == 15 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_dist,r_elev,r_azimuth])");
+  #if ARGUS_OCC_COST_MODE
+  static_assert(kNy == 20, "step() yref packing assumes NY == 20 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_occ,r_dist,r_elev,r_azimuth,T,p_cmd,q_cmd,r_cmd])");
+  static_assert(kNyN == 16, "step() terminal yref packing assumes NYN == 16 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_occ,r_dist,r_elev,r_azimuth])");
+  #else
+  static_assert(kNy == 19, "step() yref packing assumes NY == 19 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_dist,r_elev,r_azimuth,T,p_cmd,q_cmd,r_cmd])");
+  static_assert(kNyN == 15, "step() terminal yref packing assumes NYN == 15 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_dist,r_elev,r_azimuth])");
+  #endif
 #else
-static_assert(kNy == 20, "step() yref packing (cost mode) assumes NY == 20 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_obs,r_dist,r_elev,r_azimuth,T,p_cmd,q_cmd,r_cmd])");
-static_assert(kNyN == 16, "step() terminal yref packing (cost mode) assumes NYN == 16 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_obs,r_dist,r_elev,r_azimuth])");
+  #if ARGUS_OCC_COST_MODE
+  static_assert(kNy == 21, "step() yref packing (cost mode) assumes NY == 21 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_obs,r_occ,r_dist,r_elev,r_azimuth,T,p_cmd,q_cmd,r_cmd])");
+  static_assert(kNyN == 17, "step() terminal yref packing (cost mode) assumes NYN == 17 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_obs,r_occ,r_dist,r_elev,r_azimuth])");
+  #else
+  static_assert(kNy == 20, "step() yref packing (cost mode) assumes NY == 20 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_obs,r_dist,r_elev,r_azimuth,T,p_cmd,q_cmd,r_cmd])");
+  static_assert(kNyN == 16, "step() terminal yref packing (cost mode) assumes NYN == 16 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_obs,r_dist,r_elev,r_azimuth])");
+  #endif
 #endif
-static_assert(kNp == 10,  "step() parameter packing assumes NP == 10 ([p_target_x,y,z, obs_p0_x,y, obs_d0, obs_grad_x,y, azimuth_ux,uy]); run generate_mpc.py");
+static_assert(kNp == 13,  "step() parameter packing assumes NP == 13 ([p_target_x,y,z, obs_p0_x,y, obs_d0, obs_grad_x,y, azimuth_ux,uy, occ_d0, occ_grad_x,y_scaled]); run generate_mpc.py");
 
 using RawState = std::array<double, kNx>;
 using RawInput = std::array<double, kNu>;
@@ -97,7 +108,8 @@ int QuadrotorMpc::horizonLength() const { return kN; }
 
 Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizon,
                            const std::vector<TargetState>& target,
-                           const std::vector<ObstacleLinearization>& obstacle)
+                           const std::vector<ObstacleLinearization>& obstacle,
+                           const std::vector<OcclusionLinearization>& occlusion)
 {
     if (static_cast<int>(horizon.size()) != kN)
         throw std::invalid_argument(
@@ -111,11 +123,17 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
         throw std::invalid_argument(
             "QuadrotorMpc::step(): obstacle.size() must equal horizonLength() (" +
             std::to_string(kN) + ") or be empty");
+    if (!occlusion.empty() && static_cast<int>(occlusion.size()) != kN)
+        throw std::invalid_argument(
+            "QuadrotorMpc::step(): occlusion.size() must equal horizonLength() (" +
+            std::to_string(kN) + ") or be empty");
 
-    // Empty obstacle input -> every stage uses the no-op default (huge
-    // distance, zero gradient), same as not having avoidance wired in.
+    // Empty obstacle/occlusion input -> every stage uses the no-op default
+    // (huge distance, zero gradient), same as not having avoidance wired in.
     static const std::vector<ObstacleLinearization> kNoObstacle(kN);
+    static const std::vector<OcclusionLinearization> kNoOcclusion(kN);
     const std::vector<ObstacleLinearization>& obs = obstacle.empty() ? kNoObstacle : obstacle;
+    const std::vector<OcclusionLinearization>& occ = occlusion.empty() ? kNoOcclusion : occlusion;
 
     Impl& impl = *impl_;
 
@@ -146,17 +164,26 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
     // a different desired azimuth direction. Terminal stage reuses the last
     // running stage's info, same convention as yref_e below reusing
     // horizon[kN-1].
+    // occ_grad_x/y_scaled = (1-s_star)*grad_x/y: the chain-rule factor from
+    // occ_p0 = (1-s_star)*drone_p0 + s_star*p_target only partially
+    // co-moving with the drone's own position -- see
+    // OcclusionLinearization's comment and design_decisions.md's
+    // "Occlusion-aware cost term" planning notes. Applied here, once, so
+    // generate_mpc.py's symbolic graph only ever needs a plain dot
+    // product (same shape as d_lin), not knowledge of s_star itself.
     auto set_params = [&](int stage, const Reference& ref, const TargetState& tgt,
-                           const ObstacleLinearization& o) {
+                           const ObstacleLinearization& o, const OcclusionLinearization& oc) {
+        const double one_minus_s = 1.0 - oc.s_star;
         double p_param[kNp] = {
             tgt.x, tgt.y, tgt.z,
             o.p0_x, o.p0_y, o.distance, o.grad_x, o.grad_y,
             ref.azimuth_ux, ref.azimuth_uy,
+            oc.distance, one_minus_s * oc.grad_x, one_minus_s * oc.grad_y,
         };
         quadrotor_acados_update_params(impl.capsule, stage, p_param, kNp);
     };
-    for (int i = 0; i < kN; ++i) set_params(i, horizon[i], target[i], obs[i]);
-    set_params(kN, horizon[kN - 1], target[kN - 1], obs[kN - 1]);
+    for (int i = 0; i < kN; ++i) set_params(i, horizon[i], target[i], obs[i], occ[i]);
+    set_params(kN, horizon[kN - 1], target[kN - 1], obs[kN - 1], occ[kN - 1]);
 
     // ── Pin the measured state as the initial-stage equality constraint ─────
     ocp_nlp_constraints_model_set(impl.config, impl.dims, impl.nlp_in, impl.nlp_out, 0, "lbx",
@@ -191,6 +218,9 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
 #if !ARGUS_OBS_SLACK_MODE
             0.0,                  // r_obs reference: clear of any obstacle (cost mode only)
 #endif
+#if ARGUS_OCC_COST_MODE
+            0.0,                  // r_occ reference: sightline clear of any obstacle
+#endif
             0.0,                  // r_dist reference: exactly at the desired horizontal standoff distance
             0.0,                  // r_elev reference: exactly at the designed look-down angle
             0.0,                  // r_azimuth reference: exactly at the desired azimuth direction
@@ -209,6 +239,9 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
             0.0,
 #if !ARGUS_OBS_SLACK_MODE
             0.0,                  // r_obs reference (cost mode only)
+#endif
+#if ARGUS_OCC_COST_MODE
+            0.0,                  // r_occ reference
 #endif
             0.0,
             0.0,

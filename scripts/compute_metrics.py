@@ -35,15 +35,20 @@ def _parse_args():
                          "trailer.distance_to_target")
     p.add_argument("--save-png", metavar="PATH",
                     help="Render headlessly to PATH instead of showing a window")
-    p.add_argument("--d-fov", type=float, default=4.0,
+    p.add_argument("--d-fov", type=float, default=1.68,
                     help="Occlusion falloff scale [m]: occlusion_clearance (the "
                          "ground-truth min ESDF distance along the drone->target "
                          "sightline, already logged by online_mapping_demo.cpp) is "
                          "converted to a percentage via occ_pct = 100 * max(0, 1 - "
                          "occlusion_clearance/d_FOV) -- 0 m clearance = 100% "
-                         "occluded, >= d_FOV clearance = 0% occluded. Same formula "
-                         "and default as scripts/occlusion_metric_demo.py (default: "
-                         "%(default)s m)")
+                         "occluded, >= d_FOV clearance = 0% occluded. Default "
+                         "derived, not picked: trailer.distance_to_target (2.0m) * "
+                         "tan(camera.fov_half_angle_deg=40deg) ~= 1.68m -- the "
+                         "widest the camera's cone gets across the depth-gated "
+                         "drone->target segment (at the target's own depth), see "
+                         "design_decisions.md's 'd_FOV/tau_occ changed to 1.68m, "
+                         "derived -- was 4.0m, picked'. Same formula and default as "
+                         "scripts/occlusion_metric_demo.py (default: %(default)s m)")
     p.add_argument("--occlusion-event-pct", type=float, default=80.0,
                     help="occ_pct above this counts as an occlusion EVENT worth "
                          "flagging red, not just some nonzero degradation "

@@ -311,6 +311,51 @@ PlanarQuery queryPlanar(const VoxelGrid& grid, double x, double y)
     return result;
 }
 
+// Local affine linearization of own_map's ESDF MINIMUM along the
+// drone->target sightline -- feeds argus_mpc::OcclusionLinearization (the
+// occlusion-aware cost, config/quadrotor.yaml's occlusion_avoidance.mode).
+// Same march occlusionClearance() below already does for the (ground-
+// truth) metric, but against own_map's belief instead, via queryPlanar()
+// (bilinear + analytic gradient, needed here -- occlusionClearance()'s
+// distanceAtPoint() has no gradient) and keeping s (renamed s_star) and
+// the gradient at the winning sample instead of throwing them away. See
+// design_decisions.md's "Occlusion-aware cost term" planning notes for
+// why the worst point, not a fixed one, is what gets linearized, and why
+// s_star is needed at all (the chain rule through occ_p0's partial
+// dependence on the drone's own position).
+struct OcclusionMarchResult
+{
+    // Large-but-finite sentinel, not true infinity -- same reasoning as
+    // ObstacleLinearization's default and argus_esdf::VoxelGrid's own
+    // "no obstacle yet" sentinel: an actual inf here risks an inf-inf=NaN
+    // somewhere downstream if this value is ever combined with another
+    // infinite quantity (see design_decisions.md's sentinel bug note).
+    double distance = 1.0e6;
+    double grad_x = 0.0, grad_y = 0.0;
+    double s_star = 0.0;
+    bool valid = false;
+};
+
+OcclusionMarchResult occlusionLinearization(const VoxelGrid& grid,
+                                             double x0, double y0, double x1, double y1)
+{
+    const double seg_len = std::hypot(x1 - x0, y1 - y0);
+    const int n_samples = std::max(1, static_cast<int>(std::ceil(seg_len / grid.voxelSize())));
+    OcclusionMarchResult best;
+    for (int i = 0; i <= n_samples; ++i) {
+        const double s = static_cast<double>(i) / n_samples;
+        const auto q = queryPlanar(grid, x0 + s * (x1 - x0), y0 + s * (y1 - y0));
+        if (q.valid && q.distance < best.distance) {
+            best.distance = q.distance;
+            best.grad_x   = q.grad_x;
+            best.grad_y   = q.grad_y;
+            best.s_star   = s;
+            best.valid    = true;
+        }
+    }
+    return best;
+}
+
 // Fraction of voxels own_map has actually resolved (kFree or kOccupied) --
 // a quick sanity signal that the sensor loop is making progress, not the
 // full observable-slice coverage report (that belongs to step 9's console
@@ -698,7 +743,30 @@ int main(int argc, char** argv)
             }
         }
 
-        const argus_mpc::Command cmd = mpc.step(x0_mpc, mpc_horizon, target_horizon, obstacle);
+        // Occlusion-aware cost linearization (config/quadrotor.yaml's
+        // occlusion_avoidance.mode) -- same per-stage drone position
+        // (pos_k, constant-velocity propagated) as obstacle[] above, but
+        // marched against own_map's belief along the sightline to each
+        // stage's own predicted target position (target_horizon[k]), not
+        // queried at pos_k itself. Safe to compute unconditionally even
+        // when occlusion_avoidance.mode='off' at codegen time -- the OCP
+        // simply never reads these params then (see QuadrotorMpc.hpp's
+        // OcclusionLinearization comment), so this is wasted but harmless
+        // work in that mode, not a correctness hazard.
+        std::vector<argus_mpc::OcclusionLinearization> occlusion(N);
+        {
+            const auto occ0 = occlusionLinearization(own_map, p0.x(), p0.y(),
+                                                       target_horizon[0].x, target_horizon[0].y);
+            if (occ0.valid) occlusion[0] = {occ0.distance, occ0.grad_x, occ0.grad_y, occ0.s_star};
+        }
+        for (int k = 1; k < N; ++k) {
+            const Eigen::Vector2d pos_k = p0 + v0 * (k * control_dt);
+            const auto occk = occlusionLinearization(own_map, pos_k.x(), pos_k.y(),
+                                                       target_horizon[k].x, target_horizon[k].y);
+            if (occk.valid) occlusion[k] = {occk.distance, occk.grad_x, occk.grad_y, occk.s_star};
+        }
+
+        const argus_mpc::Command cmd = mpc.step(x0_mpc, mpc_horizon, target_horizon, obstacle, occlusion);
         u = {cmd.thrust * kTHover, cmd.roll_rate, cmd.pitch_rate, cmd.yaw_rate};
 
         {

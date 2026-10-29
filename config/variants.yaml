@@ -89,6 +89,39 @@ trailer_on_slack_weak:
     W_stage:    [100.0, 100.0, 100.0,  10.0, 10.0, 10.0,  5.0, 5.0,  1.0, 1.0, 1.0,  300.0, 0.0, 0.0, 0.0,  0.1, 1.0, 1.0, 1.0]
     W_terminal: [200.0, 200.0, 200.0,  20.0, 20.0, 20.0,  10.0, 10.0,  2.0, 2.0, 2.0,  150.0, 0.0, 0.0, 0.0]
 
+occlusion_cost_on:
+  # Committed config as-is (trailer on, slack on, retuned body rates) with
+  # the occlusion-aware squared-hinge cost (r_occ, config/quadrotor.yaml's
+  # occlusion_avoidance.mode) switched on -- off by default in the
+  # committed config since it's new and untested in the real pipeline.
+  # W_stage/W_terminal insert r_occ right after r_fov (same slot order as
+  # generate_mpc.py's middle_parts), everything else unchanged from the
+  # committed arrays. The r_occ weight itself (50.0 stage / 25.0 terminal,
+  # same 0.5x stage->terminal ratio r_fov itself uses, not the 2x most
+  # other residuals use) is a first guess, NOT tuned -- see
+  # design_decisions.md's "Occlusion-aware cost term" planning notes; this
+  # variant exists to A/B solve-time and smoothness before/after, not to
+  # claim a final weight.
+  occlusion_avoidance:
+    mode: cost
+  cost:
+    W_stage:    [100.0, 100.0, 100.0,  10.0, 10.0, 10.0,  5.0, 5.0,  5.0, 5.0, 5.0,  300.0, 50.0, 0.0, 0.0, 0.0,  0.1, 1.0, 1.0, 1.0]
+    W_terminal: [200.0, 200.0, 200.0,  20.0, 20.0, 20.0,  10.0, 10.0,  10.0, 10.0, 10.0,  150.0, 25.0, 0.0, 0.0, 0.0]
+
+horizon_n50:
+  # Committed config as-is (trailer on, slack on, retuned body rates) with
+  # the horizon stretched from N=20 (1.0s look-ahead) to N=50 (2.5s) --
+  # mpc.N and trailer.N must match (examples/online_mapping_demo.cpp
+  # checks this at startup, TrailerFollower's own horizon). Tests whether
+  # a longer horizon actually reduces aggressive motion/body-rate
+  # magnitude, and whether solve time scales with total stage count or
+  # just with how many stages have a genuinely near-binding obstacle
+  # constraint (see design_decisions.md's N=50 horizon-sweep entry).
+  mpc:
+    N: 50
+  trailer:
+    N: 50
+
 trailer_on_slack_tiny:
   # Same, but 1000x smaller than trailer_on_slack_on (10000->10, 100->0.1)
   # -- the weakest penalty magnitude in this sweep, right at the edge of

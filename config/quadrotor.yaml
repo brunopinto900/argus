@@ -200,3 +200,27 @@ obstacle_avoidance:
   d_safe_m: 0.32
   slack_linear_weight:    10000.0
   slack_quadratic_weight:   100.0
+
+# Occlusion-aware cost: penalizes an obstacle fouling the drone->target
+# camera sightline, not just collision (obstacle_avoidance above) or
+# bearing-cone membership (r_fov). mode: 'disabled' (default, no residual,
+# ny unchanged -- this is new, untested in the real pipeline, so it stays
+# opt-in; NOT written as 'off' -- PyYAML/YAML-1.1 parses a bare `off` as
+# boolean False, not the string 'off', so generate_mpc.py's OCC_MODE
+# assert would reject it) or 'cost' (adds a squared-hinge r_occ residual
+# to cost_y_expr,
+# see generate_mpc.py's OCC_MODE). Changes ny/ny_e by +1 when 'cost' --
+# cost.W_stage/W_terminal above must already be shaped for it (ready-made
+# pairs in config/variants.yaml).
+#
+# tau_occ_m derived, not picked (see design_decisions.md's "d_FOV/tau_occ
+# changed to 1.68m, derived -- was 4.0m, picked"):
+#   tau_occ = trailer.distance_to_target * tan(camera.fov_half_angle_deg)
+#           = 2.0 * tan(40 deg) ~= 1.68 m
+# the widest the camera's cone gets across the drone->target segment (at
+# the target's own depth) -- same number as scripts/compute_metrics.py's
+# --d-fov default, so the cost activates at exactly the clearance the
+# metric already calls "0% occluded".
+occlusion_avoidance:
+  mode: disabled
+  tau_occ_m: 1.68

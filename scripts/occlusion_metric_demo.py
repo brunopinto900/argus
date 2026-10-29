@@ -91,9 +91,12 @@ def _parse_args():
                     help="Render headlessly to PATH instead of showing a window")
     p.add_argument("--n-samples", type=int, default=65,
                     help="March steps for sampled_occlusion_pct() (default: %(default)s)")
-    p.add_argument("--d-fov", type=float, default=4.0,
+    p.add_argument("--d-fov", type=float, default=1.68,
                     help="Lateral-clearance falloff scale [m] (default: %(default)s, "
-                         "matches the original formula's example)")
+                         "derived as trailer.distance_to_target * tan(fov_half_angle_deg) "
+                         "-- see design_decisions.md's 'd_FOV/tau_occ changed to 1.68m, "
+                         "derived -- was 4.0m, picked'; matches scripts/compute_metrics.py's "
+                         "default)")
     p.add_argument("--config-path", default="config/quadrotor.yaml",
                     help="Source of camera.fov_half_angle_deg, drawn on every scenario panel "
                          "purely for visual context -- it is not part of the occlusion math "

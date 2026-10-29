@@ -68,6 +68,42 @@ struct ObstacleLinearization
     double grad_x = 0.0, grad_y = 0.0;
 };
 
+// One horizon stage's local affine approximation of the ESDF's MINIMUM
+// along the drone->target camera sightline (the worst occlusion point),
+// NOT at the drone's own position like ObstacleLinearization above --
+// feeds the occlusion-aware cost (config/quadrotor.yaml's
+// occlusion_avoidance.mode), see design_decisions.md's "Occlusion-aware
+// cost term" planning notes for the full derivation.
+//
+// distance/grad_x/grad_y: ESDF value and gradient at the worst point
+// found by marching the sightline (same march occlusionClearance() in
+// examples/online_mapping_demo.cpp already does for the metric, just
+// against own_map's belief instead of ground truth, and also keeping
+// the gradient and s_star it currently throws away).
+//
+// s_star in [0,1]: how far along the drone->target segment that worst
+// point sits (0 = right at the drone, 1 = right at the target). The
+// worst point is occ_p0 = (1-s_star)*drone_p0 + s_star*p_target -- an
+// affine blend, not the drone's own position -- so moving the drone by
+// delta only moves occ_p0 by (1-s_star)*delta (chain rule; the target
+// end of the segment doesn't move with the drone). QuadrotorMpc::step()
+// pre-multiplies grad_x/grad_y by (1-s_star) before handing them to the
+// solver as model.p -- the OCP's symbolic graph just does a plain dot
+// product against the drone's own linearization point (reused from
+// ObstacleLinearization's p0, see generate_mpc.py), same shape as
+// d_lin.
+//
+// Default (huge distance, zero gradient, s_star=0) is a no-op, same
+// convention as ObstacleLinearization: the occlusion hinge cost never
+// activates, so passing no occlusion info at all (or leaving any stage
+// at its default) is always safe.
+struct OcclusionLinearization
+{
+    double distance = 1.0e6;
+    double grad_x = 0.0, grad_y = 0.0;
+    double s_star = 0.0;
+};
+
 // First-stage optimal input, ready to command a PX4-style body-rate
 // interface. thrust is normalised so 1.0 == hover (already divided by
 // T_hover) — callers never need the solver's internal hover-thrust constant.
@@ -142,9 +178,16 @@ public:
     // horizon), or empty to disable collision avoidance entirely (every
     // stage uses the no-op default). obstacle.size() must equal
     // horizonLength() if non-empty.
+    // occlusion: one OcclusionLinearization per horizon stage, or empty
+    // to disable the occlusion-aware cost entirely (every stage uses the
+    // no-op default) -- safe to leave empty even when
+    // occlusion_avoidance.mode='cost' was baked in at codegen time, same
+    // "no-op, never spuriously penalized" convention as obstacle above.
+    // occlusion.size() must equal horizonLength() if non-empty.
     Command step(const State& x0, const std::vector<Reference>& horizon,
                  const std::vector<TargetState>& target,
-                 const std::vector<ObstacleLinearization>& obstacle = {});
+                 const std::vector<ObstacleLinearization>& obstacle = {},
+                 const std::vector<OcclusionLinearization>& occlusion = {});
 
     // Accumulated acados solve-time stats since construction (or since the
     // last resetSolverTiming() call).

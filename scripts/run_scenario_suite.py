@@ -123,7 +123,11 @@ SCENARIOS = [
 # see design_decisions.md's "d_safe bumped 0.27 -> 0.32" /
 # "REAL_TARGET_M decoupled from d_safe" entries.
 REAL_TARGET_M = 0.29
-D_FOV = 4.0
+# Derived, not picked -- trailer.distance_to_target * tan(fov_half_angle_deg)
+# = 2.0 * tan(40deg) ~= 1.68m, same default as scripts/compute_metrics.py
+# and scripts/occlusion_metric_demo.py. See design_decisions.md's
+# "d_FOV/tau_occ changed to 1.68m, derived -- was 4.0m, picked".
+D_FOV = 1.68
 OCCLUSION_EVENT_PCT = 80.0
 
 # Soft metrics tracked in the comparison table/baseline. "higher_is_worse"
@@ -135,6 +139,9 @@ SOFT_METRICS = [
     "fov_exceedance_pct",
     "occlusion_pct_max",
     "body_rate_magnitude_max_deg_s",
+    "accel_rms_m_s2",
+    "jerk_rms_m_s3",
+    "ang_accel_rms_deg_s2",
 ]
 
 # Provisional regression tolerance: flag only if a soft metric got worse by
@@ -279,6 +286,31 @@ def compute_gate_and_stats(df, cfg):
     m["body_rate_magnitude_std_deg_s"] = float(np.std(rate_mag_deg_s))
     m["body_rate_magnitude_max_deg_s"] = float(np.max(rate_mag_deg_s))
 
+    # Smoothness: RMS acceleration/jerk (finite-differenced from vx,vy,vz)
+    # and RMS angular acceleration (finite-differenced from p,q,r) --
+    # distinct from body_rate_magnitude_max_deg_s above (a peak, blur-proxy
+    # metric) in that these are RMS-over-the-whole-run measures of how
+    # aggressively the trajectory moves, not just its worst instant. Added
+    # specifically so a soft-cost addition (e.g. the occlusion-aware cost,
+    # config/quadrotor.yaml's occlusion_avoidance.mode) that pulls the
+    # drone to reposition more can be checked for whether that reposition-
+    # ing is itself gentle or jerky, not just whether solve time changed --
+    # see design_decisions.md's "Occlusion-aware cost term" planning notes
+    # and the N=50 horizon-sweep entry, which first used this same
+    # accel/jerk/ang-accel RMS methodology ad hoc before it was promoted
+    # into the suite here.
+    t_arr = df["t"].values
+    dt_arr = np.diff(t_arr)
+    dt_arr[dt_arr <= 0] = np.nan
+    vel = df[["vx", "vy", "vz"]].values
+    accel = np.diff(vel, axis=0) / dt_arr[:, None]
+    jerk = np.diff(accel, axis=0) / dt_arr[:-1, None]
+    rates = df[["p", "q", "r"]].values
+    ang_accel = np.diff(rates, axis=0) / dt_arr[:, None]
+    m["accel_rms_m_s2"] = float(np.sqrt(np.nanmean(accel**2)))
+    m["jerk_rms_m_s3"] = float(np.sqrt(np.nanmean(jerk**2)))
+    m["ang_accel_rms_deg_s2"] = float(np.degrees(np.sqrt(np.nanmean(ang_accel**2))))
+
     m["gates_pass"] = bool(m["collision_free"] and m["solve_fail_rate_pct"] == 0.0
                             and m["pipeline_real_time_safe"] and m["rate_saturation_pct"] == 0.0)
     return m
@@ -412,8 +444,9 @@ def main():
         print(f"--- {name} ({scenario_file}) {'[cached]' if from_cache else '[ran]'} ---")
         results[name] = compute_gate_and_stats(df, cfg)
 
-    print("\n" + "=" * 100)
-    header = f"{'scenario':<18}{'gates':<8}{'xy_err mean/max':<20}{'fov_exc%':<10}{'occ_max%':<10}{'rate_mag_max':<14}"
+    print("\n" + "=" * 120)
+    header = (f"{'scenario':<18}{'gates':<8}{'xy_err mean/max':<20}{'fov_exc%':<10}{'occ_max%':<10}"
+              f"{'rate_mag_max':<14}{'accel/jerk rms':<18}{'ang_acc rms':<12}")
     print(header)
     print("-" * len(header))
     any_regressions = False
@@ -423,7 +456,9 @@ def main():
         print(f"{name:<18}{gate_str:<8}"
               f"{m['xy_tracking_error_mean_m']:.3f}/{m['xy_tracking_error_max_m']:.3f}".ljust(18) + "  "
               f"{m['fov_exceedance_pct']:<10.1f}{m['occlusion_pct_max']:<10.1f}"
-              f"{m['body_rate_magnitude_max_deg_s']:<14.1f}")
+              f"{m['body_rate_magnitude_max_deg_s']:<14.1f}"
+              f"{m['accel_rms_m_s2']:.2f}/{m['jerk_rms_m_s3']:.2f}".ljust(18)
+              + f"{m['ang_accel_rms_deg_s2']:<12.1f}")
         flags = regressions(name, m, baseline)
         if flags:
             any_regressions = True
