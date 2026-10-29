@@ -87,6 +87,15 @@ struct Command
     // relax it there instead of returning an infeasible solve. Log this
     // per tick -- nonzero ticks are real conflicts worth looking at.
     double max_obstacle_slack = 0.0;
+    // Inner HPIPM iterations the QP subproblem took this tick ("qp_iter"
+    // via ocp_nlp_get -- see QuadrotorMpc.cpp). SQP_RTI does exactly one
+    // outer Newton-type step per step() call, so this is a direct per-
+    // tick measure of QP-solve work, independent of wall-clock noise --
+    // logged to isolate whether the slack constraint's solve-time cost is
+    // from the QP actually doing more iterations (structural -- a bigger
+    // problem to solve) vs. from each iteration costing more for some
+    // other reason (e.g. conditioning). See design_decisions.md.
+    int qp_iter = 0;
 };
 
 // Wall-clock timing of the acados solve call itself (i.e. just

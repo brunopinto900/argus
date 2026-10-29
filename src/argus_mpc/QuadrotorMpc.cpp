@@ -52,6 +52,7 @@ struct QuadrotorMpc::Impl
     ocp_nlp_dims*             dims;
     ocp_nlp_in*               nlp_in;
     ocp_nlp_out*              nlp_out;
+    ocp_nlp_solver*           nlp_solver;  // for ocp_nlp_get(..., "qp_iter", ...)
     bool                      warm_started = false;
 
     double timing_min_ms  = std::numeric_limits<double>::infinity();
@@ -75,10 +76,11 @@ struct QuadrotorMpc::Impl
             throw std::runtime_error(
                 "quadrotor_acados_create() failed with status " + std::to_string(status));
 
-        config  = quadrotor_acados_get_nlp_config(capsule);
-        dims    = quadrotor_acados_get_nlp_dims(capsule);
-        nlp_in  = quadrotor_acados_get_nlp_in(capsule);
-        nlp_out = quadrotor_acados_get_nlp_out(capsule);
+        config     = quadrotor_acados_get_nlp_config(capsule);
+        dims       = quadrotor_acados_get_nlp_dims(capsule);
+        nlp_in     = quadrotor_acados_get_nlp_in(capsule);
+        nlp_out    = quadrotor_acados_get_nlp_out(capsule);
+        nlp_solver = quadrotor_acados_get_nlp_solver(capsule);
     }
 
     ~Impl()
@@ -255,6 +257,10 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
     // (Command::max_obstacle_slack means nothing there; collision avoidance
     // shows up in r_obs's cost contribution instead, not logged per-tick).
 
+    // ── QP iteration count for this tick's single RTI step ──────────────────
+    int qp_iter = 0;
+    ocp_nlp_get(impl.nlp_solver, "qp_iter", &qp_iter);
+
     // ── Shift warm-start: stage i+1 → stage i ────────────────────────────────
     RawState x_s{};
     RawInput u_s{};
@@ -276,6 +282,7 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
         u[3],
         status,
         max_slack,
+        qp_iter,
     };
 }
 

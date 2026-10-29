@@ -9,10 +9,13 @@
 # already shaped for that mode (20/16 entries for 'cost', 19/15 for
 # 'slack' -- see generate_mpc.py's shape assertions).
 #
-# All four below hold p,q,r at the SAME unbumped weights (1.0/2.0, not the
+# All seven below hold p,q,r at the SAME unbumped weights (1.0/2.0, not the
 # committed config's retuned 5.0/10.0) so toggling trailer/slack is isolated
 # from the separate body-rate retune -- see design_decisions.md's "which
-# change is causing the solver time increase" investigation.
+# change is causing the solver time increase" investigation. The last two
+# (trailer_on_slack_weak/tiny) sweep slack penalty MAGNITUDE at fixed
+# trailer=on to test whether solve time tracks weight scale (conditioning)
+# or stays flat (purely the inequality's structural presence).
 
 trailer_off_slack_off:
   # Pre-2422d2c formulation: trailer tracking off (standoff held via
@@ -67,6 +70,37 @@ trailer_on_slack_linear_only:
     mode: slack
     slack_linear_weight:    10000.0
     slack_quadratic_weight:     0.0
+  cost:
+    W_stage:    [100.0, 100.0, 100.0,  10.0, 10.0, 10.0,  5.0, 5.0,  1.0, 1.0, 1.0,  300.0, 0.0, 0.0, 0.0,  0.1, 1.0, 1.0, 1.0]
+    W_terminal: [200.0, 200.0, 200.0,  20.0, 20.0, 20.0,  10.0, 10.0,  2.0, 2.0, 2.0,  150.0, 0.0, 0.0, 0.0]
+
+trailer_on_slack_weak:
+  # Same as trailer_on_slack_on, slack_linear/quadratic_weight both 100x
+  # smaller (10000->100, 100->1) -- committed obstacle_avoidance.d_safe_m
+  # stays 0.32 (the constraint bound is unchanged; only the penalty
+  # MAGNITUDE shrinks). If solve time tracks weight magnitude, that's
+  # conditioning; if it stays flat like trailer_on_slack_linear_only did,
+  # that confirms it's the inequality's presence, not its penalty scale.
+  obstacle_avoidance:
+    mode: slack
+    slack_linear_weight:    100.0
+    slack_quadratic_weight:   1.0
+  cost:
+    W_stage:    [100.0, 100.0, 100.0,  10.0, 10.0, 10.0,  5.0, 5.0,  1.0, 1.0, 1.0,  300.0, 0.0, 0.0, 0.0,  0.1, 1.0, 1.0, 1.0]
+    W_terminal: [200.0, 200.0, 200.0,  20.0, 20.0, 20.0,  10.0, 10.0,  2.0, 2.0, 2.0,  150.0, 0.0, 0.0, 0.0]
+
+trailer_on_slack_tiny:
+  # Same, but 1000x smaller than trailer_on_slack_on (10000->10, 100->0.1)
+  # -- the weakest penalty magnitude in this sweep, right at the edge of
+  # no longer being a meaningfully "exact" penalty (see config/
+  # quadrotor.yaml's obstacle_avoidance comment on slack_linear_weight
+  # needing to exceed the constraint's Lagrange multiplier to bind
+  # exactly) -- included to stress-test the "is it conditioning"
+  # hypothesis at the extreme end of the sweep.
+  obstacle_avoidance:
+    mode: slack
+    slack_linear_weight:    10.0
+    slack_quadratic_weight:  0.1
   cost:
     W_stage:    [100.0, 100.0, 100.0,  10.0, 10.0, 10.0,  5.0, 5.0,  1.0, 1.0, 1.0,  300.0, 0.0, 0.0, 0.0,  0.1, 1.0, 1.0, 1.0]
     W_terminal: [200.0, 200.0, 200.0,  20.0, 20.0, 20.0,  10.0, 10.0,  2.0, 2.0, 2.0,  150.0, 0.0, 0.0, 0.0]
