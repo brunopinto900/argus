@@ -64,7 +64,11 @@ r_occ for occlusion_avoidance.mode='cost', in that order if both are on)
   - r_dist = ||p_drone_xy - p_leader_xy|| - D_DESIRED — HORIZONTAL-only standoff-
     distance cost (ground-plane distance, not 3D range -- see r_elev below for why),
     added alongside (not replacing) x/y/z tracking of the trailer reference point;
-    see design_decisions.md's collision-clearance analysis for why
+    see design_decisions.md's collision-clearance analysis for why.
+    trailer.distance_mode='band' (opt-in, default 'fixed') replaces this single
+    residual with two squared hinges (r_dist_min, r_dist_max) -- a dead zone
+    over [D_MIN, D_MAX] instead of a single-point target, so standoff distance
+    is free to drift within the band at zero cost. ny grows by 1 in this mode.
   - r_elev = (z_drone - z_leader) - horiz_dist * tan(target_bearing) — dedicated
     elevation/pitch-angle residual, decoupled from r_dist so standoff distance and
     look-down angle each have their own target instead of competing for one shared
@@ -167,6 +171,21 @@ SLACK_QUADRATIC = float(_obs_cfg.get('slack_quadratic_weight', 100.0))
 # same standoff distance the trailer reference point is built from
 # (config/quadrotor.yaml's trailer.distance_to_target).
 D_DESIRED = float(_cfg['trailer']['distance_to_target'])
+
+# 'fixed' (default): r_dist = horiz_dist - D_DESIRED, a single quadratic-
+# style residual pulling toward one exact distance -- always fighting any
+# other term (e.g. occlusion) that wants standoff to drift even slightly,
+# since NLS squares it into a cost that's nonzero everywhere except
+# exactly D_DESIRED. 'band': replaces it with two independent squared
+# hinges (r_dist_min, r_dist_max -- see the module docstring), both
+# exactly zero anywhere inside [D_MIN, D_MAX], same "dead zone" shape
+# r_fov/r_obs already use. ny grows by 1 in band mode (1 residual -> 2),
+# same additive pattern as OBS_MODE/OCC_MODE below.
+DIST_MODE = str(_cfg.get('trailer', {}).get('distance_mode', 'fixed')).lower()
+assert DIST_MODE in ('fixed', 'band'), \
+    f"trailer.distance_mode must be 'fixed' or 'band', got {DIST_MODE!r}"
+D_MIN = float(_cfg['trailer'].get('distance_min_m', D_DESIRED - 0.5))
+D_MAX = float(_cfg['trailer'].get('distance_max_m', D_DESIRED + 1.0))
 # Desired look-down (elevation) angle for r_elev -- same design angle the
 # old kFovZRef altitude pin used (config/quadrotor.yaml's
 # trailer.target_bearing_deg), now targeted directly as its own residual
@@ -292,7 +311,22 @@ def generate_mpc():
     #              target instead of a fixed yref pin)
     horiz_dist = ca.sqrt(d_world[0]**2 + d_world[1]**2 + 1e-12)
     vert_offset = x_sym[2] - p_target[2]  # drone z - leader z (+ve: drone above)
-    r_dist = horiz_dist - D_DESIRED
+    if DIST_MODE == 'band':
+        # Two independent squared hinges, NOT one hinge on a summed
+        # residual -- (r_min + r_max)^2 would reintroduce a cross-term
+        # coupling the two sides even though at most one is ever active
+        # (D_MIN < D_MAX), and would change the Hessian structure near
+        # the transition. Each as its own NLS residual keeps both exactly
+        # zero (not just small) throughout the whole band, which is the
+        # actual point: no cost pushing back on standoff distance at all
+        # while it's inside [D_MIN, D_MAX], so it doesn't fight whatever
+        # else (e.g. occlusion) wants it to drift within that band.
+        r_dist_min = ca.fmax(0.0, D_MIN - horiz_dist)
+        r_dist_max = ca.fmax(0.0, horiz_dist - D_MAX)
+        dist_parts = [r_dist_min, r_dist_max]
+    else:
+        r_dist = horiz_dist - D_DESIRED
+        dist_parts = [r_dist]
     r_elev = vert_offset - horiz_dist * ca.tan(TARGET_BEARING_RAD)
 
     # ── Azimuth residual: which side of the leader (e.g. "behind") ──────────
@@ -339,13 +373,13 @@ def generate_mpc():
         middle_parts.append(r_obs)
     if OCC_MODE == 'cost':
         middle_parts.append(r_occ)
-    middle_parts += [r_dist, r_elev, r_azimuth]
+    middle_parts += dist_parts + [r_elev, r_azimuth]
 
     cost_y_expr   = ca.vertcat(x_sym[:8], body_rates, *middle_parts, u_sym)
     cost_y_expr_e = ca.vertcat(x_sym[:8], body_rates, *middle_parts)
 
-    expected_ny  = 19 + (OBS_MODE == 'cost') + (OCC_MODE == 'cost')
-    expected_nye = 15 + (OBS_MODE == 'cost') + (OCC_MODE == 'cost')
+    expected_ny  = 19 + (OBS_MODE == 'cost') + (OCC_MODE == 'cost') + (DIST_MODE == 'band')
+    expected_nye = 15 + (OBS_MODE == 'cost') + (OCC_MODE == 'cost') + (DIST_MODE == 'band')
     assert W_STAGE.shape[0] == expected_ny, (
         f"obstacle_avoidance.mode={OBS_MODE!r}, occlusion_avoidance.mode={OCC_MODE!r} "
         f"needs cost.W_stage with {expected_ny} entries (got {W_STAGE.shape[0]}) -- "
@@ -375,8 +409,11 @@ def generate_mpc():
         yref_hover_list.append(0.0)  # r_obs (clear of any obstacle)
     if OCC_MODE == 'cost':
         yref_hover_list.append(0.0)  # r_occ (sightline clear of any obstacle)
-    yref_hover_list += [0.0,         # r_dist (exactly D_DESIRED away, horizontal)
-                         0.0,        # r_elev (exactly at the designed look-down angle)
+    if DIST_MODE == 'band':
+        yref_hover_list += [0.0, 0.0]  # r_dist_min, r_dist_max (both 0 anywhere inside the band)
+    else:
+        yref_hover_list.append(0.0)    # r_dist (exactly D_DESIRED away, horizontal)
+    yref_hover_list += [0.0,        # r_elev (exactly at the designed look-down angle)
                          0.0,        # r_azimuth (exactly at the desired azimuth direction)
                          T_HOVER, 0.0, 0.0, 0.0]  # T, rates
     yref_hover   = np.array(yref_hover_list)
@@ -522,6 +559,12 @@ def generate_cpp_params_header(out_dir: str):
         f.write("// generate_mpc.py's OCC_MODE / config/quadrotor.yaml's\n")
         f.write("// occlusion_avoidance.mode.\n")
         f.write(f"#define ARGUS_OCC_COST_MODE {1 if OCC_MODE == 'cost' else 0}\n")
+        f.write("// 1 = r_dist replaced by two squared hinges (r_dist_min, r_dist_max),\n")
+        f.write("// a dead-zone band [D_MIN, D_MAX] with zero cost anywhere inside it;\n")
+        f.write("// 0 = single quadratic-style r_dist pulling toward exactly D_DESIRED.\n")
+        f.write("// See generate_mpc.py's DIST_MODE / config/quadrotor.yaml's\n")
+        f.write("// trailer.distance_mode.\n")
+        f.write(f"#define ARGUS_DIST_BAND_MODE {1 if DIST_MODE == 'band' else 0}\n")
     print(f"C++ params header written to: {path}")
 
 

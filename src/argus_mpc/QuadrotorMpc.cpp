@@ -26,28 +26,50 @@ constexpr int kNyN = QUADROTOR_NYN;
 constexpr int kNp  = QUADROTOR_NP;
 
 // If the generated model's dimensions ever change, this fails the build
-// loudly instead of silently mis-packing state/yref arrays below. Two
-// independent mode flags (ARGUS_OBS_SLACK_MODE, ARGUS_OCC_COST_MODE, see
-// argus_params.h / generate_mpc.py's OBS_MODE/OCC_MODE) each optionally
-// add one residual slot (r_obs, r_occ) right after r_fov, so ny/ny_e has
-// four possible values.
+// loudly instead of silently mis-packing state/yref arrays below. Three
+// independent mode flags (ARGUS_OBS_SLACK_MODE, ARGUS_OCC_COST_MODE,
+// ARGUS_DIST_BAND_MODE, see argus_params.h / generate_mpc.py's
+// OBS_MODE/OCC_MODE/DIST_MODE) each optionally add one residual slot
+// (r_obs, r_occ, and r_dist_min+r_dist_max replacing the single r_dist)
+// right after r_fov / in the r_dist slot, so ny/ny_e has eight possible
+// values.
 static_assert(kNx == 12, "State/step() packing assumes NX == 12 ([x,y,z,vx,vy,vz,phi,theta,psi,p,q,r])");
 static_assert(kNu == 4,  "Command/step() packing assumes NU == 4 ([T,p_cmd,q_cmd,r_cmd])");
-#if ARGUS_OBS_SLACK_MODE
-  #if ARGUS_OCC_COST_MODE
-  static_assert(kNy == 20, "step() yref packing assumes NY == 20 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_occ,r_dist,r_elev,r_azimuth,T,p_cmd,q_cmd,r_cmd])");
-  static_assert(kNyN == 16, "step() terminal yref packing assumes NYN == 16 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_occ,r_dist,r_elev,r_azimuth])");
+#if ARGUS_DIST_BAND_MODE
+  #if ARGUS_OBS_SLACK_MODE
+    #if ARGUS_OCC_COST_MODE
+    static_assert(kNy == 21, "step() yref packing assumes NY == 21 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_occ,r_dist_min,r_dist_max,r_elev,r_azimuth,T,p_cmd,q_cmd,r_cmd])");
+    static_assert(kNyN == 17, "step() terminal yref packing assumes NYN == 17 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_occ,r_dist_min,r_dist_max,r_elev,r_azimuth])");
+    #else
+    static_assert(kNy == 20, "step() yref packing assumes NY == 20 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_dist_min,r_dist_max,r_elev,r_azimuth,T,p_cmd,q_cmd,r_cmd])");
+    static_assert(kNyN == 16, "step() terminal yref packing assumes NYN == 16 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_dist_min,r_dist_max,r_elev,r_azimuth])");
+    #endif
   #else
-  static_assert(kNy == 19, "step() yref packing assumes NY == 19 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_dist,r_elev,r_azimuth,T,p_cmd,q_cmd,r_cmd])");
-  static_assert(kNyN == 15, "step() terminal yref packing assumes NYN == 15 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_dist,r_elev,r_azimuth])");
+    #if ARGUS_OCC_COST_MODE
+    static_assert(kNy == 22, "step() yref packing (cost mode) assumes NY == 22 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_obs,r_occ,r_dist_min,r_dist_max,r_elev,r_azimuth,T,p_cmd,q_cmd,r_cmd])");
+    static_assert(kNyN == 18, "step() terminal yref packing (cost mode) assumes NYN == 18 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_obs,r_occ,r_dist_min,r_dist_max,r_elev,r_azimuth])");
+    #else
+    static_assert(kNy == 21, "step() yref packing (cost mode) assumes NY == 21 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_obs,r_dist_min,r_dist_max,r_elev,r_azimuth,T,p_cmd,q_cmd,r_cmd])");
+    static_assert(kNyN == 17, "step() terminal yref packing (cost mode) assumes NYN == 17 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_obs,r_dist_min,r_dist_max,r_elev,r_azimuth])");
+    #endif
   #endif
 #else
-  #if ARGUS_OCC_COST_MODE
-  static_assert(kNy == 21, "step() yref packing (cost mode) assumes NY == 21 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_obs,r_occ,r_dist,r_elev,r_azimuth,T,p_cmd,q_cmd,r_cmd])");
-  static_assert(kNyN == 17, "step() terminal yref packing (cost mode) assumes NYN == 17 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_obs,r_occ,r_dist,r_elev,r_azimuth])");
+  #if ARGUS_OBS_SLACK_MODE
+    #if ARGUS_OCC_COST_MODE
+    static_assert(kNy == 20, "step() yref packing assumes NY == 20 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_occ,r_dist,r_elev,r_azimuth,T,p_cmd,q_cmd,r_cmd])");
+    static_assert(kNyN == 16, "step() terminal yref packing assumes NYN == 16 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_occ,r_dist,r_elev,r_azimuth])");
+    #else
+    static_assert(kNy == 19, "step() yref packing assumes NY == 19 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_dist,r_elev,r_azimuth,T,p_cmd,q_cmd,r_cmd])");
+    static_assert(kNyN == 15, "step() terminal yref packing assumes NYN == 15 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_dist,r_elev,r_azimuth])");
+    #endif
   #else
-  static_assert(kNy == 20, "step() yref packing (cost mode) assumes NY == 20 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_obs,r_dist,r_elev,r_azimuth,T,p_cmd,q_cmd,r_cmd])");
-  static_assert(kNyN == 16, "step() terminal yref packing (cost mode) assumes NYN == 16 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_obs,r_dist,r_elev,r_azimuth])");
+    #if ARGUS_OCC_COST_MODE
+    static_assert(kNy == 21, "step() yref packing (cost mode) assumes NY == 21 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_obs,r_occ,r_dist,r_elev,r_azimuth,T,p_cmd,q_cmd,r_cmd])");
+    static_assert(kNyN == 17, "step() terminal yref packing (cost mode) assumes NYN == 17 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_obs,r_occ,r_dist,r_elev,r_azimuth])");
+    #else
+    static_assert(kNy == 20, "step() yref packing (cost mode) assumes NY == 20 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_obs,r_dist,r_elev,r_azimuth,T,p_cmd,q_cmd,r_cmd])");
+    static_assert(kNyN == 16, "step() terminal yref packing (cost mode) assumes NYN == 16 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_obs,r_dist,r_elev,r_azimuth])");
+    #endif
   #endif
 #endif
 static_assert(kNp == 13,  "step() parameter packing assumes NP == 13 ([p_target_x,y,z, obs_p0_x,y, obs_d0, obs_grad_x,y, azimuth_ux,uy, occ_d0, occ_grad_x,y_scaled]); run generate_mpc.py");
@@ -192,7 +214,8 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
                                    const_cast<double*>(x0_raw.data()));
 
     // ── Per-stage horizon reference ───────────────────────────────────────────
-    // yref layout: [x,y,z, vx,vy,vz, phi,theta, p,q,r, r_fov, r_dist, r_elev, r_azimuth, T, p_cmd,q_cmd,r_cmd]
+    // yref layout: [x,y,z, vx,vy,vz, phi,theta, p,q,r, r_fov, r_dist (or r_dist_min,r_dist_max
+    // in ARGUS_DIST_BAND_MODE), r_elev, r_azimuth, T, p_cmd,q_cmd,r_cmd]
     // Velocity yref is stage k's target velocity (target[k].vx/vy/vz) —
     // incentivises the drone to match the target's speed at that point in
     // the horizon, not just its speed as of this tick.
@@ -221,7 +244,12 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
 #if ARGUS_OCC_COST_MODE
             0.0,                  // r_occ reference: sightline clear of any obstacle
 #endif
+#if ARGUS_DIST_BAND_MODE
+            0.0,                  // r_dist_min reference: not closer than D_MIN (0 anywhere inside the band)
+            0.0,                  // r_dist_max reference: not farther than D_MAX (0 anywhere inside the band)
+#else
             0.0,                  // r_dist reference: exactly at the desired horizontal standoff distance
+#endif
             0.0,                  // r_elev reference: exactly at the designed look-down angle
             0.0,                  // r_azimuth reference: exactly at the desired azimuth direction
             ARGUS_T_HOVER, 0.0, 0.0, 0.0,
@@ -243,7 +271,12 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
 #if ARGUS_OCC_COST_MODE
             0.0,                  // r_occ reference
 #endif
-            0.0,
+#if ARGUS_DIST_BAND_MODE
+            0.0,                  // r_dist_min reference
+            0.0,                  // r_dist_max reference
+#else
+            0.0,                  // r_dist reference
+#endif
             0.0,
             0.0,
         };

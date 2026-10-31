@@ -126,6 +126,15 @@ plant:
 trailer:
   distance_to_target: 2.0    # hitch distance between the target and the follower's goal point [m]
   heading_gain:        1.0   # lambda: how fast the follower's heading tracks the target's velocity direction
+  # r_dist's shape -- see generate_mpc.py's DIST_MODE / the "Min/max band
+  # instead of a fixed target distance" discussion in design_decisions.md.
+  # 'fixed' (default, no behavior change): single quadratic-style residual
+  # pulling toward exactly distance_to_target. 'band': two squared hinges,
+  # zero cost anywhere in [distance_min_m, distance_max_m] -- doesn't fight
+  # other terms (e.g. occlusion) wanting standoff to drift within the band.
+  distance_mode: fixed
+  distance_min_m: 1.5        # only used when distance_mode: band
+  distance_max_m: 3.0        # only used when distance_mode: band
   N:                   20    # prediction horizon steps
   Ts:                   0.05 # sample time [s]
   # Design target for the camera's pitch bearing to the FOV target -- NOT 0,

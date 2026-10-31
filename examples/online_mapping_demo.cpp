@@ -529,7 +529,8 @@ int main(int argc, char** argv)
             "solve_status,"
             "dist_obstacle,"
             "clearance_true,occlusion_clearance,solve_time_ms,pipeline_time_ms,"
-            "pipeline_onboard_time_ms,esdf_time_ms,obstacle_slack,qp_iter\n";
+            "pipeline_onboard_time_ms,esdf_time_ms,obstacle_slack,qp_iter,"
+            "occ_s_star,occ_grad_check_error_x,occ_grad_check_error_y,occ_analytic_grad_mag\n";
 
     // Staleness measurement -- a separate concern from the hinge cost
     // actually wired into step() above: this measures, per control tick,
@@ -766,6 +767,53 @@ int main(int argc, char** argv)
             if (occk.valid) occlusion[k] = {occk.distance, occk.grad_x, occk.grad_y, occk.s_star};
         }
 
+        // Gradient check: does the analytic (1-s*)*occ_grad the OCP is
+        // actually handed match the TRUE derivative of the real march-
+        // based min-distance function at this tick's drone position? The
+        // analytic side needs no finite-differencing -- occ_lin(x) is
+        // affine by construction, so its own slope IS (1-s*)*occ_grad,
+        // exactly. The only open question is whether that slope equals
+        // the true function's slope, which only holds (envelope theorem)
+        // when s* is an INTERIOR minimizer of the march -- it can fail at
+        // s*=0 or s*=1. Central-difference the real march (same own_map
+        // snapshot held fixed for both evaluations -- only the query
+        // point moves) at p0 +/- a small perturbation, stage 0 only (the
+        // tick that actually drives the realized command). See
+        // design_decisions.md's "Occlusion-aware cost term" planning
+        // notes / professor-review entry for the full derivation this
+        // checks.
+        double occ_grad_check_error_x = 0.0, occ_grad_check_error_y = 0.0;
+        double occ_s_star_logged = 0.0;
+        double occ_analytic_grad_mag = 0.0;
+        {
+            constexpr double kGradCheckDelta = 0.01;  // 1cm
+            const auto occ0 = occlusionLinearization(own_map, p0.x(), p0.y(),
+                                                       target_horizon[0].x, target_horizon[0].y);
+            if (occ0.valid) {
+                occ_s_star_logged = occ0.s_star;
+                const double analytic_grad_x = (1.0 - occ0.s_star) * occ0.grad_x;
+                const double analytic_grad_y = (1.0 - occ0.s_star) * occ0.grad_y;
+                occ_analytic_grad_mag = std::hypot(analytic_grad_x, analytic_grad_y);
+
+                const auto occ_px = occlusionLinearization(own_map, p0.x() + kGradCheckDelta, p0.y(),
+                                                             target_horizon[0].x, target_horizon[0].y);
+                const auto occ_mx = occlusionLinearization(own_map, p0.x() - kGradCheckDelta, p0.y(),
+                                                             target_horizon[0].x, target_horizon[0].y);
+                const auto occ_py = occlusionLinearization(own_map, p0.x(), p0.y() + kGradCheckDelta,
+                                                             target_horizon[0].x, target_horizon[0].y);
+                const auto occ_my = occlusionLinearization(own_map, p0.x(), p0.y() - kGradCheckDelta,
+                                                             target_horizon[0].x, target_horizon[0].y);
+                if (occ_px.valid && occ_mx.valid) {
+                    const double true_grad_x = (occ_px.distance - occ_mx.distance) / (2.0 * kGradCheckDelta);
+                    occ_grad_check_error_x = true_grad_x - analytic_grad_x;
+                }
+                if (occ_py.valid && occ_my.valid) {
+                    const double true_grad_y = (occ_py.distance - occ_my.distance) / (2.0 * kGradCheckDelta);
+                    occ_grad_check_error_y = true_grad_y - analytic_grad_y;
+                }
+            }
+        }
+
         const argus_mpc::Command cmd = mpc.step(x0_mpc, mpc_horizon, target_horizon, obstacle, occlusion);
         u = {cmd.thrust * kTHover, cmd.roll_rate, cmd.pitch_rate, cmd.yaw_rate};
 
@@ -851,7 +899,9 @@ int main(int argc, char** argv)
         if (q1.valid) traj << q1.distance; else traj << "nan";
         traj << ',' << clearance_true << ',' << occlusion_clear << ',' << mpc.lastSolveTimeMs()
              << ',' << pipeline_ms << ',' << pipeline_onboard_ms << ',' << esdf_delta_ms
-             << ',' << cmd.max_obstacle_slack << ',' << cmd.qp_iter << '\n';
+             << ',' << cmd.max_obstacle_slack << ',' << cmd.qp_iter
+             << ',' << occ_s_star_logged << ',' << occ_grad_check_error_x << ',' << occ_grad_check_error_y
+             << ',' << occ_analytic_grad_mag << '\n';
 
         if (q0.valid && q1.valid) {
             const double step_dist = (p1 - p0).norm();

@@ -1,0 +1,88 @@
+# Scenario: Wall Slow-Down, Worst-Occluded variant -- same leader path as
+# wall_slowdown.yaml (untouched: already validated there, see that
+# file's NOTE on corner-filleting), but the wall is made bigger (3.6m x
+# 3.6m instead of 3m x 3m, same center) so the drone->target sightline
+# is fully blocked at the worst point instead of wall_slowdown.yaml's
+# partial ~84% max.
+#
+# Tried shifting the wall sideways first (off-center from the leader's
+# original straight-line path, toward the gap between the drone's lagged
+# trailing line and the leader's detour) -- that DID push occlusion
+# toward 100%, but it also pulled the DRONE itself closer to the wall
+# (clearance_true down to ~0.29m, 1.5mm above the real collision radius,
+# the same razor-thin near-miss margin seen on serpentine_clutter) --
+# the opposite of what this variant is for. Growing the wall in place
+# instead (same center, bigger half_size) hits 100% occlusion without
+# that cost: at half_size=1.8, clearance_true's minimum is 0.304m (14mm
+# above the real collision radius, same comfortable margin
+# wall_slowdown.yaml itself has) and body_rate_magnitude_max_deg_s is
+# 127.9 deg/s -- identical to wall_slowdown.yaml's own baseline, i.e.
+# the drone's own flight stays exactly as calm as before. Swept
+# half_size 1.6/1.7/1.75/1.8: only 1.8 lands on full (100.0%) max
+# occlusion AND keeps clearance_true comfortable -- 1.75 also hits 100%
+# but drone clearance drops back to the same thin 0.29m margin, so 1.8
+# is the one actually wanted, not just the first one that reached 100%.
+# See design_decisions.md's "wall_worstoccluded -- tuned for a near-
+# total camera block, without re-introducing the drone wobble" entry.
+#
+# shape: circle   -> center [x, y], radius
+# shape: square   -> center [x, y], half_size
+obstacles:
+  - shape: square
+    center: [0.0, 3.0]
+    half_size: 1.8          # bigger wall (3.6m x 3.6m), same center as wall_slowdown.yaml
+
+leader:
+  t_end: 14.2257
+  waypoints:
+    - [0.0000, -6.0000]
+    - [0.0000, 0.1096]
+    - [0.0054, 0.1830]
+    - [0.0215, 0.2548]
+    - [0.0480, 0.3235]
+    - [0.0843, 0.3875]
+    - [0.1296, 0.4455]
+    - [0.1829, 0.4962]
+    - [0.2431, 0.5386]
+    - [0.3088, 0.5716]
+    - [0.3787, 0.5947]
+    - [1.6213, 0.9053]
+    - [1.6912, 0.9284]
+    - [1.7569, 0.9614]
+    - [1.8171, 1.0038]
+    - [1.8704, 1.0545]
+    - [1.9157, 1.1125]
+    - [1.9520, 1.1765]
+    - [1.9785, 1.2452]
+    - [1.9946, 1.3170]
+    - [2.0000, 1.3904]
+    - [2.0000, 4.9453]
+    - [1.9941, 5.0221]
+    - [1.9764, 5.0971]
+    - [1.9474, 5.1685]
+    - [1.9078, 5.2346]
+    - [1.8585, 5.2938]
+    - [1.8007, 5.3447]
+    - [1.7357, 5.3862]
+    - [1.6652, 5.4172]
+    - [0.3348, 5.8828]
+    - [0.2643, 5.9138]
+    - [0.1993, 5.9553]
+    - [0.1415, 6.0062]
+    - [0.0922, 6.0654]
+    - [0.0526, 6.1315]
+    - [0.0236, 6.2029]
+    - [0.0059, 6.2779]
+    - [0.0000, 6.3547]
+    - [0.0000, 8.0000]
+  # Cruise, then slow sharply on approach, creep past at close range, then
+  # back to cruise -- unchanged from wall_slowdown.yaml.
+  speed_profile:
+    - [0.0000, 0.0000]
+    - [1.5000, 1.6000]
+    - [5.2357, 1.6000]
+    - [6.2357, 0.4000]
+    - [8.7357, 0.4000]
+    - [9.7357, 1.6000]
+    - [13.2257, 1.6000]
+    - [14.2257, 0.0000]

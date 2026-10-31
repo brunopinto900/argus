@@ -1,0 +1,65 @@
+# Trailer tracking OFF + min/max distance-band tracking + occlusion cost ON.
+#
+# Not the shipped default (config/quadrotor.yaml keeps trailer x/y/z
+# tracking as the sole position authority, occlusion cost disabled).
+#
+# History of fixes found by actually watching the rendered video, not
+# just reading gate numbers:
+#   1) r_elev was 0 -- altitude pinned at the hard z_min=0.3m floor for
+#      88/280 ticks ("almost hits the ground"). Fixed: r_elev=30/30
+#      (stage/terminal) -- z now stays in [0.84,1.18]m.
+#   2) Even with (1) fixed, the commanded roll rate (p_cmd) was
+#      chattering -- swinging -3.0 to +2.6 rad/s within ~0.4s during the
+#      closest-approach window, a real sign-flipping oscillation, not
+#      just lagged realized-rate noise ("still wobbling"). Root cause:
+#      the rate-COMMAND regularization (p_cmd/q_cmd/r_cmd weight) was
+#      only 1.0, weak relative to the competing position pulls (r_occ=20,
+#      r_dist_min/max=100, r_azimuth=10, r_elev=30) all fighting for the
+#      same attitude authority during the avoidance maneuver. Fixed:
+#      p_cmd/q_cmd/r_cmd weight 1.0 -> 15.0. phi std/max now
+#      0.069/0.136 rad, close to the OFF
+#      baseline's own 0.059/0.151 rad --
+#      i.e. no more oscillatory than the undisturbed flight.
+#
+# Each fix cost some occlusion effect (more regularization = less freedom
+# to reposition for occlusion) -- this is the genuinely-smooth result,
+# not the largest-looking number. See design_decisions.md and the
+# conversation that produced logs/camera_footage/band_best_occlusion.mp4.
+#
+# Structural setup:
+#   - trailer.distance_mode: band (D_MIN=1.5m, D_MAX=3.0m), XY-only by
+#     construction -- altitude is r_elev's job alone.
+#   - cost.W_stage/W_terminal x,y,z weight zeroed: trailer tracking OFF,
+#     the band is the sole standoff-distance authority.
+#   - r_elev = 30/30, r_azimuth = 10/10, r_dist_min/max = 100/100.
+#   - p_cmd/q_cmd/r_cmd = 15 (stage only -- no u terms in terminal cost).
+#   - occlusion_avoidance.mode: cost, tau_occ_m=1.68, r_occ=20/10.
+#
+# Measured on forest_clutter (config/forest.yaml), N=20, Ts=0.05:
+#   collision_free:                True
+#   min_clearance_true_m:          0.400
+#   gates_pass:                    True
+#   rate_saturation_pct:           0.00
+#   body_rate_magnitude_max_deg_s: 60.0  (OFF baseline: 37.1)
+#   z range:                       [1.024, 1.200] m
+#   occlusion mean OFF -> ON:      79.1% -> 63.2% (Delta 15.9 pts)
+#   occlusion peak-tick Delta:     52.5 pts
+#   time >80% occluded OFF -> ON:  46.4% -> 18.2%
+
+model: {mass: 1.0, gravity: 9.81, Ix: 0.01, Iy: 0.01, Iz: 0.02}
+mpc: {N: 20, Ts: 0.05, hover_altitude: 1.5}
+constraints: {T_min: 0.0, T_max_factor: 2.0, rate_max: 3.8397, yaw_rate_max: 3.4907, angle_max_deg: 45.0,
+  z_min: 0.3}
+inner_loop: {tau_rp: 0.04, tau_yaw: 0.25}
+cost:
+  W_stage: [0.0, 0.0, 0.0, 10.0, 10.0, 10.0, 5.0, 5.0, 5.0, 5.0, 5.0, 300.0, 20.0, 100.0, 100.0, 30.0,
+    10.0, 0.1, 15.0, 15.0, 15.0]
+  W_terminal: [0.0, 0.0, 0.0, 20.0, 20.0, 20.0, 10.0, 10.0, 10.0, 10.0, 10.0, 150.0, 10.0, 100.0, 100.0,
+    30.0, 10.0]
+camera: {fov_half_angle_deg: 40.0, softplus_beta: 10.0}
+plant: {wn_rp: 25.0, zeta_rp: 0.7, wn_yaw: 4.0, zeta_yaw: 0.7}
+trailer: {distance_to_target: 2.0, heading_gain: 1.0, distance_mode: band, distance_min_m: 1.5, distance_max_m: 3.0,
+  N: 20, Ts: 0.05, target_bearing_deg: 30.0}
+mapping_sensor: {max_range_m: 8.0, num_rays: 1006, update_rate_hz: 60.0}
+obstacle_avoidance: {mode: slack, d_safe_m: 0.32, slack_linear_weight: 10000.0, slack_quadratic_weight: 100.0}
+occlusion_avoidance: {mode: cost, tau_occ_m: 1.68}
