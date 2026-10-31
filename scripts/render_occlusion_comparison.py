@@ -39,6 +39,7 @@ import open3d as o3d
 from PIL import Image, ImageDraw, ImageFont
 
 import render_camera_footage as camfeed
+import render_hero_video as hero
 import scene3d
 
 LABEL_OFF = "OCCLUSION OFF"
@@ -86,11 +87,47 @@ def _parse_args():
                         "per-tick divergence is easier to actually see")
     p.add_argument("--video", default="logs/camera_footage/occlusion_comparison.mp4")
     p.add_argument("--no-post-process", action="store_true")
+    p.add_argument("--camera-only", action="store_true",
+                   help="Skip the ESDF and top-down panels entirely -- camera footage "
+                        "only (OFF/ON side by side), for a social-media cut (no own_map "
+                        "ESDF snapshot logs needed)")
+    p.add_argument("--social", action="store_true",
+                   help="Social-cut styling: draw_hud_social's single big occlusion%% "
+                        "readout instead of the technical debug HUD, a red/green-tinted "
+                        "vignette per panel, and a progress bar along the bottom. "
+                        "Implies --camera-only unless --camera-only is passed explicitly "
+                        "false (there is no flag for that -- just omit --social and keep "
+                        "--camera-only alone for a technical camera-only cut)")
     p.add_argument("--label-off", default=LABEL_OFF)
     p.add_argument("--label-on", default=LABEL_ON)
     p.add_argument("--chart-height", type=int, default=240,
                    help="Height of the top-down path panel appended below the "
                         "camera/ESDF rows")
+    p.add_argument("--chase-cam", action="store_true",
+                   help="Each panel becomes an external chase-cam shot (drone mesh, "
+                        "leader, obstacles) with the onboard camera view picture-in-"
+                        "picture, instead of pure onboard view -- gives spatial context "
+                        "(where the drone actually is relative to the obstacles/person) "
+                        "that a first-person-only view can't. Reuses render_hero_video.py's "
+                        "chase_camera_pose/composite_pip. Implies skipping the ESDF/top-down "
+                        "rows (same as --camera-only) -- the chase shot already gives spatial "
+                        "context, no own_map snapshot logs needed.")
+    p.add_argument("--chase-distance", type=float, default=5.0, help="Behind the drone [m]")
+    p.add_argument("--chase-height", type=float, default=2.2, help="Above the drone [m]")
+    p.add_argument("--chase-fov-deg", type=float, default=55.0)
+    p.add_argument("--inset-width", type=int, default=0,
+                   help="Picture-in-picture onboard-view inset width [px] in --chase-cam "
+                        "mode. Default (0): panel_width // 3")
+    p.add_argument("--no-occ-stat", action="store_true",
+                   help="In --social mode, skip draw_hud_social's per-panel 'X%% occluded' "
+                        "readout entirely (condition label and caption, if any, still draw)")
+    p.add_argument("--caption", default=None,
+                   help="One-line plain-language caption drawn as a lower-third across the "
+                        "full composite (both panels), e.g. 'Same forest, same person -- "
+                        "does keeping the camera clear change the flight?' -- distinct from "
+                        "--label-off/--label-on's per-panel OFF/ON badge and from "
+                        "draw_hud_social's per-panel occlusion%% readout. No default: only "
+                        "drawn when passed.")
     return p.parse_args()
 
 
@@ -284,7 +321,8 @@ def topdown_frame_with_markers(static_topdown, extent, pos_off, pos_on, leader_p
 
 
 def render_camera_frame(renderer, leader_names, df, t_center, fov_half_deg,
-                         t_exposure_s, n_sub, d_fov, no_post_process, label, label_color):
+                         t_exposure_s, n_sub, d_fov, no_post_process, label, label_color,
+                         social=False, vignette_tint=None, show_occ_stat=True):
     leader_pos = scene3d.interpolate_point(df, t_center, ("fx", "fy", "fz"))
     camfeed.update_leader_position(renderer, leader_names, leader_pos)
 
@@ -301,21 +339,122 @@ def render_camera_frame(renderer, leader_names, df, t_center, fov_half_deg,
 
     t_arr = df["t"].to_numpy()
     nearest_row = df.iloc[int(np.argmin(np.abs(t_arr - t_center)))]
-    frame = camfeed.draw_hud(frame, nearest_row, d_fov)
+    if social and show_occ_stat:
+        frame = camfeed.draw_hud_social(frame, nearest_row, d_fov)
+    elif not social:
+        frame = camfeed.draw_hud(frame, nearest_row, d_fov)
     if not no_post_process:
-        frame = scene3d.apply_post_process(frame)
+        frame = scene3d.apply_post_process(frame, vignette_tint=vignette_tint)
     return draw_label(frame, label, label_color), pos
+
+
+def render_chase_pip_frame(renderer, leader_names, drone_names, df, t_center, fov_half_deg,
+                            t_exposure_s, n_sub, d_fov, no_post_process, label, label_color,
+                            chase_distance, chase_height, chase_fov_deg, inset_width,
+                            social=False, vignette_tint=None, show_occ_stat=True):
+    """External chase-cam shot (drone mesh + leader + obstacles, all
+    already in the shared scene) with the onboard POV picture-in-picture
+    -- gives a viewer spatial context (where the drone actually is) a
+    pure first-person tunnel view can't. Reuses render_hero_video.py's
+    chase_camera_pose/composite_pip exactly (same renderer-reuse
+    constraint as render_camera_frame: one shared OffscreenRenderer, the
+    drone mesh shown for the chase pass and hidden for the POV pass since
+    a camera can't see its own airframe)."""
+    pos, quat = scene3d.interpolate_pose(df, t_center)
+    leader_pos = scene3d.interpolate_point(df, t_center, ("fx", "fy", "fz"))
+    camfeed.update_leader_position(renderer, leader_names, leader_pos)
+    drone_matrix = hero._pose_matrix(pos, quat)
+    for name in drone_names:
+        renderer.scene.set_geometry_transform(name, drone_matrix)
+
+    for name in drone_names:
+        renderer.scene.show_geometry(name, True)
+    eye, center, up = hero.chase_camera_pose(pos, quat, chase_distance, chase_height)
+    renderer.setup_camera(chase_fov_deg, center, eye, up)
+    chase_img = np.asarray(renderer.render_to_image())
+
+    for name in drone_names:
+        renderer.scene.show_geometry(name, False)
+    accum = None
+    sub_times = ([t_center] if n_sub == 1 else
+                 np.linspace(t_center - t_exposure_s / 2, t_center + t_exposure_s / 2, n_sub))
+    for t_sub in sub_times:
+        p_sub, q_sub = scene3d.interpolate_pose(df, t_sub)
+        eye2, center2, up2 = scene3d.camera_extrinsics(p_sub, q_sub)
+        renderer.setup_camera(2 * fov_half_deg, center2, eye2, up2)
+        img = np.asarray(renderer.render_to_image(), dtype=np.float32)
+        accum = img if accum is None else accum + img
+    pov_frame = (accum / n_sub).astype(np.uint8)
+
+    inset_h = int(round(inset_width * chase_img.shape[0] / chase_img.shape[1]))
+    pov_inset = np.asarray(Image.fromarray(pov_frame).resize((inset_width, inset_h),
+                                                               Image.LANCZOS))
+    t_arr = df["t"].to_numpy()
+    nearest_row = df.iloc[int(np.argmin(np.abs(t_arr - t_center)))]
+    if social and show_occ_stat:
+        pov_inset = camfeed.draw_hud_social(pov_inset, nearest_row, d_fov)
+    elif not social:
+        pov_inset = camfeed.draw_hud(pov_inset, nearest_row, d_fov)
+
+    # margin=40 (not composite_pip's own default of 16) -- leaves enough
+    # clearance under the inset for draw_caption's lower-third bar to sit
+    # below it instead of overlapping its bottom edge (confirmed
+    # overlapping at margin=16 with a caption on screen).
+    composite = hero.composite_pip(chase_img, pov_inset, margin=40)
+    if not no_post_process:
+        composite = scene3d.apply_post_process(composite, vignette_tint=vignette_tint)
+    return draw_label(composite, label, label_color), pos
+
+
+def draw_caption(frame, text):
+    """One-line plain-language lower-third across the FULL composite
+    width (called after OFF/ON panels are already concatenated) --
+    distinct from draw_label's per-panel OFF/ON badge and
+    draw_hud_social's per-panel occlusion%% stat: this is the one piece
+    of context a non-technical viewer needs and neither of those give --
+    what the comparison even is, in plain words."""
+    h, w = frame.shape[:2]
+    font = _font(max(12, w // 85))
+    pil = Image.fromarray(frame)
+    draw = ImageDraw.Draw(pil, "RGBA")
+    bbox = draw.textbbox((0, 0), text, font=font)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    pad = 5
+    box_y1 = h - 4
+    box_y0 = box_y1 - th - 2 * pad
+    draw.rectangle([0, box_y0, w, box_y1], fill=(0, 0, 0, 165))
+    draw.text(((w - tw) // 2 - bbox[0], box_y0 + pad - bbox[1]), text, font=font,
+              fill=(255, 255, 255, 255))
+    return np.asarray(pil)
+
+
+def draw_progress_bar(frame, frac, color=(255, 255, 255, 220), height=6):
+    """Thin progress bar along the very bottom of a frame -- frac in
+    [0,1]. Gives a social-cut viewer a sense of "how far through this
+    clip am I" without needing a scrub bar (most feed players hide the
+    native one until hovered/tapped)."""
+    pil = Image.fromarray(frame)
+    draw = ImageDraw.Draw(pil, "RGBA")
+    h, w = frame.shape[:2]
+    draw.rectangle([0, h - height, w, h], fill=(0, 0, 0, 120))
+    draw.rectangle([0, h - height, int(np.clip(frac, 0.0, 1.0) * w), h], fill=color)
+    return np.asarray(pil)
 
 
 def main():
     args = _parse_args()
+    if args.social or args.chase_cam:
+        args.camera_only = True
 
-    snapshot_off = args.snapshot_off or scene3d.find_snapshot_log(args.csv_off)
-    snapshot_on = args.snapshot_on or scene3d.find_snapshot_log(args.csv_on)
-    if not snapshot_off or not snapshot_on:
-        raise SystemExit("Need both runs' own_map ESDF snapshot logs -- "
-                          "pass --snapshot-off/--snapshot-on or place them next to "
-                          "the trajectory CSVs using online_mapping_demo's own naming.")
+    snapshot_off = snapshot_on = None
+    if not args.camera_only:
+        snapshot_off = args.snapshot_off or scene3d.find_snapshot_log(args.csv_off)
+        snapshot_on = args.snapshot_on or scene3d.find_snapshot_log(args.csv_on)
+        if not snapshot_off or not snapshot_on:
+            raise SystemExit("Need both runs' own_map ESDF snapshot logs -- "
+                              "pass --snapshot-off/--snapshot-on or place them next to "
+                              "the trajectory CSVs using online_mapping_demo's own naming "
+                              "(or pass --camera-only to skip the ESDF/top-down panels).")
 
     obstacles = scene3d.load_scenario_obstacles(args.scenario_config)
     camera_cfg, mapping_cfg = scene3d.load_camera_config(args.config_path)
@@ -325,10 +464,11 @@ def main():
     df_off = scene3d.load_trajectory(args.csv_off)
     df_on = scene3d.load_trajectory(args.csv_on)
 
-    (esdf_t_off, esdf_d_off, esdf_xs_off, esdf_ys_off, gt_off, _vs_off, smax_off,
-     _om_off) = scene3d.load_snapshot_log(snapshot_off)
-    (esdf_t_on, esdf_d_on, esdf_xs_on, esdf_ys_on, gt_on, _vs_on, smax_on,
-     _om_on) = scene3d.load_snapshot_log(snapshot_on)
+    if not args.camera_only:
+        (esdf_t_off, esdf_d_off, esdf_xs_off, esdf_ys_off, gt_off, _vs_off, smax_off,
+         _om_off) = scene3d.load_snapshot_log(snapshot_off)
+        (esdf_t_on, esdf_d_on, esdf_xs_on, esdf_ys_on, gt_on, _vs_on, smax_on,
+         _om_on) = scene3d.load_snapshot_log(snapshot_on)
 
     bounds = scene3d.scene_bounds(df_off, obstacles)
     t_arr = df_off["t"].to_numpy()
@@ -342,16 +482,18 @@ def main():
     else:
         sample_times = t_arr[args.start_step:end_step:args.stride]
 
-    # Top-down path context restricted to the rendered window (start_step:
-    # end_step) -- the pre-divergence lead-in is identical for both and
-    # only adds clutter to the bird's-eye map.
-    sl = slice(args.start_step, end_step)
-    static_topdown, topdown_extent = build_topdown_panel(
-        obstacles,
-        df_off[["fx", "fy"]].to_numpy()[sl],
-        df_off[["x", "y"]].to_numpy()[sl],
-        df_on[["x", "y"]].to_numpy()[sl],
-        2 * args.panel_width, args.chart_height)
+    static_topdown = topdown_extent = None
+    if not args.camera_only:
+        # Top-down path context restricted to the rendered window
+        # (start_step:end_step) -- the pre-divergence lead-in is identical
+        # for both and only adds clutter to the bird's-eye map.
+        sl = slice(args.start_step, end_step)
+        static_topdown, topdown_extent = build_topdown_panel(
+            obstacles,
+            df_off[["fx", "fy"]].to_numpy()[sl],
+            df_off[["x", "y"]].to_numpy()[sl],
+            df_on[["x", "y"]].to_numpy()[sl],
+            2 * args.panel_width, args.chart_height)
 
     panel_w, panel_h = args.panel_width, args.panel_height
     renderer = o3d.visualization.rendering.OffscreenRenderer(panel_w, panel_h)
@@ -360,6 +502,21 @@ def main():
     renderer.scene.view.set_antialiasing(True, temporal=False)
     renderer.scene.view.set_sample_count(4)
     renderer.scene.view.set_ambient_occlusion(True)
+
+    drone_names = []
+    if args.chase_cam:
+        for part_name, mesh, color in scene3d.build_drone_parts_o3d():
+            name = f"drone_{part_name}"
+            renderer.scene.add_geometry(name, mesh, camfeed._material(color, roughness=0.35))
+            drone_names.append(name)
+        axes_mat = o3d.visualization.rendering.MaterialRecord()
+        axes_mat.shader = "unlitLine"
+        axes_mat.line_width = 3.0
+        renderer.scene.add_geometry("drone_axes", scene3d.build_axis_gizmo_o3d(0.5), axes_mat)
+        drone_names.append("drone_axes")
+        for name in drone_names:
+            renderer.scene.show_geometry(name, False)
+        inset_width = args.inset_width or panel_w // 3
 
     import imageio
     os.makedirs(os.path.dirname(args.video) or ".", exist_ok=True)
@@ -383,37 +540,69 @@ def main():
                         "-crf", "18", "-preset", "medium", "-movflags", "+faststart"])
 
     n_sub = max(1, args.blur_subsamples)
+    tint_off = tuple(c / 255.0 for c in COLOR_OFF[:3]) if args.social else None
+    tint_on = tuple(c / 255.0 for c in COLOR_ON[:3]) if args.social else None
+    t_start, t_end = sample_times[0], sample_times[-1]
     try:
         for t_center in sample_times:
-            cam_off, drone_pos_off = render_camera_frame(
-                renderer, leader_names, df_off, t_center, fov_half_deg, t_exposure_s,
-                n_sub, args.d_fov, args.no_post_process, args.label_off, COLOR_OFF)
-            cam_on, drone_pos_on = render_camera_frame(
-                renderer, leader_names, df_on, t_center, fov_half_deg, t_exposure_s,
-                n_sub, args.d_fov, args.no_post_process, args.label_on, COLOR_ON)
-
-            idx_off = int(np.argmin(np.abs(esdf_t_off - t_center)))
-            idx_on = int(np.argmin(np.abs(esdf_t_on - t_center)))
-            leader_off = scene3d.interpolate_point(df_off, t_center, ("fx", "fy", "fz"))
-            leader_on = scene3d.interpolate_point(df_on, t_center, ("fx", "fy", "fz"))
-            esdf_off_img = esdf_frame(esdf_d_off, idx_off, gt_off, smax_off, esdf_xs_off,
-                                       esdf_ys_off, drone_pos_off, leader_off, args.label_off,
-                                       COLOR_OFF, panel_w, panel_h)
-            esdf_on_img = esdf_frame(esdf_d_on, idx_on, gt_on, smax_on, esdf_xs_on,
-                                      esdf_ys_on, drone_pos_on, leader_on, args.label_on,
-                                      COLOR_ON, panel_w, panel_h)
-
-            leader_now = scene3d.interpolate_point(df_off, t_center, ("fx", "fy"))
-            topdown = topdown_frame_with_markers(
-                static_topdown, topdown_extent, drone_pos_off[:2], drone_pos_on[:2], leader_now)
+            if args.chase_cam:
+                cam_off, drone_pos_off = render_chase_pip_frame(
+                    renderer, leader_names, drone_names, df_off, t_center, fov_half_deg,
+                    t_exposure_s, n_sub, args.d_fov, args.no_post_process, args.label_off,
+                    COLOR_OFF, args.chase_distance, args.chase_height, args.chase_fov_deg,
+                    inset_width, social=args.social, vignette_tint=tint_off,
+                    show_occ_stat=not args.no_occ_stat)
+                cam_on, drone_pos_on = render_chase_pip_frame(
+                    renderer, leader_names, drone_names, df_on, t_center, fov_half_deg,
+                    t_exposure_s, n_sub, args.d_fov, args.no_post_process, args.label_on,
+                    COLOR_ON, args.chase_distance, args.chase_height, args.chase_fov_deg,
+                    inset_width, social=args.social, vignette_tint=tint_on,
+                    show_occ_stat=not args.no_occ_stat)
+            else:
+                cam_off, drone_pos_off = render_camera_frame(
+                    renderer, leader_names, df_off, t_center, fov_half_deg, t_exposure_s,
+                    n_sub, args.d_fov, args.no_post_process, args.label_off, COLOR_OFF,
+                    social=args.social, vignette_tint=tint_off,
+                    show_occ_stat=not args.no_occ_stat)
+                cam_on, drone_pos_on = render_camera_frame(
+                    renderer, leader_names, df_on, t_center, fov_half_deg, t_exposure_s,
+                    n_sub, args.d_fov, args.no_post_process, args.label_on, COLOR_ON,
+                    social=args.social, vignette_tint=tint_on,
+                    show_occ_stat=not args.no_occ_stat)
 
             top = np.concatenate([cam_off, cam_on], axis=1)
-            bottom = np.concatenate([esdf_off_img, esdf_on_img], axis=1)
-            panel_w_total = top.shape[1]
-            if topdown.shape[1] != panel_w_total:
-                topdown = np.asarray(Image.fromarray(topdown).resize(
-                    (panel_w_total, topdown.shape[0]), Image.BILINEAR))
-            composite = np.concatenate([top, bottom, topdown], axis=0)
+
+            if args.camera_only:
+                composite = top
+                if args.social:
+                    frac = 0.0 if t_end <= t_start else (t_center - t_start) / (t_end - t_start)
+                    composite = draw_progress_bar(composite, frac)
+                if args.caption:
+                    composite = draw_caption(composite, args.caption)
+            else:
+                idx_off = int(np.argmin(np.abs(esdf_t_off - t_center)))
+                idx_on = int(np.argmin(np.abs(esdf_t_on - t_center)))
+                leader_off = scene3d.interpolate_point(df_off, t_center, ("fx", "fy", "fz"))
+                leader_on = scene3d.interpolate_point(df_on, t_center, ("fx", "fy", "fz"))
+                esdf_off_img = esdf_frame(esdf_d_off, idx_off, gt_off, smax_off, esdf_xs_off,
+                                           esdf_ys_off, drone_pos_off, leader_off, args.label_off,
+                                           COLOR_OFF, panel_w, panel_h)
+                esdf_on_img = esdf_frame(esdf_d_on, idx_on, gt_on, smax_on, esdf_xs_on,
+                                          esdf_ys_on, drone_pos_on, leader_on, args.label_on,
+                                          COLOR_ON, panel_w, panel_h)
+
+                leader_now = scene3d.interpolate_point(df_off, t_center, ("fx", "fy"))
+                topdown = topdown_frame_with_markers(
+                    static_topdown, topdown_extent, drone_pos_off[:2], drone_pos_on[:2], leader_now)
+
+                bottom = np.concatenate([esdf_off_img, esdf_on_img], axis=1)
+                panel_w_total = top.shape[1]
+                if topdown.shape[1] != panel_w_total:
+                    topdown = np.asarray(Image.fromarray(topdown).resize(
+                        (panel_w_total, topdown.shape[0]), Image.BILINEAR))
+                composite = np.concatenate([top, bottom, topdown], axis=0)
+                if args.caption:
+                    composite = draw_caption(composite, args.caption)
             for _ in range(hold):
                 writer.append_data(composite)
     finally:

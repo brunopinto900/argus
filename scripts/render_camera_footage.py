@@ -168,11 +168,18 @@ def build_scene(renderer, obstacles, bounds, obstacle_height, width=640, height=
     grid_mat.line_width = 1.0
     renderer.scene.add_geometry("grid", grid, grid_mat)
 
+    bark_img = o3d.geometry.Image(scene3d.procedural_bark_texture())
     for i, obstacle in enumerate(obstacles):
         for part_name, mesh, color in scene3d.build_obstacle_parts_o3d(obstacle, obstacle_height):
             roughness = 0.9 if part_name == "canopy" else 0.8
-            renderer.scene.add_geometry(f"obstacle_{i}_{part_name}", mesh,
-                                         _material(color, roughness=roughness))
+            mat = _material(color, roughness=roughness)
+            if part_name == "trunk":
+                # Bark texture instead of a flat trunk color -- base_color
+                # stays as the per-tree jittered tint (see _tree_params),
+                # which Open3D's defaultLit shader multiplies against the
+                # texture, keeping tree-to-tree variation on top of it.
+                mat.albedo_img = bark_img
+            renderer.scene.add_geometry(f"obstacle_{i}_{part_name}", mesh, mat)
 
     leader_names = []
     for part_name, mesh, color in scene3d.build_person_parts_o3d():
@@ -226,6 +233,46 @@ def draw_hud(frame, row, d_fov):
     r = 7
     cx, cy = frame.shape[1] - 14, 14
     draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=badge_color)
+    return np.asarray(img)
+
+
+def draw_hud_social(frame, row, d_fov):
+    """Minimal HUD for a social-media cut: one big bold occlusion%% number,
+    nothing else -- no dist_obstacle/slack/solve-time debug text (that's
+    draw_hud's job, for the technical/diagnostic footage). A general
+    audience reads "occlusion: 73%" fine; "slack: 0.320 m" means nothing
+    to them and just adds visual noise to a clip meant to be scanned in a
+    feed, not studied."""
+    from PIL import Image, ImageDraw, ImageFont
+    img = Image.fromarray(frame)
+    draw = ImageDraw.Draw(img, "RGBA")
+
+    occ_clear = float(row["occlusion_clearance"]) if "occlusion_clearance" in row else None
+    if occ_clear is None:
+        return frame
+    occ_pct = 100.0 * np.clip(1.0 - occ_clear / d_fov, 0.0, 1.0)
+
+    size = max(22, frame.shape[1] // 18)
+    font = None
+    for path in ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                 "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"):
+        if os.path.exists(path):
+            font = ImageFont.truetype(path, size)
+            break
+    if font is None:
+        font = ImageFont.load_default()
+
+    text = f"{occ_pct:.0f}% occluded"
+    bbox = draw.textbbox((0, 0), text, font=font)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    pad = 10
+    # Bottom-right, not top -- draw_label's condition badge ("OFF"/"ON")
+    # already owns the top-center of the frame; stacking both up there
+    # collided (confirmed in a render, not just reasoned about).
+    x0 = frame.shape[1] - tw - 2 * pad - 10
+    y0 = frame.shape[0] - th - 2 * pad - 16
+    draw.rectangle([x0, y0, x0 + tw + 2 * pad, y0 + th + 2 * pad], fill=(0, 0, 0, 140))
+    draw.text((x0 + pad - bbox[0], y0 + pad - bbox[1]), text, font=font, fill=(255, 255, 255, 255))
     return np.asarray(img)
 
 

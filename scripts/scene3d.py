@@ -141,14 +141,30 @@ def build_obstacle_parts_o3d(obstacle, height=DEFAULT_OBSTACLE_HEIGHT_M):
 
         trunk = o3d.geometry.TriangleMesh.create_cylinder(radius=trunk_r, height=trunk_h,
                                                             resolution=10)
+        _assign_cylindrical_uv_o3d(trunk, trunk_h, v_tile=max(1.0, trunk_h / 0.6))
         trunk.translate((cx, cy, trunk_h / 2))
         trunk.compute_vertex_normals()
 
-        canopy = o3d.geometry.TriangleMesh.create_sphere(radius=canopy_r, resolution=14)
-        verts = np.asarray(canopy.vertices)
-        verts[:, 2] *= 0.8
-        canopy.vertices = o3d.utility.Vector3dVector(verts)
-        canopy.translate((cx, cy, trunk_h + canopy_r * 0.6))
+        # Three overlapping squashed-sphere lobes (jittered offsets/radii,
+        # seeded off the same obstacle center as everything else here) --
+        # one perfect ellipsoid read as a lollipop in a rendered frame;
+        # a lumpy clump is the cheapest fix that doesn't need an external
+        # mesh asset.
+        canopy = None
+        lobe_rng = np.random.default_rng(int(abs(hash(("canopy", round(cx, 4), round(cy, 4))))
+                                              % (2**32)))
+        base_z = trunk_h + canopy_r * 0.55
+        for lobe_r_scale, offset_scale in ((1.0, 0.0), (0.68, 0.75), (0.6, 0.75)):
+            lobe = o3d.geometry.TriangleMesh.create_sphere(
+                radius=canopy_r * lobe_r_scale, resolution=12)
+            verts = np.asarray(lobe.vertices)
+            verts[:, 2] *= 0.78
+            lobe.vertices = o3d.utility.Vector3dVector(verts)
+            ang = lobe_rng.uniform(0, 2 * np.pi)
+            off_r = canopy_r * offset_scale * lobe_rng.uniform(0.5, 1.0)
+            lobe.translate((cx + np.cos(ang) * off_r, cy + np.sin(ang) * off_r,
+                             base_z + lobe_rng.uniform(-0.1, 0.1) * canopy_r))
+            canopy = lobe if canopy is None else canopy + lobe
         canopy.compute_vertex_normals()
 
         return [("trunk", trunk, [*trunk_color, 1.0]), ("canopy", canopy, [*canopy_color, 1.0])]
@@ -208,6 +224,22 @@ def procedural_bark_texture(width=64, height=256, seed=1):
     noise = (noise - noise.min()) / (noise.max() - noise.min() + 1e-9)
     img = np.clip(base[None, None, :] + (noise[..., None] - 0.5) * 0.3, 0.0, 1.0)
     return (img * 255).astype(np.uint8)
+
+
+def _assign_cylindrical_uv_o3d(mesh, height, v_tile=1.0):
+    """Per-vertex UVs for a cylinder centered at the origin (Open3D's
+    create_cylinder convention: z in [-height/2, height/2]) -- u wraps
+    around the trunk, v runs along its length, tiled v_tile times so
+    procedural_bark_texture's portrait streaks don't stretch into one
+    smear on a tall trunk. Must be called before any translate() (world-
+    position offsets would otherwise leak into the angle)."""
+    import open3d as o3d
+    verts = np.asarray(mesh.vertices)
+    tris = np.asarray(mesh.triangles)
+    u = (np.arctan2(verts[:, 1], verts[:, 0]) / (2 * np.pi)) + 0.5
+    v = ((verts[:, 2] / height) + 0.5) * v_tile
+    uv_per_vertex = np.stack([u, v], axis=1)
+    mesh.triangle_uvs = o3d.utility.Vector2dVector(uv_per_vertex[tris.reshape(-1)])
 
 
 def _assign_planar_uv_xy_o3d(mesh, x0, y0, tile_m):
@@ -300,35 +332,53 @@ def build_axis_gizmo_pv(length=0.4):
 
 
 def build_person_parts_o3d(height=1.3):
-    """List of (name, mesh, rgba) low-poly person parts (legs/torso/head)
-    in LOCAL FRAME (feet at z=0) -- Open3D counterpart of
+    """List of (name, mesh, rgba) low-poly person parts (two legs, torso,
+    two arms, head) in LOCAL FRAME (feet at z=0) -- Open3D counterpart of
     build_person_parts_pv(), used for the leader marker in rendered
     camera footage. height=1.3 (not a real human's ~1.75m) is a
     deliberate cosmetic shrink so the marker reads as smaller than the
     DEFAULT_OBSTACLE_HEIGHT_M=2.5 obstacles instead of nearly matching
-    them."""
+    them.
+
+    Separate legs/arms (not one fused leg-cylinder, the original shape --
+    read as a chess pawn, not a person, in a rendered frame) is the
+    cheapest silhouette improvement available without an external mesh
+    asset: a human silhouette is mostly legible from limb separation
+    alone, even at low-poly/flat-shaded."""
     import open3d as o3d
     leg_h = height * 0.45
     torso_h = height * 0.33
     head_r = height * 0.09
+    leg_r = height * 0.045
+    arm_r = height * 0.035
+    arm_h = torso_h * 0.95
+    leg_gap = height * 0.06
+    shoulder_w = height * 0.14
 
-    legs = o3d.geometry.TriangleMesh.create_cylinder(radius=height * 0.05, height=leg_h,
-                                                       resolution=10)
-    legs.translate((0, 0, leg_h / 2))
-    legs.compute_vertex_normals()
+    def cylinder(radius, h, center):
+        m = o3d.geometry.TriangleMesh.create_cylinder(radius=radius, height=h, resolution=10)
+        m.translate(center)
+        m.compute_vertex_normals()
+        return m
 
-    torso = o3d.geometry.TriangleMesh.create_cylinder(radius=height * 0.11, height=torso_h,
-                                                        resolution=10)
-    torso.translate((0, 0, leg_h + torso_h / 2))
-    torso.compute_vertex_normals()
+    leg_color = [0.22, 0.22, 0.25, 1.0]
+    arm_color = [0.85, 0.25, 0.1, 1.0]
+    parts = [
+        ("leg_l", cylinder(leg_r, leg_h, (-leg_gap, 0, leg_h / 2)), leg_color),
+        ("leg_r", cylinder(leg_r, leg_h, (leg_gap, 0, leg_h / 2)), leg_color),
+        ("torso", cylinder(height * 0.11, torso_h, (0, 0, leg_h + torso_h / 2)), arm_color),
+        ("arm_l", cylinder(arm_r, arm_h, (-shoulder_w, 0, leg_h + torso_h - arm_h / 2)),
+         arm_color),
+        ("arm_r", cylinder(arm_r, arm_h, (shoulder_w, 0, leg_h + torso_h - arm_h / 2)),
+         arm_color),
+    ]
 
     head = o3d.geometry.TriangleMesh.create_sphere(radius=head_r, resolution=12)
     head.translate((0, 0, leg_h + torso_h + head_r))
     head.compute_vertex_normals()
+    parts.append(("head", head, [0.92, 0.80, 0.68, 1.0]))
 
-    return [("legs", legs, [0.25, 0.25, 0.25, 1.0]),
-            ("torso", torso, [0.85, 0.25, 0.1, 1.0]),
-            ("head", head, [0.92, 0.80, 0.68, 1.0])]
+    return parts
 
 
 # ── PyVista builders ─────────────────────────────────────────────────────
@@ -573,12 +623,18 @@ def build_drone_parts_o3d(body_len=0.35):
     return parts
 
 
-def apply_post_process(frame, vignette_strength=0.35, saturation=1.12, contrast=1.06):
+def apply_post_process(frame, vignette_strength=0.35, saturation=1.12, contrast=1.06,
+                        vignette_tint=None):
     """Light cinematic grade -- a touch more saturation/contrast and a
     soft vignette -- used by both render_hero_video.py and (by default)
     render_camera_footage.py's standalone output, since that footage now
     doubles as a portfolio clip, not just a diagnostic one. Pass
-    --no-post-process to either script for the raw, unstylized frames."""
+    --no-post-process to either script for the raw, unstylized frames.
+
+    vignette_tint: optional (r,g,b) in 0..1, e.g. (0.9,0.2,0.2) for an OFF/
+    ON comparison pair -- the vignette falloff blends toward this color
+    instead of just darkening, so the two panels read as "red side" /
+    "green side" even at a glance, muted, scrolling past in a feed."""
     from PIL import Image, ImageEnhance
     img = Image.fromarray(frame)
     img = ImageEnhance.Color(img).enhance(saturation)
@@ -588,8 +644,14 @@ def apply_post_process(frame, vignette_strength=0.35, saturation=1.12, contrast=
     yy, xx = np.mgrid[0:h, 0:w]
     cx, cy = w / 2.0, h / 2.0
     r = np.sqrt(((xx - cx) / cx) ** 2 + ((yy - cy) / cy) ** 2)
-    mask = 1.0 - vignette_strength * np.clip(r - 0.6, 0.0, 1.0) ** 2
-    arr *= mask[..., None]
+    falloff = np.clip(r - 0.6, 0.0, 1.0) ** 2
+    if vignette_tint is not None:
+        tint = np.array(vignette_tint, dtype=np.float32) * 255.0
+        blend = np.clip(vignette_strength * falloff, 0.0, 1.0)[..., None]
+        arr = arr * (1.0 - blend) + tint[None, None, :] * blend
+    else:
+        mask = 1.0 - vignette_strength * falloff
+        arr *= mask[..., None]
     return np.clip(arr, 0, 255).astype(np.uint8)
 
 

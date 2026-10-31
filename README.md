@@ -2,9 +2,9 @@
 
 Model Predictive Control for a quadrotor tracking a circular trajectory with yaw locked toward an object at the centre. The controller is formulated as a Nonlinear MPC using [ACADOS](https://docs.acados.org/), which generates a C solver that is called from C++.
 
-![Circle-tracking MPC](docs/circle_tracking.gif)
+![Occlusion-aware cost: chase-cam comparison with the occlusion cost off vs. on](docs/occlusion_comparison.gif)
 
-*Drone (blue trail) holding a 2 m-radius circle at 1.5 m altitude while the camera frustum (amber, dashed-green ideal) stays locked on the static ground target. Generated with `python3 scripts/animate_xy.py --save-gif ...` — see [How to run](#how-to-run).*
+*Same forest, same leader — occlusion cost OFF (left) vs. ON (right). Chase-cam view with the drone's onboard camera picture-in-picture. Generated with `scripts/render_occlusion_comparison.py --chase-cam` — see [Occlusion-aware cost](#occlusion-aware-cost) and [Offline 3-D viewer and camera footage](#offline-3-d-viewer-and-camera-footage-no-gazebo).*
 
 ---
 
@@ -239,7 +239,7 @@ That's it. The script runs the full pipeline in order: generate the C solver →
 
 > **WSL2 note:** `run.sh` sets `LD_LIBRARY_PATH` to include `~/acados/lib` automatically. You can also add it permanently to your `.bashrc`.
 
-**Headless export** (no display needed — used to generate the README preview above):
+**Headless export** (no display needed):
 
 ```bash
 python3 scripts/animate_xy.py --save-png docs/circle_tracking.png
@@ -281,6 +281,43 @@ the leader's path through it (`leader:` — waypoints + a piecewise-linear
 ./build/online_mapping_demo                                    # config/forest.yaml
 ./build/online_mapping_demo config/scenario_single_obstacle.yaml
 ```
+
+### Occlusion-aware cost
+
+`online_mapping_demo` adds camera-awareness on top of the baseline cost: a
+soft FOV-cone term keeps the leader inside the camera's view, a slacked
+ESDF-based constraint keeps the drone clear of obstacles, and an **opt-in
+occlusion-aware cost** (`occlusion_avoidance.mode: cost` in
+`config/quadrotor.yaml`, default `disabled`) penalizes obstacles sitting on
+the *sightline* between drone and leader — not just obstacles near the
+drone itself, which is all collision avoidance can see.
+
+It reuses the same onboard-built ESDF (`own_map`) as collision avoidance,
+but marches it along the straight line from drone to target each stage to
+find `s*` — how far along that line the worst point sits — and linearizes
+the distance field there instead of at the drone's own position:
+
+```
+occ_p0 = (1-s*)·drone_p0 + s*·p_target
+r_occ  = max(0, τ_occ − occ_lin(x))      # squared hinge, NLS auto-squares it
+```
+
+```yaml
+occlusion_avoidance:
+  mode: cost         # 'disabled' (default) or 'cost'
+  tau_occ_m: 1.68     # activation margin -- derived from
+                       # trailer.distance_to_target * tan(camera.fov_half_angle_deg)
+```
+
+**Known limitation:** `occ_p0` depends on the drone's own position with
+weight `(1-s*)` only, so the gradient the solver actually acts on shrinks
+toward zero as `s*→1` — exactly when the obstacle sits near the target and
+far from the drone, the one case collision avoidance can't cover. The term
+ends up strongest exactly where it duplicates collision avoidance (obstacle
+near the drone, `s*→0`) and weakest exactly where it would be uniquely
+useful. See `design_decisions.md` (local, gitignored) for the full
+derivation and measurements, and the top-of-README GIF for an OFF/ON
+comparison on a cluttered scenario.
 
 ### Telemetry dashboard
 
