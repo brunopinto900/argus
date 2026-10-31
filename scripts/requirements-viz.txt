@@ -1,8 +1,8 @@
 # Python dependencies for the offline 3-D viewer / camera-footage
 # renderer (scripts/scene3d.py, view_scene3d.py, render_camera_footage.py,
-# render_hero_video.py). Not needed for scripts/generate_mpc.py,
-# run_scenario_suite.py, or any C++ build — install only if you're using
-# these four scripts.
+# render_hero_video.py, render_occlusion_comparison.py). Not needed for
+# scripts/generate_mpc.py, run_scenario_suite.py, or any C++ build --
+# install only if you're using these five scripts.
 open3d>=0.18
 pyvista>=0.43
 scipy>=1.10

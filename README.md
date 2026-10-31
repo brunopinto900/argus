@@ -59,7 +59,7 @@ The rotation is the ZYX convention: `R = Rz(ψ) · Ry(θ) · Rx(φ)`. When the d
 ψ̇ =    (sin(φ)·q         + cos(φ)·r) / cos(θ)
 ```
 
-This transformation has a kinematic singularity at θ = ±90°. The pitch constraint (±60°) in the OCP keeps the trajectory well away from it.
+This transformation has a kinematic singularity at θ = ±90°. The pitch constraint (±45°) in the OCP keeps the trajectory well away from it.
 
 **Rotational dynamics** — first-order lag modelling the PX4 attitude-rate controller:
 ```
@@ -95,39 +95,87 @@ ACADOS uses a **Nonlinear Least-Squares** cost:
 min  Σ_{k=0}^{N-1} ‖h(x_k, u_k) − y_ref_k‖²_W  +  ‖h_e(x_N) − y_ref_N‖²_{W_e}
 ```
 
-The output map `h` selects which states and inputs are penalised:
+The output map `h` is built incrementally in `scripts/generate_mpc.py` from a
+fixed core plus a handful of opt-in residual slots (`obstacle_avoidance.mode`,
+`occlusion_avoidance.mode`, `trailer.distance_mode` in `config/quadrotor.yaml`
+each add or remove one slot, so `ny`/`ny_e` are derived, not hardcoded). In the
+**default config** — `trailer.distance_mode: fixed`, `obstacle_avoidance.mode:
+slack`, `occlusion_avoidance.mode: disabled` — the map is:
 
 ```
-h(x, u)  = [x, y, z, vx, vy, vz, φ, θ, cos(ψ), sin(ψ), T, p_cmd, q_cmd, r_cmd]   (ny = 14)
-h_e(x)   = [x, y, z, vx, vy, vz, φ, θ, cos(ψ), sin(ψ)]                            (ny_e = 10)
+h(x, u)  = [x, y, z, vx, vy, vz, φ, θ, p, q, r, r_fov, r_dist, r_elev, r_azimuth, T, p_cmd, q_cmd, r_cmd]   (ny = 19)
+h_e(x)   = [x, y, z, vx, vy, vz, φ, θ, p, q, r, r_fov, r_dist, r_elev, r_azimuth]                            (ny_e = 15)
 ```
 
-Yaw is encoded as a unit vector `[cos(ψ), sin(ψ)]` rather than a raw angle. The NONLINEAR_LS residual is then the Euclidean distance between unit vectors, which equals `2(1 − cos(ψ − ψ_ref))` — correctly wrapping at ±π without any special handling. Body rates (p, q, r) are excluded; they are internal states driven by the rate commands.
+Notes on what changed from a plain position/attitude tracker:
 
-The yaw reference at each horizon step is `ψ_ref = atan2(−y_ref, −x_ref)` — the angle that points the drone's nose toward the origin from its reference position on the circle.
+- **Yaw (ψ) has no dedicated cost term at all.** It's free to settle anywhere
+  the FOV-cone residual `r_fov` below allows — there's no term pulling it
+  toward a specific heading, only the soft constraint that the leader stay in
+  frame.
+- **Realized body rates `p, q, r`** (weight 5/5/5) are penalised separately
+  from the **rate *commands*** `p_cmd, q_cmd, r_cmd` (weight 1/1/1,
+  end of the vector) — the plant is a second-order lag on top of the MPC's
+  own first-order prediction model, so a smooth commanded-rate sequence
+  doesn't by itself guarantee a smooth realized rate; both are penalised.
+- `r_fov = softplus(cos(α_FOV) − cos(γ))` — zero inside the camera's FOV
+  cone, grows smoothly outside it (γ = bearing angle to the leader).
+- `r_dist = ‖p_drone,xy − p_leader,xy‖ − D_DESIRED` — ground-plane-only
+  standoff-distance residual (not 3-D range; see `r_elev` below for why).
+  `trailer.distance_mode: band` replaces this with two independent squared
+  hinges (`r_dist_min`, `r_dist_max`), a dead zone over `[D_MIN, D_MAX]` with
+  zero cost anywhere inside it — `ny`/`ny_e` each grow by 1 in this mode.
+- `r_elev = (z_drone − z_leader) − horiz_dist·tan(target_bearing_deg)` —
+  dedicated look-down-angle residual, decoupled from `r_dist` so the solver
+  can't trade standoff distance for elevation to satisfy one at the other's
+  expense.
+- `r_azimuth = 1 − cos(φ_rel − azimuth_target)` — dedicated "which side of
+  the leader" residual (a position angle, not the drone's own yaw/heading).
+- Collision avoidance is **not** a cost term in the default config — it's a
+  slacked nonlinear constraint (see Constraints below). `obstacle_avoidance.mode:
+  cost` swaps in a legacy squared-hinge `r_obs` residual instead (+1 to
+  `ny`/`ny_e`), kept only for A/B comparison — see [Config variants](#config-variants-ab-comparisons).
+- `occlusion_avoidance.mode: cost` adds an opt-in `r_occ` residual (+1 to
+  `ny`/`ny_e`) — see [Occlusion-aware cost](#occlusion-aware-cost) below.
 
-Stage weights `W` (diagonal):
+Stage weights `W` (diagonal), shipped default (`config/quadrotor.yaml`):
 
 | Output | Weight | Rationale |
 |---|---|---|
-| x, y, z | 100 | tight position tracking |
+| x, y, z | 100 | tight position tracking (trailer-point reference) |
 | vx, vy, vz | 10 | smooth velocity profile |
 | φ, θ | 5 | keep drone roughly level |
-| cos(ψ), sin(ψ) | 20 | yaw pointing toward centre |
-| T, p_cmd, q_cmd, r_cmd | 0.1 | regularise inputs |
+| p, q, r (realized rates) | 5 | damp oscillation the rate commands alone don't catch |
+| r_fov | 300 | keep the leader inside the camera cone — high priority |
+| r_dist, r_elev, r_azimuth | 0 | computed every solve, not penalised by default — x/y/z tracking is the sole position/azimuth authority; see the header comment in `config/quadrotor.yaml` |
+| T, p_cmd, q_cmd, r_cmd | 0.1 / 1 / 1 / 1 | regularise inputs |
 
-Terminal weights `W_e` double the position and velocity weights (200 / 20) to encourage stability at the end of the horizon.
+Terminal weights `W_e` roughly double the stage weights on position, velocity,
+attitude, and rates to encourage stability at the end of the horizon
+(`r_dist`/`r_elev`/`r_azimuth` stay at 0 for the same reason as above).
 
-At each MPC step the reference `y_ref_k` is computed from the circle trajectory evaluated at `t + k·Ts`.
+At each MPC step the reference `y_ref_k` (position, FOV target, azimuth
+direction, ESDF linearization, …) is set at runtime from C++
+(`acados_ocp_solver_set(..., "yref", ...)` / `"p"` for the runtime params) —
+there is no fixed symbolic reference baked into the generated solver.
+
+Ready-made `W_stage`/`W_terminal` pairs for every mode combination
+(`obstacle_avoidance.mode`, `occlusion_avoidance.mode`,
+`trailer.distance_mode`) live in [`config/variants.yaml`](config/variants.yaml).
 
 ### Constraints
 
 | Quantity | Bound | Reason |
 |---|---|---|
 | T | [0, 2·T_hover] | thrust is one-directional; 2× hover as saturation limit |
-| p_cmd, q_cmd | ±5.0 rad/s | roll/pitch rate command limits |
-| r_cmd | ±2.0 rad/s | yaw rate command limit |
-| φ, θ | ±60° | keep away from kinematic singularity at ±90° |
+| p_cmd, q_cmd | ±3.8397 rad/s (±220°/s) | PX4 stock `MC_ROLLRATE_MAX`/`MC_PITCHRATE_MAX` |
+| r_cmd | ±3.4907 rad/s (±200°/s) | PX4 stock `MC_YAWRATE_MAX` |
+| φ, θ | ±45° | PX4 stock `MPC_TILTMAX_AIR` |
+| z | ≥ 0.3 m | hard ground-clearance floor — a true box constraint (`lbx`), not traded off against any cost term; clears rotor-downwash ground effect |
+| `d_lin(p)` (ESDF, linearized) | ≥ `d_safe` (0.32 m default) | **collision avoidance** — a slacked nonlinear inequality constraint, not a cost residual: `obstacle_avoidance.mode: slack` (default). The slack carries an exact linear penalty (weight 1e4) so `d_safe` is enforced exactly wherever the problem is feasible, not just asymptotically approached the way a squared-hinge cost term would. `mode: cost` swaps in the legacy residual for A/B comparison only. |
+
+Rate *commands* are bounded above; the *realized* rates `p, q, r` are only
+shaped through the cost term above, not box-constrained.
 
 ### Horizon
 
@@ -262,7 +310,7 @@ more executables build on the same `QuadrotorMpc` solver:
 |---|---|---|---|
 | `./build/argus_mpc` | baseline circle-tracking | `logs/trajectory.csv` | `config/target.yaml`'s circle/static target |
 | `./build/trailer_mpc_demo [line\|circle\|zigzag] [t_end_s]` | `argus_follower::TrailerFollower` (hitch-lag leader-follower reference) drives the position reference instead of hover/orbit | `logs/trailer_mpc_trajectory.csv` | pick a leader motion pattern as the first CLI arg |
-| `./build/online_mapping_demo [scenario.yaml]` | incremental ESDF mapping (`argus_esdf`/`argus_perception`) + the collision-avoidance hinge cost, both live | `logs/online_mapping_trajectory.csv` + `logs/online_mapping_esdf_snapshots.bin` + `logs/staleness_log.csv` | pick a scenario file as the first CLI arg (default `config/forest.yaml`) |
+| `./build/online_mapping_demo [scenario.yaml]` | incremental ESDF mapping (`argus_esdf`/`argus_perception`) + the collision-avoidance constraint, both live | `logs/online_mapping_trajectory.csv` + `logs/online_mapping_esdf_snapshots.bin` + `logs/staleness_log.csv` | pick a scenario file as the first CLI arg (default `config/forest.yaml`) |
 
 All three write the same canonical trajectory-CSV columns (full 12-state,
 inputs, position reference, FOV target, solve status) — `online_mapping_demo`
@@ -381,7 +429,7 @@ footage renderer) the drone's own forward-facing camera view at the
 OAK-D-Lite's native 640x400 resolution, with real motion blur from
 sub-frame temporal sampling, not an analytic estimate. Needs its own
 dependencies (`scripts/requirements-viz.txt`, separate from
-`requirements.txt` — only needed for these four scripts):
+`requirements.txt` — only needed for these five scripts):
 
 ```bash
 pip install -r scripts/requirements-viz.txt
@@ -429,6 +477,22 @@ python3 scripts/render_hero_video.py --csv-path logs/online_mapping_trajectory.c
     --scenario-config config/forest.yaml --video logs/camera_footage/forest_hero.mp4
 ```
 
+Occlusion OFF-vs-ON comparison video (`scripts/render_occlusion_comparison.py`)
+— the tool behind the [Occlusion-aware cost](#occlusion-aware-cost) section
+and the top-of-README GIF: two logged runs (same scenario, occlusion cost off
+and on) side by side, either as full technical composites (3-D view + camera
+footage + topdown panel for each) or, with `--chase-cam`, as a chase-cam view
+with the onboard camera picture-in-picture, plus `--social` (big plain-
+language stat readout instead of the technical HUD) and `--caption "..."`
+(lower-third caption bar) for presentation-ready output:
+
+```bash
+python3 scripts/render_occlusion_comparison.py \
+    --csv-off logs/band_final_off/trajectory.csv --csv-on logs/band_final_on/trajectory.csv \
+    --chase-cam --social --caption "Occlusion cost: off vs. on" \
+    --video logs/camera_footage/occlusion_comparison_chase.mp4
+```
+
 ### Run metrics
 
 `online_mapping_demo` only (needs its `clearance_true`/`occlusion_clearance`/
@@ -460,14 +524,20 @@ python3 scripts/run_variant.py --variant trailer_on_slack_on --fresh   # ignore 
 
 ## How to tune
 
-All tunable parameters live in **[`config/quadrotor.yaml`](config/quadrotor.yaml)**. Edit that file, then re-run Step 1 to regenerate the solver.
+Most tunable parameters live in **[`config/quadrotor.yaml`](config/quadrotor.yaml)**; the circle-trajectory shape is a separate file, **[`config/target.yaml`](config/target.yaml)**. Edit either, then re-run Step 1 to regenerate the solver.
 
 ```yaml
-model:          # physical properties (mass, inertia, gravity)
-mpc:            # N (horizon steps) and Ts (sample time)
-constraints:    # thrust limits, torque limits, angle limits
-cost:           # W_stage and W_terminal diagonal weight vectors
-circle:         # radius, altitude, lap period
+# config/quadrotor.yaml
+model:               # physical properties (mass, inertia, gravity)
+mpc:                 # N (horizon steps) and Ts (sample time)
+constraints:         # thrust/rate/angle limits, ground-clearance floor
+cost:                # W_stage and W_terminal diagonal weight vectors
+trailer:             # standoff distance/band, look-down angle, azimuth smoothing
+obstacle_avoidance:  # d_safe, slack weights, slack-vs-cost mode
+occlusion_avoidance: # tau_occ, disabled-vs-cost mode
+
+# config/target.yaml
+circle:               # radius, altitude, lap period
 ```
 
 After any change, re-run `./run.sh` (or `./run.sh --skip-gen` if only C++ source changed).
