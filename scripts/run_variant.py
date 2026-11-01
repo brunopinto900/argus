@@ -31,6 +31,7 @@ import pandas as pd
 import yaml
 
 import config_variants as cv
+import run_scenario_suite as suite
 
 REPO_ROOT = cv.REPO_ROOT
 VENV_PYTHON = os.path.expanduser("~/.venv/bin/python3")
@@ -96,18 +97,24 @@ def _rebuild_for(resolved_cfg, build_hash):
     _regenerate_and_build(build_hash)
 
 
-def run_one_variant(name, fresh=False, render_plots=False):
+def run_one_variant(name, scenario_names=None, fresh=False, render_plots=False):
+    """scenario_names=None/[] means the full suite (same as omitting
+    --scenario on run_scenario_suite.py). Cache key includes which
+    scenarios were requested -- see _results_cache_key() -- so a cached
+    single-scenario result is never silently reused to answer a
+    full-suite question, and vice versa."""
     resolved = cv.resolve_variant(name)
     build_hash = cv.build_hash(resolved)
-    variant_dir = os.path.join(VARIANTS_LOG_DIR, name, build_hash)
+    scen_key = "+".join(sorted(scenario_names)) if scenario_names else "all"
+    variant_dir = os.path.join(VARIANTS_LOG_DIR, name, build_hash, scen_key)
     results_path = os.path.join(variant_dir, "results.json")
 
     if not fresh and os.path.exists(results_path):
-        print(f"[{name}] cached result at {results_path}")
+        print(f"[{name}/{scen_key}] cached result at {results_path}")
         with open(results_path) as f:
             return json.load(f)
 
-    print(f"[{name}] build_hash={build_hash}")
+    print(f"[{name}/{scen_key}] build_hash={build_hash}")
     _rebuild_for(resolved, build_hash)
 
     suite_args = [VENV_PYTHON, "scripts/run_scenario_suite.py"]
@@ -115,19 +122,29 @@ def run_one_variant(name, fresh=False, render_plots=False):
         suite_args.append("--no-plots")
     if fresh:
         suite_args.append("--no-cache")
+    for scen_name in (scenario_names or []):
+        suite_args += ["--scenario", scen_name]
     subprocess.run(suite_args, cwd=REPO_ROOT, env=_ENV, check=True,
                     stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 
+    # Only the scenarios actually requested this call -- NOT everything
+    # under logs/suite_cache/<build_hash>/, which can hold leftovers from
+    # an earlier full-suite (or different subset) run against the same
+    # resolved config and would otherwise silently pollute a single-
+    # scenario pooled result with stale, unrequested scenarios.
+    names_to_pool = scenario_names or [n for n, _, _ in suite.SCENARIOS]
     cache_root = os.path.join(REPO_ROOT, "logs", "suite_cache", build_hash)
     per_scenario = {}
     all_solve, all_pot = [], []
-    for scen_name in sorted(os.listdir(cache_root)):
+    for scen_name in sorted(names_to_pool):
         traj_path = os.path.join(cache_root, scen_name, "trajectory.csv")
         if not os.path.exists(traj_path):
             continue
         df = pd.read_csv(traj_path)
+        gs = suite.compute_gate_and_stats(df, resolved)
         st, pot = df["solve_time_ms"].values, df["pipeline_onboard_time_ms"].values
         per_scenario[scen_name] = {
+            **gs,
             "solve_mean_ms": float(np.mean(st)), "solve_max_ms": float(np.max(st)),
             "onboard_mean_ms": float(np.mean(pot)), "onboard_max_ms": float(np.max(pot)),
         }
@@ -135,12 +152,26 @@ def run_one_variant(name, fresh=False, render_plots=False):
         all_pot.append(pot)
 
     all_solve, all_pot = np.concatenate(all_solve), np.concatenate(all_pot)
+    # Pooled soft metrics: min-of for clearance (worst case wins), max-of
+    # for peak-type metrics (body rate, occlusion peak), mean-of for
+    # time-fraction-type metrics (FOV exceedance, mean occlusion), sum-of
+    # for event counts (reacquisitions), all()-of for the pass/fail gate --
+    # each picked to match what the underlying quantity actually means,
+    # not a blanket mean across scenarios.
     pooled = {
         "solve_mean_ms": float(np.mean(all_solve)), "solve_max_ms": float(np.max(all_solve)),
         "onboard_mean_ms": float(np.mean(all_pot)), "onboard_max_ms": float(np.max(all_pot)),
+        "gates_pass": bool(all(v["gates_pass"] for v in per_scenario.values())),
+        "collision_free": bool(all(v["collision_free"] for v in per_scenario.values())),
+        "min_clearance_true_m": float(min(v["min_clearance_true_m"] for v in per_scenario.values())),
+        "body_rate_magnitude_max_deg_s": float(max(v["body_rate_magnitude_max_deg_s"] for v in per_scenario.values())),
+        "fov_exceedance_pct": float(np.mean([v["fov_exceedance_pct"] for v in per_scenario.values()])),
+        "occlusion_pct_mean": float(np.mean([v["occlusion_pct_mean"] for v in per_scenario.values()])),
+        "occlusion_pct_max": float(max(v["occlusion_pct_max"] for v in per_scenario.values())),
+        "reacquisition_events": int(sum(v["reacquisition_events"] for v in per_scenario.values())),
     }
-    result = {"variant": name, "build_hash": build_hash, "resolved_config": resolved,
-              "per_scenario": per_scenario, "pooled": pooled}
+    result = {"variant": name, "scenarios": sorted(names_to_pool), "build_hash": build_hash,
+              "resolved_config": resolved, "per_scenario": per_scenario, "pooled": pooled}
 
     os.makedirs(variant_dir, exist_ok=True)
     with open(results_path, "w") as f:
@@ -163,6 +194,12 @@ def main():
     p.add_argument("--plots", action="store_true",
                     help="Render each scenario's dashboard PNG too (off by default -- "
                          "this tool is for quick solve/onboard-time comparisons)")
+    p.add_argument("--scenario", action="append", default=[],
+                    help="Restrict every variant to this scenario name (repeatable; "
+                         "see run_scenario_suite.py's SCENARIOS, e.g. forest_clutter). "
+                         "Omit entirely to run the full suite per variant -- cached "
+                         "separately per (variant, scenario-set), so a quick single-"
+                         "scenario comparison never costs a full-suite run.")
     p.add_argument("--list", action="store_true", help="List available variants and exit")
     args = p.parse_args()
 
@@ -185,8 +222,8 @@ def main():
     results = []
     try:
         for name in variants:
-            results.append(run_one_variant(name or "baseline", fresh=args.fresh,
-                                            render_plots=args.plots))
+            results.append(run_one_variant(name or "baseline", scenario_names=args.scenario,
+                                            fresh=args.fresh, render_plots=args.plots))
     finally:
         print("\nRestoring committed config/quadrotor.yaml and rebuilding...")
         _git_restore(quadrotor_path)  # real file back, comments included
@@ -196,14 +233,22 @@ def main():
         else:
             print(f"  [{committed_hash}] generated code already matches, skipping rebuild")
 
-    header = f"{'variant':<24}{'solve mean':<14}{'solve max':<14}{'onboard mean':<16}{'onboard max':<14}"
-    print("\n" + "=" * len(header))
+    scen_desc = "+".join(sorted(args.scenario)) if args.scenario else "all scenarios"
+    print(f"\nScenarios: {scen_desc}")
+    header = (f"{'variant':<28}{'gates':<7}{'clearance':<11}{'rate_max':<10}"
+              f"{'fov_exc%':<10}{'occ mean/max%':<16}{'reacq':<7}"
+              f"{'solve mean':<12}{'onboard mean':<14}")
+    print("=" * len(header))
     print(header)
     print("-" * len(header))
     for r in results:
         pl = r["pooled"]
-        print(f"{r['variant']:<24}{pl['solve_mean_ms']:<14.3f}{pl['solve_max_ms']:<14.3f}"
-              f"{pl['onboard_mean_ms']:<16.3f}{pl['onboard_max_ms']:<14.3f}")
+        gate_str = "PASS" if pl["gates_pass"] else "FAIL"
+        print(f"{r['variant']:<28}{gate_str:<7}{pl['min_clearance_true_m']:<11.3f}"
+              f"{pl['body_rate_magnitude_max_deg_s']:<10.1f}{pl['fov_exceedance_pct']:<10.1f}"
+              + f"{pl['occlusion_pct_mean']:.1f}/{pl['occlusion_pct_max']:.1f}".ljust(16)
+              + f"{pl['reacquisition_events']:<7d}"
+              f"{pl['solve_mean_ms']:<12.3f}{pl['onboard_mean_ms']:<14.3f}")
 
 
 if __name__ == "__main__":

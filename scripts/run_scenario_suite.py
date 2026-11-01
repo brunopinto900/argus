@@ -129,6 +129,11 @@ REAL_TARGET_M = 0.29
 # "d_FOV/tau_occ changed to 1.68m, derived -- was 4.0m, picked".
 D_FOV = 1.68
 OCCLUSION_EVENT_PCT = 80.0
+# Same default and rationale as scripts/compute_metrics.py's
+# --lost-contact-occlusion-pct: "reacquisition" used to be defined purely
+# by leaving the FOV cone, which missed a target fully occluded while
+# still geometrically centered. Combined via OR with out_of_fov below.
+LOST_CONTACT_OCCLUSION_PCT = 90.0
 
 # Soft metrics tracked in the comparison table/baseline. "higher_is_worse"
 # picks the regression direction -- these are all "closer to the problem
@@ -137,6 +142,8 @@ SOFT_METRICS = [
     "xy_tracking_error_mean_m",
     "xy_tracking_error_max_m",
     "fov_exceedance_pct",
+    "reacquisition_events",
+    "occlusion_pct_mean",
     "occlusion_pct_max",
     "body_rate_magnitude_max_deg_s",
     "accel_rms_m_s2",
@@ -269,17 +276,24 @@ def compute_gate_and_stats(df, cfg):
     gamma = _bearing_gamma_deg(df)
     out_of_fov = gamma > fov_half_angle_deg
     m["fov_exceedance_pct"] = float(100.0 * out_of_fov.mean())
-    # Reacquisition count: same convention as compute_metrics.py's
-    # compute_summary() -- the first out-of-FOV run (if it starts at index
-    # 0) is "initial acquisition," not a "re"-acquisition.
-    events = contiguous_true_runs(out_of_fov)
-    reacq_events = events[1:] if (events and events[0][0] == 0) else events
-    m["reacquisition_events"] = len(reacq_events)
 
     occ = df["occlusion_clearance"].values
     occ_pct = 100.0 * np.clip(1.0 - occ / D_FOV, 0.0, 1.0)
+    m["occlusion_pct_mean"] = float(np.mean(occ_pct))
     m["occlusion_pct_max"] = float(np.max(occ_pct))
     m["occluded_pct"] = float(100.0 * (occ_pct > OCCLUSION_EVENT_PCT).mean())
+
+    # Reacquisition count: "lost contact" = out of the FOV cone OR occlusion
+    # severe enough the target is effectively gone even with legal bearing
+    # (see compute_metrics.py's --lost-contact-occlusion-pct -- same fix,
+    # same reasoning: FOV-only used to call a target fully blocked by an
+    # obstacle dead-center in the cone "perfect contact"). The first lost-
+    # contact run (if it starts at index 0) is "initial acquisition," not a
+    # "re"-acquisition.
+    lost_contact = out_of_fov | (occ_pct > LOST_CONTACT_OCCLUSION_PCT)
+    events = contiguous_true_runs(lost_contact)
+    reacq_events = events[1:] if (events and events[0][0] == 0) else events
+    m["reacquisition_events"] = len(reacq_events)
 
     rate_mag_deg_s = np.degrees(np.sqrt(df["p"]**2 + df["q"]**2 + df["r"]**2))
     m["body_rate_magnitude_mean_deg_s"] = float(np.mean(rate_mag_deg_s))
@@ -429,33 +443,50 @@ def main():
                     help="Skip compute_metrics.py's per-scenario dashboard PNG -- faster "
                          "when you only want the printed gate/metric table (or are just "
                          "after raw trajectory CSVs, e.g. scripts/run_variant.py)")
+    p.add_argument("--scenario", action="append", default=[],
+                    help="Run only this scenario name (repeatable; from the SCENARIOS "
+                         "list above, e.g. forest_clutter). Omit entirely to run all "
+                         f"{len(SCENARIOS)} -- same per-(build_hash, scenario) caching "
+                         "either way, so picking one for a quick check doesn't cost a "
+                         "full-suite run.")
     args = p.parse_args()
+
+    all_names = {name for name, _, _ in SCENARIOS}
+    unknown = set(args.scenario) - all_names
+    if unknown:
+        p.error(f"unknown --scenario name(s): {sorted(unknown)}. "
+                f"Available: {sorted(all_names)}")
+    scenarios_to_run = ([(n, f, r) for n, f, r in SCENARIOS if n in args.scenario]
+                         if args.scenario else SCENARIOS)
 
     cfg = config_variants.load_base_config()
     build_hash = config_variants.build_hash(cfg)
     print(f"build_hash={build_hash}  (cache: logs/suite_cache/{build_hash}/)")
 
-    baseline = None if args.save_baseline else load_baseline()
+    existing_baseline = load_baseline()
+    baseline = None if args.save_baseline else existing_baseline
     results = {}
-    for name, scenario_file, _ in SCENARIOS:
+    for name, scenario_file, _ in scenarios_to_run:
         df, from_cache = run_scenario(name, scenario_file, build_hash=build_hash,
                                        use_cache=not args.no_cache,
                                        render_plots=not args.no_plots)
         print(f"--- {name} ({scenario_file}) {'[cached]' if from_cache else '[ran]'} ---")
         results[name] = compute_gate_and_stats(df, cfg)
 
-    print("\n" + "=" * 120)
-    header = (f"{'scenario':<18}{'gates':<8}{'xy_err mean/max':<20}{'fov_exc%':<10}{'occ_max%':<10}"
-              f"{'rate_mag_max':<14}{'accel/jerk rms':<18}{'ang_acc rms':<12}")
+    print("\n" + "=" * 130)
+    header = (f"{'scenario':<18}{'gates':<8}{'xy_err mean/max':<20}{'fov_exc%':<10}{'occ_mean/max%':<16}"
+              f"{'reacq':<7}{'rate_mag_max':<14}{'accel/jerk rms':<18}{'ang_acc rms':<12}")
     print(header)
     print("-" * len(header))
     any_regressions = False
-    for name, _, _ in SCENARIOS:
+    for name, _, _ in scenarios_to_run:
         m = results[name]
         gate_str = "PASS" if m["gates_pass"] else "FAIL"
         print(f"{name:<18}{gate_str:<8}"
               f"{m['xy_tracking_error_mean_m']:.3f}/{m['xy_tracking_error_max_m']:.3f}".ljust(18) + "  "
-              f"{m['fov_exceedance_pct']:<10.1f}{m['occlusion_pct_max']:<10.1f}"
+              f"{m['fov_exceedance_pct']:<10.1f}"
+              f"{m['occlusion_pct_mean']:.1f}/{m['occlusion_pct_max']:.1f}".ljust(16)
+              + f"{m['reacquisition_events']:<7d}"
               f"{m['body_rate_magnitude_max_deg_s']:<14.1f}"
               f"{m['accel_rms_m_s2']:.2f}/{m['jerk_rms_m_s3']:.2f}".ljust(18)
               + f"{m['ang_accel_rms_deg_s2']:<12.1f}")
@@ -464,12 +495,17 @@ def main():
             any_regressions = True
             print(f"  REGRESSION vs baseline: {'; '.join(flags)}")
 
-    if baseline is None:
+    # A filtered --scenario subset must only update/compare ITS entries --
+    # merge onto whatever's already stored instead of wiping out every
+    # other scenario's baseline.
+    if existing_baseline is None:
         save_baseline(results)
         print(f"\nNo baseline found -- saved this run as logs/suite/baseline.json")
     elif args.save_baseline:
-        save_baseline(results)
-        print(f"\nOverwrote logs/suite/baseline.json with this run")
+        merged = dict(existing_baseline)
+        merged.update(results)
+        save_baseline(merged)
+        print(f"\nUpdated logs/suite/baseline.json for: {sorted(results)}")
     elif not any_regressions:
         print("\nNo regressions vs baseline.")
 
