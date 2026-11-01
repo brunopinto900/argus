@@ -96,11 +96,12 @@ min  Σ_{k=0}^{N-1} ‖h(x_k, u_k) − y_ref_k‖²_W  +  ‖h_e(x_N) − y_ref_
 ```
 
 The output map `h` is built incrementally in `scripts/generate_mpc.py` from a
-fixed core plus a handful of opt-in residual slots (`obstacle_avoidance.mode`,
-`occlusion_avoidance.mode`, `trailer.distance_mode` in `config/quadrotor.yaml`
-each add or remove one slot, so `ny`/`ny_e` are derived, not hardcoded). In the
-**default config** — `trailer.distance_mode: fixed`, `obstacle_avoidance.mode:
-slack`, `occlusion_avoidance.mode: disabled` — the map is:
+fixed core plus a handful of opt-in residual slots — `obstacle_avoidance.mode`,
+`occlusion_avoidance.mode`, `trailer.distance_mode`, `camera.center_mode` in
+`config/quadrotor.yaml` each add or remove one slot, so `ny`/`ny_e` are
+derived, not hardcoded. In the **default config** — `trailer.distance_mode:
+fixed`, `obstacle_avoidance.mode: slack`, `occlusion_avoidance.mode:
+disabled`, `camera.center_mode: disabled` — the map is:
 
 ```
 h(x, u)  = [x, y, z, vx, vy, vz, φ, θ, p, q, r, r_fov, r_dist, r_elev, r_azimuth, T, p_cmd, q_cmd, r_cmd]   (ny = 19)
@@ -109,34 +110,33 @@ h_e(x)   = [x, y, z, vx, vy, vz, φ, θ, p, q, r, r_fov, r_dist, r_elev, r_azimu
 
 Notes on what changed from a plain position/attitude tracker:
 
-- **Yaw (ψ) has no dedicated cost term at all.** It's free to settle anywhere
-  the FOV-cone residual `r_fov` below allows — there's no term pulling it
-  toward a specific heading, only the soft constraint that the leader stay in
-  frame.
+- **Yaw (ψ) has no dedicated cost term.** It settles wherever the FOV-cone
+  residual `r_fov` allows — a soft "stay in frame" constraint, not a pull
+  toward a specific heading.
 - **Realized body rates `p, q, r`** (weight 5/5/5) are penalised separately
-  from the **rate *commands*** `p_cmd, q_cmd, r_cmd` (weight 1/1/1,
-  end of the vector) — the plant is a second-order lag on top of the MPC's
-  own first-order prediction model, so a smooth commanded-rate sequence
-  doesn't by itself guarantee a smooth realized rate; both are penalised.
-- `r_fov = softplus(cos(α_FOV) − cos(γ))` — zero inside the camera's FOV
-  cone, grows smoothly outside it (γ = bearing angle to the leader).
+  from the **rate commands** `p_cmd, q_cmd, r_cmd` (weight 1/1/1, end of the
+  vector) — the plant's second-order lag means a smooth commanded-rate
+  sequence doesn't by itself guarantee a smooth realized rate.
+- `r_fov = softplus(cos(α_FOV) − cos(γ))` — zero inside the FOV cone, grows
+  smoothly outside it (γ = bearing angle to the leader).
 - `r_dist = ‖p_drone,xy − p_leader,xy‖ − D_DESIRED` — ground-plane-only
-  standoff-distance residual (not 3-D range; see `r_elev` below for why).
-  `trailer.distance_mode: band` replaces this with two independent squared
-  hinges (`r_dist_min`, `r_dist_max`), a dead zone over `[D_MIN, D_MAX]` with
-  zero cost anywhere inside it — `ny`/`ny_e` each grow by 1 in this mode.
+  standoff distance (not 3-D range; see `r_elev`). `trailer.distance_mode:
+  band` replaces it with two squared hinges (`r_dist_min`, `r_dist_max`), a
+  dead zone over `[D_MIN, D_MAX]` (+1 to `ny`/`ny_e`).
 - `r_elev = (z_drone − z_leader) − horiz_dist·tan(target_bearing_deg)` —
-  dedicated look-down-angle residual, decoupled from `r_dist` so the solver
-  can't trade standoff distance for elevation to satisfy one at the other's
-  expense.
-- `r_azimuth = 1 − cos(φ_rel − azimuth_target)` — dedicated "which side of
-  the leader" residual (a position angle, not the drone's own yaw/heading).
-- Collision avoidance is **not** a cost term in the default config — it's a
-  slacked nonlinear constraint (see Constraints below). `obstacle_avoidance.mode:
-  cost` swaps in a legacy squared-hinge `r_obs` residual instead (+1 to
-  `ny`/`ny_e`), kept only for A/B comparison — see [Config variants](#config-variants-ab-comparisons).
-- `occlusion_avoidance.mode: cost` adds an opt-in `r_occ` residual (+1 to
-  `ny`/`ny_e`) — see [Occlusion-aware cost](#occlusion-aware-cost) below.
+  look-down-angle residual, decoupled from `r_dist` so the solver can't
+  trade standoff distance for elevation.
+- `r_azimuth = 1 − cos(φ_rel − azimuth_target)` — "which side of the
+  leader" residual (a position angle, not the drone's own heading).
+- Collision avoidance is a slacked nonlinear **constraint** by default, not
+  a cost term (see Constraints below). `obstacle_avoidance.mode: cost`
+  swaps in a legacy squared-hinge `r_obs` residual instead (+1 to `ny`/`ny_e`),
+  kept only for A/B comparison — see [Config variants](#config-variants-ab-comparisons).
+- `occlusion_avoidance.mode: cost` adds an opt-in `r_occ` residual (+1) — see
+  [Occlusion-aware cost](#occlusion-aware-cost) below.
+- `camera.center_mode: cost` adds an opt-in `r_center = 1 − cos(γ)` residual
+  (+1) — a continuous pull toward dead-center, distinct from `r_fov`'s
+  keep-in-cone dead zone. Exploratory; see Occlusion-aware cost below.
 
 Stage weights `W` (diagonal), shipped default (`config/quadrotor.yaml`):
 
@@ -220,15 +220,15 @@ The plant simulator (`src/plant_dynamics.cpp`) is deliberately **not** the same 
 
 ### Python for formulation, C++ for execution
 
-The model, cost function, and OCP are defined in Python using CasADi's symbolic math and the `acados_template` API. Python is the right tool here: CasADi lets you write the ODE and cost map as readable symbolic expressions, and ACADOS can automatically differentiate them to generate exact Jacobians and Hessians. Writing this in C++ directly would mean hand-coding derivatives and losing the safety net of symbolic verification.
+The model, cost function, and OCP are defined in Python using CasADi's symbolic math and the `acados_template` API: CasADi lets the ODE and cost map stay readable symbolic expressions while ACADOS auto-differentiates exact Jacobians/Hessians, instead of hand-coding derivatives in C++.
 
-Python is a **build-time** tool only. The output is generated C code that is compiled into the binary — at runtime there is no Python dependency and no interpreter overhead.
+Python is a **build-time** tool only — the output is generated C code compiled into the binary, so there's no Python dependency or interpreter overhead at runtime.
 
 ### Separate model and MPC scripts
 
 `quadrotor_model.py` contains only the physics: state definitions, ODE, and no control policy. `generate_mpc.py` is the control design layer: cost weights, constraints, horizon, and solver settings.
 
-The split exists because the model is shared by two independent consumers — the OCP solver (`generate_mpc`) and the plant integrator (`generate_sim`) — and coupling the dynamics to a specific controller would make it harder to swap formulations later (e.g. adding yaw pointing changes the cost but not the ODE). The physics and the control design have different rates of change and different reasons to be modified.
+The split exists because the model is shared by two independent consumers — the OCP solver (`generate_mpc`) and the plant integrator (`generate_sim`) — and coupling the dynamics to a specific controller would make it harder to swap formulations later (e.g. adding yaw pointing changes the cost but not the ODE).
 
 ---
 
@@ -335,15 +335,15 @@ the leader's path through it (`leader:` — waypoints + a piecewise-linear
 `online_mapping_demo` adds camera-awareness on top of the baseline cost: a
 soft FOV-cone term keeps the leader inside the camera's view, a slacked
 ESDF-based constraint keeps the drone clear of obstacles, and an **opt-in
-occlusion-aware cost** (`occlusion_avoidance.mode: cost` in
-`config/quadrotor.yaml`, default `disabled`) penalizes obstacles sitting on
-the *sightline* between drone and leader — not just obstacles near the
-drone itself, which is all collision avoidance can see.
+occlusion-aware cost** (`occlusion_avoidance.mode: cost`, default
+`disabled`) penalizes obstacles sitting on the *sightline* between drone
+and leader — not just obstacles near the drone itself, which is all
+collision avoidance can see.
 
-It reuses the same onboard-built ESDF (`own_map`) as collision avoidance,
-but marches it along the straight line from drone to target each stage to
-find `s*` — how far along that line the worst point sits — and linearizes
-the distance field there instead of at the drone's own position:
+It reuses the onboard-built ESDF (`own_map`), marching it along the line
+from drone to target each stage to find `s*` — how far along that line
+the worst point sits — and linearizing the distance field there instead
+of at the drone's own position:
 
 ```
 occ_p0 = (1-s*)·drone_p0 + s*·p_target
@@ -358,14 +358,32 @@ occlusion_avoidance:
 ```
 
 **Known limitation:** `occ_p0` depends on the drone's own position with
-weight `(1-s*)` only, so the gradient the solver actually acts on shrinks
-toward zero as `s*→1` — exactly when the obstacle sits near the target and
-far from the drone, the one case collision avoidance can't cover. The term
-ends up strongest exactly where it duplicates collision avoidance (obstacle
-near the drone, `s*→0`) and weakest exactly where it would be uniquely
-useful. See `design_decisions.md` (local, gitignored) for the full
-derivation and measurements, and the top-of-README GIF for an OFF/ON
-comparison on a cluttered scenario.
+weight `(1-s*)` only, so the gradient the solver acts on shrinks toward
+zero as `s*→1` — the obstacle near the target, far from the drone, exactly
+the case collision avoidance can't cover. The term is strongest exactly
+where it duplicates collision avoidance (`s*→0`) and weakest exactly where
+it would be unique. Measured on `forest_clutter`
+(`scripts/run_variant.py --scenario forest_clutter`), "reacq" = lost-contact
+events — out of the FOV cone *or* >90% occluded, see `scripts/compute_metrics.py`'s
+`--lost-contact-occlusion-pct`:
+
+| Config | Clearance | Rate max (°/s) | Occlusion mean/max % | Reacq |
+|---|---|---|---|---|
+| Baseline (trailer tracking, occlusion off) | 0.30 m | 127.9 | 63.8 / 84.8 | 0 |
+| Baseline + occlusion cost on | 0.35 m | 86.4 | 62.6 / 82.1 | 1 |
+| Trailer off, band standoff, occlusion on | 0.40 m | 60.0 | 63.2 / 100.0 | 4 |
+| + `camera.center_mode: cost` (`r_center`) | 0.38 m | 61.8 | 65.8 / 100.0 | 1 |
+
+Turning the occlusion cost on *without* anything else barely moves mean
+occlusion (63.8 → 62.6%) — consistent with the gradient story above.
+Freeing the drone from fixed x/y/z tracking (row 3) buys a real clearance/
+occlusion improvement, but at the cost of FOV reliability (4 lost-contact
+events the baseline never has) — nothing was arbitrating "stay centered"
+vs. "dodge occlusion" once x/y/z tracking stopped doing that implicitly.
+`r_center` (row 4, an exploratory, untuned-weight residual — see
+`generate_mpc.py`'s `CENTER_MODE`) recovers most of that reliability back
+to baseline levels. See `design_decisions.md` (local, gitignored) for the
+full derivation, and the top-of-README GIF for an OFF/ON comparison.
 
 ### Telemetry dashboard
 
@@ -512,13 +530,15 @@ python3 scripts/compute_metrics.py --save-png docs/metrics.png   # headless expo
 
 ### Config variants (A/B comparisons)
 
-Named config overlays in **[`config/variants.yaml`](config/variants.yaml)** (merged onto `config/quadrotor.yaml`, including `obstacle_avoidance.mode: slack|cost` — see `generate_mpc.py`'s `OBS_MODE`) let you A/B two formulations without hand-editing weights or checking out old commits — e.g. isolating whether a solve-time regression came from re-enabling trailer tracking or from the slacked collision constraint. `scripts/run_variant.py` applies one or more variants, rebuilds only if the resolved config actually changed, runs the scenario suite (loading cached per-scenario results when available — see `run_scenario_suite.py`'s `--no-cache`), restores the committed config afterward, and prints a pooled solve/onboard-time comparison table. Results are cached under `logs/variants/<name>/<hash>/` (config + metrics together, keyed by a hash of the resolved config and solver source).
+Named config overlays in **[`config/variants.yaml`](config/variants.yaml)** (merged onto `config/quadrotor.yaml` — any key, including mode switches like `obstacle_avoidance.mode: slack|cost`) let you A/B formulations without hand-editing weights or checking out old commits. `scripts/run_variant.py` applies one or more variants, rebuilds only if the resolved config changed, runs the scenario suite, restores the committed config afterward, and prints a pooled gates/clearance/occlusion/reacquisition/solve-time table. `--scenario NAME` (repeatable) restricts every variant to just that scenario instead of the full 16-scenario suite — cached separately per `(variant, build_hash, scenario-set)` under `logs/variants/<name>/<hash>/<scenario-set>/`, so a quick single-scenario comparison never costs a full-suite run, and re-running an unchanged request is instant.
 
 ```bash
 python3 scripts/run_variant.py --list
-python3 scripts/run_variant.py --variant trailer_on_slack_on --variant trailer_on_slack_off
+python3 scripts/run_variant.py --variant band_tracking --variant band_azimuth0_center --scenario forest_clutter
 python3 scripts/run_variant.py --variant trailer_on_slack_on --fresh   # ignore caches, fresh timing
 ```
+
+`scripts/run_scenario_suite.py` takes the same `--scenario NAME` directly, for running the suite (or one scenario of it) against whatever's currently in `config/quadrotor.yaml` without going through a named variant.
 
 ---
 
@@ -532,6 +552,7 @@ model:               # physical properties (mass, inertia, gravity)
 mpc:                 # N (horizon steps) and Ts (sample time)
 constraints:         # thrust/rate/angle limits, ground-clearance floor
 cost:                # W_stage and W_terminal diagonal weight vectors
+camera:              # FOV half-angle, softplus sharpness, centering mode
 trailer:             # standoff distance/band, look-down angle, azimuth smoothing
 obstacle_avoidance:  # d_safe, slack weights, slack-vs-cost mode
 occlusion_avoidance: # tau_occ, disabled-vs-cost mode
