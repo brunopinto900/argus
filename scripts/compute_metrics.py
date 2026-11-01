@@ -53,6 +53,22 @@ def _parse_args():
                     help="occ_pct above this counts as an occlusion EVENT worth "
                          "flagging red, not just some nonzero degradation "
                          "(default: %(default)s %%)")
+    p.add_argument("--lost-contact-occlusion-pct", type=float, default=90.0,
+                    help="occ_pct above this ALSO counts as losing visual contact "
+                         "with the target, combined with the FOV-bearing check "
+                         "(gamma > fov_half_angle_deg) via OR into one 'lost "
+                         "contact' signal that drives reacquisition_events/"
+                         "initial_acquisition_latency_s/initial_settle_time_s. "
+                         "Before this, those were FOV-bearing-only -- a target "
+                         "fully blocked by an obstacle but still geometrically "
+                         "inside the cone counted as perfect contact, which is "
+                         "wrong: occlusion and leaving the cone are two "
+                         "different ways to actually lose the target. "
+                         "Deliberately a separate, higher threshold than "
+                         "--occlusion-event-pct (80%%, the softer 'how much of "
+                         "the run was meaningfully occluded' time-fraction stat, "
+                         "occluded_pct, left as-is) -- this one specifically "
+                         "means 'all but gone' (default: %(default)s %%)")
     p.add_argument("--real-target-m", type=float, default=0.29,
                     help="Actual physical safety requirement, distinct from "
                          "--config-path's d_safe_m knob (0.32, a slacked-"
@@ -243,12 +259,28 @@ def compute_summary():
         out_of_fov = gamma > FOV_HALF_ANGLE_DEG
         s["fov_exceedance_pct"] = float(100.0 * out_of_fov.mean())
         s["out_of_fov_duration_total_s"] = float(out_of_fov.sum() * dt)
+
+        # "Lost contact" = out of the FOV cone OR occlusion so severe the
+        # target is effectively gone even though bearing is still legal --
+        # these are two different ways to actually lose the target, and
+        # treating only the first as a "reacquisition" was wrong: a target
+        # fully blocked by an obstacle dead-center in the cone used to count
+        # as perfect contact. --lost-contact-occlusion-pct (default 90%, a
+        # deliberately higher bar than --occlusion-event-pct's 80%, which
+        # stays a separate, softer "meaningfully occluded" time-fraction
+        # stat) is the occlusion side of that OR.
+        lost_contact = out_of_fov.copy()
+        if has_collision_cols:
+            occ_pct_contact = 100.0 * np.clip(
+                1.0 - df["occlusion_clearance"].values / _args.d_fov, 0.0, 1.0)
+            lost_contact = lost_contact | (occ_pct_contact > _args.lost_contact_occlusion_pct)
+
         # The first event is "initial acquisition" (nothing was ever in FOV
         # yet), not a "re"-acquisition -- only matters once initial
         # pose/heading gets randomized (today's fixed initial condition
         # always starts in-FOV, so this is 0.0 in practice, but the
         # distinction has to be right before that assumption changes).
-        events = contiguous_true_runs(out_of_fov)
+        events = contiguous_true_runs(lost_contact)
         if events and events[0][0] == 0:
             ib, ie = events[0]
             s["initial_acquisition_latency_s"] = float((t[ie] - t[ib]) + dt)
@@ -259,13 +291,13 @@ def compute_summary():
         s["reacquisition_events"] = len(reacq_events)
         s["reacquisition_latencies_s"] = [float((t[e] - t[b]) + dt) for b, e in reacq_events]
 
-        # "Settled" means inside the FOV cone (gamma <= fov_half_angle_deg),
-        # same bar as fov_exceedance_pct above -- NOT centered/near-zero
-        # bearing, which this architecture's static standoff bearing never
-        # approaches by design (see kTargetBearingDeg). First time gamma
-        # enters the cone and never leaves it again for the rest of the run.
-        in_fov = ~out_of_fov
-        still_out = np.where(~in_fov)[0]
+        # "Settled" means in contact (not lost by either definition above),
+        # NOT centered/near-zero bearing, which this architecture's static
+        # standoff bearing never approaches by design (see kTargetBearingDeg).
+        # First time contact is established and never lost again for the
+        # rest of the run.
+        in_contact = ~lost_contact
+        still_out = np.where(~in_contact)[0]
         s["initial_settle_time_s"] = float(t[still_out[-1]] + dt) if len(still_out) else 0.0
 
     # -- Occlusion ------------------------------------------------------------
@@ -665,7 +697,8 @@ def plot_results(s):
             ("FOV exceedance", fnum("fov_exceedance_pct", "{:.1f}") + " %",
              ok if s.get("fov_exceedance_pct", 1) == 0 else warn),
             ("initial acquisition latency", fnum("initial_acquisition_latency_s") + " s", None),
-            ("reacquisition events", fnum("reacquisition_events", "{:.0f}"), None),
+            (f"reacquisition events (out-of-FOV or >{_args.lost_contact_occlusion_pct:.0f}% occluded)",
+             fnum("reacquisition_events", "{:.0f}"), None),
             ("initial settle time", fnum("initial_settle_time_s") + " s", None),
         ]),
         ("Occlusion", [
