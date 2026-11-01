@@ -1,0 +1,29 @@
+# Same as config/quadrotor_band_azimuth0_center.yaml (band tracking,
+# r_azimuth=0, r_center=50/25 centering fix) but with occlusion_avoidance
+# back to 'disabled' -- the OFF-control for the occlusion-comparison
+# video, isolating what r_occ itself (not the centering fix) buys once
+# the centering fix is already in place.
+#
+# ny = 21 (19 default + 1 band + 1 center, no r_occ slot): [x,y,z, vx,vy,vz,
+#   phi,theta, p,q,r, r_fov, r_dist_min, r_dist_max, r_elev, r_azimuth,
+#   r_center, T, p_cmd,q_cmd,r_cmd]. ny_e = 17.
+
+model: {mass: 1.0, gravity: 9.81, Ix: 0.01, Iy: 0.01, Iz: 0.02}
+mpc: {N: 20, Ts: 0.05, hover_altitude: 1.5}
+constraints: {T_min: 0.0, T_max_factor: 2.0, rate_max: 3.8397, yaw_rate_max: 3.4907, angle_max_deg: 45.0,
+  z_min: 0.3}
+inner_loop: {tau_rp: 0.04, tau_yaw: 0.25}
+cost:
+  # layout: x,y,z, vx,vy,vz, phi,theta, p,q,r, r_fov, r_dist_min, r_dist_max, r_elev, r_azimuth, r_center, T, p_cmd,q_cmd,r_cmd
+  W_stage: [0.0, 0.0, 0.0, 10.0, 10.0, 10.0, 5.0, 5.0, 5.0, 5.0, 5.0, 300.0, 100.0, 100.0, 30.0,
+    0.0, 50.0, 0.1, 15.0, 15.0, 15.0]
+  # layout: x,y,z, vx,vy,vz, phi,theta, p,q,r, r_fov_e, r_dist_min_e, r_dist_max_e, r_elev_e, r_azimuth_e, r_center_e
+  W_terminal: [0.0, 0.0, 0.0, 20.0, 20.0, 20.0, 10.0, 10.0, 10.0, 10.0, 10.0, 150.0, 100.0, 100.0,
+    30.0, 0.0, 25.0]
+camera: {fov_half_angle_deg: 40.0, softplus_beta: 10.0, center_mode: cost}
+plant: {wn_rp: 25.0, zeta_rp: 0.7, wn_yaw: 4.0, zeta_yaw: 0.7}
+trailer: {distance_to_target: 2.0, heading_gain: 1.0, distance_mode: band, distance_min_m: 1.5, distance_max_m: 3.0,
+  N: 20, Ts: 0.05, target_bearing_deg: 30.0}
+mapping_sensor: {max_range_m: 8.0, num_rays: 1006, update_rate_hz: 60.0}
+obstacle_avoidance: {mode: slack, d_safe_m: 0.32, slack_linear_weight: 10000.0, slack_quadratic_weight: 100.0}
+occlusion_avoidance: {mode: disabled, tau_occ_m: 1.68}

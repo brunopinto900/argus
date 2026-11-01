@@ -122,6 +122,73 @@ horizon_n50:
   trailer:
     N: 50
 
+# The four below are the configs explored in the "band tracking vs.
+# baseline" / occlusion-reacquisition conversation -- each is a standalone
+# config/quadrotor_*.yaml file too (full header comment + measured numbers
+# live there); registered here so scripts/run_variant.py can run/compare
+# them with proper caching instead of hand-swapping config/quadrotor.yaml.
+# "baseline" (no --variant at all) is the committed config/quadrotor.yaml
+# itself -- x,y,z=100 trailer tracking, fixed distance, occlusion disabled.
+
+baseline_occ_tuned:
+  # Committed baseline (trailer on, fixed distance) with three weights
+  # borrowed from band tracking's own tuning: p_cmd/q_cmd/r_cmd 1->15,
+  # r_elev 0->30/30, occlusion_avoidance.mode: cost (r_occ=20/10). See
+  # config/quadrotor_baseline_occ_tuned.yaml's header for the measured
+  # numbers and the double-z-authority question this isolates (later
+  # ruled out -- see config/quadrotor_baseline_occ_tuned_noz.yaml).
+  occlusion_avoidance:
+    mode: cost
+  cost:
+    W_stage:    [100.0, 100.0, 100.0, 10.0, 10.0, 10.0, 5.0, 5.0, 5.0, 5.0, 5.0, 300.0, 20.0, 0.0, 30.0, 0.0, 0.1, 15.0, 15.0, 15.0]
+    W_terminal: [200.0, 200.0, 200.0, 20.0, 20.0, 20.0, 10.0, 10.0, 10.0, 10.0, 10.0, 150.0, 10.0, 0.0, 30.0, 0.0]
+
+band_tracking:
+  # Trailer tracking OFF + min/max distance-band + occlusion cost ON,
+  # r_azimuth=10. The config that actually improved mean occlusion/
+  # clearance over the untouched baseline -- at the cost of FOV
+  # exceedance/reacquisition events the untouched baseline never has.
+  # See config/quadrotor_trailer_off_band_occ.yaml's header.
+  trailer:
+    distance_mode: band
+  occlusion_avoidance:
+    mode: cost
+  cost:
+    W_stage:    [0.0, 0.0, 0.0, 10.0, 10.0, 10.0, 5.0, 5.0, 5.0, 5.0, 5.0, 300.0, 20.0, 100.0, 100.0, 30.0, 10.0, 0.1, 15.0, 15.0, 15.0]
+    W_terminal: [0.0, 0.0, 0.0, 20.0, 20.0, 20.0, 10.0, 10.0, 10.0, 10.0, 10.0, 150.0, 10.0, 100.0, 100.0, 30.0, 10.0]
+
+band_azimuth0:
+  # band_tracking with r_azimuth zeroed (10/10 -> 0/0) -- isolates what
+  # the azimuth residual buys once trailer tracking is already off.
+  # See config/quadrotor_band_azimuth0.yaml's header (answer: almost
+  # nothing, all deltas inside noise).
+  trailer:
+    distance_mode: band
+  occlusion_avoidance:
+    mode: cost
+  cost:
+    W_stage:    [0.0, 0.0, 0.0, 10.0, 10.0, 10.0, 5.0, 5.0, 5.0, 5.0, 5.0, 300.0, 20.0, 100.0, 100.0, 30.0, 0.0, 0.1, 15.0, 15.0, 15.0]
+    W_terminal: [0.0, 0.0, 0.0, 20.0, 20.0, 20.0, 10.0, 10.0, 10.0, 10.0, 10.0, 150.0, 10.0, 100.0, 100.0, 30.0, 0.0]
+
+band_azimuth0_center:
+  # band_azimuth0 with an EXPLORATORY new residual on top:
+  # camera.center_mode: cost (see generate_mpc.py's CENTER_MODE), adding
+  # r_center = 1-cos(gamma) -- a continuous pull toward dead-center,
+  # distinct from r_fov's keep-in-cone dead zone. Fixed the FOV-bearing
+  # side of reacquisition events entirely in one forest_clutter test, at
+  # a small occlusion-mean cost -- untuned weight (50/25), one scenario,
+  # not validated across the suite. See
+  # config/quadrotor_band_azimuth0_center.yaml's header.
+  trailer:
+    distance_mode: band
+  camera:
+    center_mode: cost
+  occlusion_avoidance:
+    mode: cost
+  cost:
+    W_stage:    [0.0, 0.0, 0.0, 10.0, 10.0, 10.0, 5.0, 5.0, 5.0, 5.0, 5.0, 300.0, 20.0, 100.0, 100.0, 30.0, 0.0, 50.0, 0.1, 15.0, 15.0, 15.0]
+    W_terminal: [0.0, 0.0, 0.0, 20.0, 20.0, 20.0, 10.0, 10.0, 10.0, 10.0, 10.0, 150.0, 10.0, 100.0, 100.0, 30.0, 0.0, 25.0]
+
 trailer_on_slack_tiny:
   # Same, but 1000x smaller than trailer_on_slack_on (10000->10, 100->0.1)
   # -- the weakest penalty magnitude in this sweep, right at the edge of

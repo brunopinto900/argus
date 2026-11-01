@@ -1,0 +1,50 @@
+# Baseline (trailer x/y/z tracking stays the position authority, distance_mode: fixed)
+# with three weights borrowed from the band-tracking tuning
+# (config/quadrotor_trailer_off_band_occ.yaml) applied on top:
+#   - p_cmd/q_cmd/r_cmd (rate-command regularization): 1.0 -> 15.0
+#   - r_elev (look-down-angle residual): 0.0 -> 30.0/30.0 (stage/terminal)
+#   - occlusion_avoidance.mode: disabled -> cost, r_occ weight 20.0/10.0
+#
+# Everything else (x,y,z=100 trailer tracking, r_dist weight 0, r_azimuth
+# weight 0, distance_mode: fixed) is untouched from config/quadrotor.yaml's
+# shipped default -- this isolates "what do those three weight changes do
+# to the shipped baseline" from "what does switching off trailer tracking
+# for band+r_elev+r_azimuth do" (the other config's question).
+#
+# ny = 20 (19 default + 1 for r_occ): [x,y,z, vx,vy,vz, phi,theta, p,q,r,
+#   r_fov, r_occ, r_dist, r_elev, r_azimuth, T, p_cmd,q_cmd,r_cmd]
+# ny_e = 16.
+#
+# Measured on forest_clutter (config/forest.yaml), N=20, Ts=0.05:
+#   collision_free:                True
+#   min_clearance_true_m:          0.350   (untouched baseline: 0.300)
+#   rate_saturation_pct:           0.00
+#   body_rate_magnitude_max_deg_s: 86.4    (untouched baseline: 127.9)
+#   xy_tracking_error_mean_m:      0.0916  (untouched baseline: 0.0809)
+#   occlusion_pct_mean:            62.63   (untouched baseline: 63.79)
+#   occlusion_pct_max:             82.14   (untouched baseline: 84.82)
+#   fov_exceedance_pct:            8.57    (untouched baseline: 0.00 -- new side
+#                                           effect, see comparison notes below)
+#   reacquisition_events:          1       (untouched baseline: 0)
+#   (see the conversation / interview.md for the comparison against the
+#   untouched baseline and against band tracking)
+
+model: {mass: 1.0, gravity: 9.81, Ix: 0.01, Iy: 0.01, Iz: 0.02}
+mpc: {N: 20, Ts: 0.05, hover_altitude: 1.5}
+constraints: {T_min: 0.0, T_max_factor: 2.0, rate_max: 3.8397, yaw_rate_max: 3.4907, angle_max_deg: 45.0,
+  z_min: 0.3}
+inner_loop: {tau_rp: 0.04, tau_yaw: 0.25}
+cost:
+  # layout: x,y,z, vx,vy,vz, phi,theta, p,q,r, r_fov, r_occ, r_dist, r_elev, r_azimuth, T, p_cmd,q_cmd,r_cmd
+  W_stage: [100.0, 100.0, 100.0, 10.0, 10.0, 10.0, 5.0, 5.0, 5.0, 5.0, 5.0, 300.0, 20.0, 0.0, 30.0,
+    0.0, 0.1, 15.0, 15.0, 15.0]
+  # layout: x,y,z, vx,vy,vz, phi,theta, p,q,r, r_fov_e, r_occ_e, r_dist_e, r_elev_e, r_azimuth_e
+  W_terminal: [200.0, 200.0, 200.0, 20.0, 20.0, 20.0, 10.0, 10.0, 10.0, 10.0, 10.0, 150.0, 10.0, 0.0,
+    30.0, 0.0]
+camera: {fov_half_angle_deg: 40.0, softplus_beta: 10.0}
+plant: {wn_rp: 25.0, zeta_rp: 0.7, wn_yaw: 4.0, zeta_yaw: 0.7}
+trailer: {distance_to_target: 2.0, heading_gain: 1.0, distance_mode: fixed, distance_min_m: 1.5, distance_max_m: 3.0,
+  N: 20, Ts: 0.05, target_bearing_deg: 30.0}
+mapping_sensor: {max_range_m: 8.0, num_rays: 1006, update_rate_hz: 60.0}
+obstacle_avoidance: {mode: slack, d_safe_m: 0.32, slack_linear_weight: 10000.0, slack_quadratic_weight: 100.0}
+occlusion_avoidance: {mode: cost, tau_occ_m: 1.68}

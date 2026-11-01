@@ -1,0 +1,53 @@
+# Band tracking + r_azimuth=0 (config/quadrotor_band_azimuth0.yaml) with
+# an EXPLORATORY new residual on top: camera.center_mode: cost, adding
+# r_center = 1 - cos(gamma) (gamma = bearing angle from boresight to
+# target) -- a continuous pull toward dead-center, distinct from r_fov's
+# keep-in-cone dead zone. Appended as the LAST residual slot (see
+# generate_mpc.py's CENTER_MODE), so this is purely additive on top of
+# the band config.
+#
+# Question being tested: does a dedicated centering signal stop r_occ's
+# occlusion-dodging from spending FOV margin it was never budgeted for
+# (band tracking's own 2-3 reacquisition events), without reintroducing
+# the fixed-point-fighting problem a hard pin would cause? r_center=50/25
+# is a first, untuned guess -- above r_azimuth's old weight (10) but
+# below r_fov's keep-in-cone weight (300), picked to have real authority
+# without trying to out-weigh cone legality itself.
+#
+# Measured on forest_clutter (config/forest.yaml), N=20, Ts=0.05:
+#   collision_free:                True
+#   min_clearance_true_m:          0.381  (no-center: 0.364)
+#   body_rate_magnitude_max_deg_s: 61.8   (no-center: 62.5 -- unchanged)
+#   occlusion_pct_mean:            65.83  (no-center: 64.75 -- slightly worse)
+#   occlusion_pct_max:             100.0  (no-center: 100.0 -- unchanged)
+#   fov_exceedance_pct:            0.00   (no-center: 6.07 -- FIXED)
+#   reacquisition_events:          0      (no-center: 2 -- FIXED)
+#
+# RESULT: the exploratory fix worked exactly as hypothesized -- zero FOV
+# exceedance, zero reacquisitions (both fully eliminated), at the cost
+# of a small (~1pt) occlusion-mean regression and no change to clearance/
+# body-rate. r_center gave the solver a cheap way to satisfy "stay
+# centered" without needing to sacrifice occlusion-dodging much, because
+# the two no longer compete through r_fov's wide dead zone alone. Still a
+# single untuned weight (50/25) on a one-off test, not validated across
+# the full scenario suite -- see the conversation.
+
+model: {mass: 1.0, gravity: 9.81, Ix: 0.01, Iy: 0.01, Iz: 0.02}
+mpc: {N: 20, Ts: 0.05, hover_altitude: 1.5}
+constraints: {T_min: 0.0, T_max_factor: 2.0, rate_max: 3.8397, yaw_rate_max: 3.4907, angle_max_deg: 45.0,
+  z_min: 0.3}
+inner_loop: {tau_rp: 0.04, tau_yaw: 0.25}
+cost:
+  # layout: x,y,z, vx,vy,vz, phi,theta, p,q,r, r_fov, r_occ, r_dist_min, r_dist_max, r_elev, r_azimuth, r_center, T, p_cmd,q_cmd,r_cmd
+  W_stage: [0.0, 0.0, 0.0, 10.0, 10.0, 10.0, 5.0, 5.0, 5.0, 5.0, 5.0, 300.0, 20.0, 100.0, 100.0, 30.0,
+    0.0, 50.0, 0.1, 15.0, 15.0, 15.0]
+  # layout: x,y,z, vx,vy,vz, phi,theta, p,q,r, r_fov_e, r_occ_e, r_dist_min_e, r_dist_max_e, r_elev_e, r_azimuth_e, r_center_e
+  W_terminal: [0.0, 0.0, 0.0, 20.0, 20.0, 20.0, 10.0, 10.0, 10.0, 10.0, 10.0, 150.0, 10.0, 100.0, 100.0,
+    30.0, 0.0, 25.0]
+camera: {fov_half_angle_deg: 40.0, softplus_beta: 10.0, center_mode: cost}
+plant: {wn_rp: 25.0, zeta_rp: 0.7, wn_yaw: 4.0, zeta_yaw: 0.7}
+trailer: {distance_to_target: 2.0, heading_gain: 1.0, distance_mode: band, distance_min_m: 1.5, distance_max_m: 3.0,
+  N: 20, Ts: 0.05, target_bearing_deg: 30.0}
+mapping_sensor: {max_range_m: 8.0, num_rays: 1006, update_rate_hz: 60.0}
+obstacle_avoidance: {mode: slack, d_safe_m: 0.32, slack_linear_weight: 10000.0, slack_quadratic_weight: 100.0}
+occlusion_avoidance: {mode: cost, tau_occ_m: 1.68}
