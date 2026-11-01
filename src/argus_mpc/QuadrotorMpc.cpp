@@ -26,52 +26,26 @@ constexpr int kNyN = QUADROTOR_NYN;
 constexpr int kNp  = QUADROTOR_NP;
 
 // If the generated model's dimensions ever change, this fails the build
-// loudly instead of silently mis-packing state/yref arrays below. Three
+// loudly instead of silently mis-packing state/yref arrays below. Four
 // independent mode flags (ARGUS_OBS_SLACK_MODE, ARGUS_OCC_COST_MODE,
-// ARGUS_DIST_BAND_MODE, see argus_params.h / generate_mpc.py's
-// OBS_MODE/OCC_MODE/DIST_MODE) each optionally add one residual slot
-// (r_obs, r_occ, and r_dist_min+r_dist_max replacing the single r_dist)
-// right after r_fov / in the r_dist slot, so ny/ny_e has eight possible
-// values.
+// ARGUS_DIST_BAND_MODE, ARGUS_CENTER_COST_MODE -- see argus_params.h /
+// generate_mpc.py's OBS_MODE/OCC_MODE/DIST_MODE/CENTER_MODE) each
+// optionally add one residual slot (r_obs, r_occ, r_dist_min+r_dist_max
+// replacing the single r_dist, r_center) -- computed arithmetically
+// (matching generate_mpc.py's own expected_ny/expected_nye formula)
+// rather than enumerated per combination, since a 5th flag would double
+// an enumerated ladder again.
 static_assert(kNx == 12, "State/step() packing assumes NX == 12 ([x,y,z,vx,vy,vz,phi,theta,psi,p,q,r])");
 static_assert(kNu == 4,  "Command/step() packing assumes NU == 4 ([T,p_cmd,q_cmd,r_cmd])");
-#if ARGUS_DIST_BAND_MODE
-  #if ARGUS_OBS_SLACK_MODE
-    #if ARGUS_OCC_COST_MODE
-    static_assert(kNy == 21, "step() yref packing assumes NY == 21 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_occ,r_dist_min,r_dist_max,r_elev,r_azimuth,T,p_cmd,q_cmd,r_cmd])");
-    static_assert(kNyN == 17, "step() terminal yref packing assumes NYN == 17 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_occ,r_dist_min,r_dist_max,r_elev,r_azimuth])");
-    #else
-    static_assert(kNy == 20, "step() yref packing assumes NY == 20 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_dist_min,r_dist_max,r_elev,r_azimuth,T,p_cmd,q_cmd,r_cmd])");
-    static_assert(kNyN == 16, "step() terminal yref packing assumes NYN == 16 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_dist_min,r_dist_max,r_elev,r_azimuth])");
-    #endif
-  #else
-    #if ARGUS_OCC_COST_MODE
-    static_assert(kNy == 22, "step() yref packing (cost mode) assumes NY == 22 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_obs,r_occ,r_dist_min,r_dist_max,r_elev,r_azimuth,T,p_cmd,q_cmd,r_cmd])");
-    static_assert(kNyN == 18, "step() terminal yref packing (cost mode) assumes NYN == 18 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_obs,r_occ,r_dist_min,r_dist_max,r_elev,r_azimuth])");
-    #else
-    static_assert(kNy == 21, "step() yref packing (cost mode) assumes NY == 21 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_obs,r_dist_min,r_dist_max,r_elev,r_azimuth,T,p_cmd,q_cmd,r_cmd])");
-    static_assert(kNyN == 17, "step() terminal yref packing (cost mode) assumes NYN == 17 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_obs,r_dist_min,r_dist_max,r_elev,r_azimuth])");
-    #endif
-  #endif
-#else
-  #if ARGUS_OBS_SLACK_MODE
-    #if ARGUS_OCC_COST_MODE
-    static_assert(kNy == 20, "step() yref packing assumes NY == 20 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_occ,r_dist,r_elev,r_azimuth,T,p_cmd,q_cmd,r_cmd])");
-    static_assert(kNyN == 16, "step() terminal yref packing assumes NYN == 16 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_occ,r_dist,r_elev,r_azimuth])");
-    #else
-    static_assert(kNy == 19, "step() yref packing assumes NY == 19 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_dist,r_elev,r_azimuth,T,p_cmd,q_cmd,r_cmd])");
-    static_assert(kNyN == 15, "step() terminal yref packing assumes NYN == 15 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_dist,r_elev,r_azimuth])");
-    #endif
-  #else
-    #if ARGUS_OCC_COST_MODE
-    static_assert(kNy == 21, "step() yref packing (cost mode) assumes NY == 21 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_obs,r_occ,r_dist,r_elev,r_azimuth,T,p_cmd,q_cmd,r_cmd])");
-    static_assert(kNyN == 17, "step() terminal yref packing (cost mode) assumes NYN == 17 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_obs,r_occ,r_dist,r_elev,r_azimuth])");
-    #else
-    static_assert(kNy == 20, "step() yref packing (cost mode) assumes NY == 20 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_obs,r_dist,r_elev,r_azimuth,T,p_cmd,q_cmd,r_cmd])");
-    static_assert(kNyN == 16, "step() terminal yref packing (cost mode) assumes NYN == 16 ([x,y,z,vx,vy,vz,phi,theta,p,q,r,r_fov,r_obs,r_dist,r_elev,r_azimuth])");
-    #endif
-  #endif
-#endif
+constexpr int kObsCostDelta = 1 - ARGUS_OBS_SLACK_MODE;  // slack mode (default): 0; legacy cost mode: 1
+constexpr int kExpectedNy  = 19 + kObsCostDelta + ARGUS_OCC_COST_MODE + ARGUS_DIST_BAND_MODE + ARGUS_CENTER_COST_MODE;
+constexpr int kExpectedNyN = 15 + kObsCostDelta + ARGUS_OCC_COST_MODE + ARGUS_DIST_BAND_MODE + ARGUS_CENTER_COST_MODE;
+static_assert(kNy == kExpectedNy,
+    "step() yref packing: NY doesn't match generate_mpc.py's expected_ny for the "
+    "selected ARGUS_OBS_SLACK_MODE/ARGUS_OCC_COST_MODE/ARGUS_DIST_BAND_MODE/ARGUS_CENTER_COST_MODE "
+    "combination -- re-run generate_mpc.py");
+static_assert(kNyN == kExpectedNyN,
+    "step() terminal yref packing: NYN doesn't match generate_mpc.py's expected_nye -- re-run generate_mpc.py");
 static_assert(kNp == 13,  "step() parameter packing assumes NP == 13 ([p_target_x,y,z, obs_p0_x,y, obs_d0, obs_grad_x,y, azimuth_ux,uy, occ_d0, occ_grad_x,y_scaled]); run generate_mpc.py");
 
 using RawState = std::array<double, kNx>;
@@ -252,6 +226,9 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
 #endif
             0.0,                  // r_elev reference: exactly at the designed look-down angle
             0.0,                  // r_azimuth reference: exactly at the desired azimuth direction
+#if ARGUS_CENTER_COST_MODE
+            0.0,                  // r_center reference: exactly on boresight (exploratory)
+#endif
             ARGUS_T_HOVER, 0.0, 0.0, 0.0,
         };
         ocp_nlp_cost_model_set(impl.config, impl.dims, impl.nlp_in, j, "yref", yref);
@@ -279,6 +256,9 @@ Command QuadrotorMpc::step(const State& x0, const std::vector<Reference>& horizo
 #endif
             0.0,
             0.0,
+#if ARGUS_CENTER_COST_MODE
+            0.0,                  // r_center reference (exploratory)
+#endif
         };
         ocp_nlp_cost_model_set(impl.config, impl.dims, impl.nlp_in, kN, "yref", yref_e);
     }

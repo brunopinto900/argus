@@ -81,6 +81,10 @@ r_occ for occlusion_avoidance.mode='cost', in that order if both are on)
     position target couples distance+elevation+azimuth together, and any one
     of them being forced off (e.g. by avoidance) used to drag the others with
     it. See design_decisions.md.
+  - camera.center_mode='cost' (default 'disabled', exploratory): adds r_center =
+    1 - cos(gamma) (gamma = bearing angle to target), appended as the LAST
+    residual slot -- a continuous pull toward dead-center, distinct from
+    r_fov's keep-in-cone dead zone. See the CENTER_MODE comment below.
   - phi, theta penalised to keep the drone roughly level
   - p, q, r (REALIZED body rates, not commands) penalised directly -- distinct
     from the rate-command penalty below: the plant is a second-order model
@@ -203,6 +207,21 @@ assert OCC_MODE in ('disabled', 'cost'), \
 # to 1.68m, derived" entry. Default matches scripts/compute_metrics.py's
 # --d-fov default so the cost and the metric describe the same threshold.
 TAU_OCC = float(_occ_cfg.get('tau_occ_m', 1.68))
+
+# 'disabled' (default): no centering residual -- r_fov's keep-in-cone cost
+# is the only thing touching bearing, and it's zero anywhere inside the
+# cone (a dead zone, not a pin toward boresight). 'cost': adds r_center =
+# 1 - cos(gamma) (gamma = angle from boresight to target), a continuous
+# pull toward dead-center instead of just "legal." Exploratory, one-off
+# test (band tracking + r_azimuth=0 + this): does giving the solver a
+# dedicated "stay centered" signal stop r_occ's occlusion-dodging from
+# spending FOV margin it was never budgeted, without reintroducing the
+# fixed-point-fighting problem a hard centering pin would cause? Appended
+# as the LAST residual slot (after r_azimuth) so it's additive and
+# doesn't disturb any other config's ny. See the conversation.
+CENTER_MODE = str(_cam_cfg.get('center_mode', 'disabled')).lower()
+assert CENTER_MODE in ('disabled', 'cost'), \
+    f"camera.center_mode must be 'disabled' or 'cost', got {CENTER_MODE!r}"
 
 
 
@@ -346,6 +365,14 @@ def generate_mpc():
     dy = x_sym[1] - p_target[1]
     r_azimuth = 1.0 - (dx * azimuth_u[0] + dy * azimuth_u[1]) / horiz_dist
 
+    # ── Centering residual (exploratory, CENTER_MODE='cost' only) ───────────
+    # r_center = 1 - cos(gamma), same unit-vector-dot-product trick r_azimuth
+    # already uses -- 0 exactly on boresight, grows smoothly off-axis.
+    # cos(gamma) = d_body[0]/range_ was already computed above for r_fov's
+    # s_fov; reused here directly, not recomputed.
+    cos_gamma = d_body[0] / range_
+    r_center = 1.0 - cos_gamma
+
     body_rates = x_sym[9:12]  # p, q, r -- realized rates, distinct from the u_sym rate commands below
 
     # ── Occlusion-aware cost: squared-hinge on the sightline's worst ESDF
@@ -374,12 +401,16 @@ def generate_mpc():
     if OCC_MODE == 'cost':
         middle_parts.append(r_occ)
     middle_parts += dist_parts + [r_elev, r_azimuth]
+    if CENTER_MODE == 'cost':
+        # Appended last so it's purely additive -- doesn't shift any other
+        # mode's slot or disturb an existing config's ny.
+        middle_parts.append(r_center)
 
     cost_y_expr   = ca.vertcat(x_sym[:8], body_rates, *middle_parts, u_sym)
     cost_y_expr_e = ca.vertcat(x_sym[:8], body_rates, *middle_parts)
 
-    expected_ny  = 19 + (OBS_MODE == 'cost') + (OCC_MODE == 'cost') + (DIST_MODE == 'band')
-    expected_nye = 15 + (OBS_MODE == 'cost') + (OCC_MODE == 'cost') + (DIST_MODE == 'band')
+    expected_ny  = 19 + (OBS_MODE == 'cost') + (OCC_MODE == 'cost') + (DIST_MODE == 'band') + (CENTER_MODE == 'cost')
+    expected_nye = 15 + (OBS_MODE == 'cost') + (OCC_MODE == 'cost') + (DIST_MODE == 'band') + (CENTER_MODE == 'cost')
     assert W_STAGE.shape[0] == expected_ny, (
         f"obstacle_avoidance.mode={OBS_MODE!r}, occlusion_avoidance.mode={OCC_MODE!r} "
         f"needs cost.W_stage with {expected_ny} entries (got {W_STAGE.shape[0]}) -- "
@@ -414,8 +445,10 @@ def generate_mpc():
     else:
         yref_hover_list.append(0.0)    # r_dist (exactly D_DESIRED away, horizontal)
     yref_hover_list += [0.0,        # r_elev (exactly at the designed look-down angle)
-                         0.0,        # r_azimuth (exactly at the desired azimuth direction)
-                         T_HOVER, 0.0, 0.0, 0.0]  # T, rates
+                         0.0]        # r_azimuth (exactly at the desired azimuth direction)
+    if CENTER_MODE == 'cost':
+        yref_hover_list.append(0.0)  # r_center (exactly on boresight)
+    yref_hover_list += [T_HOVER, 0.0, 0.0, 0.0]  # T, rates
     yref_hover   = np.array(yref_hover_list)
     yref_hover_e = yref_hover[:expected_nye]
 
@@ -565,6 +598,11 @@ def generate_cpp_params_header(out_dir: str):
         f.write("// See generate_mpc.py's DIST_MODE / config/quadrotor.yaml's\n")
         f.write("// trailer.distance_mode.\n")
         f.write(f"#define ARGUS_DIST_BAND_MODE {1 if DIST_MODE == 'band' else 0}\n")
+        f.write("// 1 = exploratory r_center = 1-cos(gamma) centering residual is in the\n")
+        f.write("// cost vector (appended last); 0 = no centering residual at all. See\n")
+        f.write("// generate_mpc.py's CENTER_MODE / config/quadrotor.yaml's\n")
+        f.write("// camera.center_mode.\n")
+        f.write(f"#define ARGUS_CENTER_COST_MODE {1 if CENTER_MODE == 'cost' else 0}\n")
     print(f"C++ params header written to: {path}")
 
 
