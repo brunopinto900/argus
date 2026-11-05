@@ -179,6 +179,116 @@ python3 scripts/compute_metrics.py
 python3 scripts/compute_metrics.py --save-png docs/metrics.png   # headless export
 ```
 
+## Technical scene view (validation)
+
+`scripts/view_technical_scene.py` — the clean white/grey "scientific
+instrument" counterpart to the cinematic 3-D viewer above (see
+[README's Paper summary](README.md#paper-summary) and `paper/figures/technical_view.png`
+for what it looks like): own_map's real occupied voxels as flat cube
+glyphs, the camera frustum, and the full drone/target trajectories as
+labeled lines, with a legend. Same `online_mapping_demo` log +
+`*_esdf_snapshots.bin` pair as every other tool here, no new dependency
+beyond `scripts/requirements-viz.txt`. Meant as a standard visual-QA step
+after any single run, same point in the workflow as `compute_metrics.py`'s
+dashboard but for spatial sanity-checking (did `own_map` actually resolve
+the obstacles it should have, does the chosen path look reasonable) rather
+than numeric gates:
+
+```bash
+./build/online_mapping_demo
+python3 scripts/view_technical_scene.py --csv-path logs/online_mapping_trajectory.csv \
+    --scenario-config config/forest.yaml --frame 160 --off-screen \
+    --save-png logs/technical_view.png
+
+python3 scripts/view_technical_scene.py --csv-path logs/online_mapping_trajectory.csv \
+    --scenario-config config/forest.yaml --save-gif logs/technical_view.gif
+```
+
+`--animate` (needs a display) gives the same scrubbable slider/playback as
+`view_scene3d.py`.
+
+`scripts/render_technical_comparison.py` is the same style applied to an
+off/on pair instead of one run — two `view_technical_scene.py` scenes
+rendered side by side per frame, no picture-in-picture inset (unlike
+`render_occlusion_comparison.py --chase-cam`). This is what generates the
+README's hero GIF:
+
+```bash
+python3 scripts/render_technical_comparison.py \
+    --csv-off logs/camera_footage/band_best_off/trajectory.csv \
+    --csv-on logs/camera_footage/band_best_on/trajectory.csv \
+    --snapshot-off logs/camera_footage/band_best_off/esdf_snapshots.bin \
+    --snapshot-on logs/camera_footage/band_best_on/esdf_snapshots.bin \
+    --scenario-config config/forest.yaml \
+    --caption "Occlusion cost: off vs. on" --label-events \
+    --gif docs/occlusion_comparison.gif
+```
+
+`--snapshot-off`/`--snapshot-on` are only needed when the run's ESDF log
+doesn't follow `online_mapping_demo`'s own naming convention (as with the
+`band_best_off`/`band_best_on` archived runs above) — auto-detection
+otherwise finds it next to `--csv-off`/`--csv-on`.
+
+`--label-events` (also on `view_technical_scene.py`, for a single run) marks
+the drone's path wherever the target was actually lost — out of the FOV
+cone (red) vs. occluded past the lost-contact threshold (orange) — using
+`scripts/contact_events.py`'s split of the two failure modes Table 1's
+"Reacq." column otherwise merges into one count. `scripts/plot_fov_results.py`
+is the time-series counterpart: bearing angle vs. the FOV threshold over
+time, same split, for each config in Table 1 — this is `paper/figures/fov_results.png`:
+
+```bash
+python3 scripts/plot_fov_results.py --config-path config/quadrotor.yaml \
+    --csv logs/suite_cache/9003ae057c11dd27/forest_clutter/trajectory.csv "Baseline, occlusion off" \
+    --csv logs/suite_cache/231817e249ef4cb4/forest_clutter/trajectory.csv "Baseline, occlusion on" \
+    --csv logs/suite_cache/b03864ca5b0bc369/forest_clutter/trajectory.csv "Band follower, occlusion on" \
+    --csv logs/suite_cache/3700de04c93c3197/forest_clutter/trajectory.csv "Band follower + centering" \
+    --save-png paper/figures/fov_results.png
+```
+
+The four build-hash paths above are `logs/suite_cache/<build_hash>/forest_clutter/trajectory.csv`
+for the exact variant builds behind Table 1's four rows (`baseline`,
+`baseline_occ_tuned`, `band_tracking`, `band_azimuth0_center` in
+`config/variants.yaml`) — find the current hash for a variant via
+`scripts/run_variant.py`'s own cache dir naming if these are rebuilt.
+
+`scripts/plot_fov_event_comparison.py` is the single-frame counterpart,
+same idea as `render_technical_comparison.py` but contrasting two
+*configurations* at one shared tick instead of occlusion off/on --
+Band follower vs. Band follower + centering, at the tick where the
+Band follower is mid FOV-cone-exit. This needed the suite's
+`suite_cache` trajectory CSVs rerun through `./build/online_mapping_demo`
+directly (not `run_scenario_suite.py`, which doesn't archive the ESDF
+snapshot log -- same gap as below) to get `esdf_snapshots.bin` alongside
+the trajectory, archived at `logs/camera_footage/band_tracking_fc/` and
+`logs/camera_footage/band_centering_fc/`:
+
+```bash
+python3 scripts/plot_fov_event_comparison.py \
+    --csv-bad logs/camera_footage/band_tracking_fc/trajectory.csv \
+    --snapshot-bad logs/camera_footage/band_tracking_fc/esdf_snapshots.bin \
+    --csv-good logs/camera_footage/band_centering_fc/trajectory.csv \
+    --snapshot-good logs/camera_footage/band_centering_fc/esdf_snapshots.bin \
+    --scenario-config config/forest.yaml --frame 75 \
+    --save-png paper/figures/fov_event_comparison.png
+```
+
+`--frame 75` (t=3.75s) is the first and longest of the Band follower's
+three FOV-exit runs (t=3.5-3.95s; found via `contact_events.compute_contact_masks`
+over the trajectory). Both archived runs were checked against the
+`suite_cache` numbers above before use (same FOV-exit/occlusion-only event
+counts, same run length) to confirm the rerun was bit-for-bit equivalent
+behavior, not a different build silently reusing the names.
+
+**Not currently wired into `run_scenario_suite.py`'s
+16-scenario batch**: the suite only archives each scenario's trajectory
+CSV, not its ESDF snapshot log, so a batch run across all 16 would render
+voxel-free (trajectories and frustum only, no occupancy). Archiving the
+snapshot log per scenario would fix that but grows each suite run's
+storage and runtime 16x over what `plot_scenario_contact_sheet.py` needs
+today — worth doing if per-scenario spatial QA earns its keep, not done
+here without that call being made first.
+
 ## Config variants (A/B comparisons)
 
 Named config overlays in **[`config/variants.yaml`](config/variants.yaml)** (merged onto `config/quadrotor.yaml` — any key, including mode switches like `obstacle_avoidance.mode: slack|cost`) let you A/B formulations without hand-editing weights or checking out old commits. `scripts/run_variant.py` applies one or more variants, rebuilds only if the resolved config changed, runs the scenario suite, restores the committed config afterward, and prints a pooled gates/clearance/occlusion/reacquisition/solve-time table. `--scenario NAME` (repeatable) restricts every variant to just that scenario instead of the full 16-scenario suite — cached separately per `(variant, build_hash, scenario-set)` under `logs/variants/<name>/<hash>/<scenario-set>/`, so a quick single-scenario comparison never costs a full-suite run, and re-running an unchanged request is instant.

@@ -4,9 +4,9 @@ Model Predictive Control for a quadrotor tracking a circular trajectory with yaw
 
 📄 **[Read the paper](paper/paper.pdf)** ([Markdown version](paper/paper.md)) — the occlusion-cost gradient-vanishing result, condensed below in [Paper summary](#paper-summary).
 
-![Occlusion-aware cost: chase-cam comparison with the occlusion cost off vs. on](docs/occlusion_comparison.gif)
+![Occlusion-aware cost: technical-view comparison with the occlusion cost off vs. on](docs/occlusion_comparison.gif)
 
-*Same forest, same leader — occlusion cost OFF (left) vs. ON (right). Chase-cam view with the drone's onboard camera picture-in-picture. Generated with `scripts/render_occlusion_comparison.py --chase-cam` — see [TOOLING.md](TOOLING.md#occlusion-aware-cost-implementation) and [TOOLING.md's 3-D viewer section](TOOLING.md#offline-3-d-viewer-and-camera-footage-no-gazebo).*
+*Same forest, same leader — occlusion cost OFF (left) vs. ON (right): own_map's real occupied voxels, the camera frustum, the full drone/target paths, and the orange stretch marking where contact with the target was actually lost (occluded past threshold — shorter with the cost on). Generated with `scripts/render_technical_comparison.py --label-events` — see [TOOLING.md](TOOLING.md#technical-scene-view-validation).*
 
 ---
 
@@ -69,6 +69,12 @@ Rendered onboard camera footage, same tick, off vs. on (obstacle clearance
 0.67 m → 1.47 m):
 
 ![Rendered onboard camera view, occlusion cost off (left) and on (right)](paper/figures/footage_comparison.png)
+
+Third-person scene view of the same run — own_map's real occupied voxels,
+the camera frustum, and the full drone/target trajectories, labeled
+(`scripts/view_technical_scene.py`, see [TOOLING.md](TOOLING.md#technical-scene-view-validation)):
+
+![Third-person technical view: drone path, target path, camera frustum, and own_map's occupied voxels over the forest_clutter run](paper/figures/technical_view.gif)
 
 The full state/input definition, continuous-time dynamics, cost function,
 and constraint table live in **[MODEL.md](MODEL.md)**, kept out of this
@@ -222,7 +228,8 @@ argus/
 │   ├── config.py                   # YAML loader (shared by Python scripts)
 │   ├── quadrotor_model.py          # symbolic ODE (CasADi)
 │   ├── generate_mpc.py             # OCP code generation
-│   └── animate_xy.py               # 3-D trajectory visualiser (frustum, bearing errors)
+│   ├── animate_xy.py               # 3-D trajectory visualiser (frustum, bearing errors)
+│   └── view_technical_scene.py     # white/grey voxel scene view (validation, see TOOLING.md)
 ├── src/
 │   ├── mpc_controller.cpp          # C++ simulation loop
 │   ├── plant_dynamics.hpp          # second-order plant interface
