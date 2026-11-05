@@ -75,11 +75,11 @@ def main():
         occ_only = m["occlusion_lost"] & ~m["out_of_fov"]
         for b, e in contiguous_true_runs(m["out_of_fov"]):
             ax.axvspan(t[b], t[e], color="tab:red", alpha=0.2,
-                        label="target lost: out of FOV cone" if not labeled["fov"] else None)
+                        label="Contact lost: out of FOV cone" if not labeled["fov"] else None)
             labeled["fov"] = True
         for b, e in contiguous_true_runs(occ_only):
             ax.axvspan(t[b], t[e], color="tab:orange", alpha=0.25,
-                        label="target lost: occluded" if not labeled["occ"] else None)
+                        label="Contact lost: occluded" if not labeled["occ"] else None)
             labeled["occ"] = True
 
         n_fov_events = len(contiguous_true_runs(m["out_of_fov"]))

@@ -156,31 +156,46 @@ def update_frustum(actor, pos, quat, h_fov, v_fov):
     actor.mapper.dataset.points = segs.reshape(-1, 3)
 
 
-FOV_LOST_COLOR = "#c0392b"
-OCC_LOST_COLOR = "#e08214"
+FOV_LOST_COLOR = "#8e44ad"
+OCC_LOST_COLOR = "#16a085"
 EVENT_MARKER_R = 0.16
+EVENT_TARGET_MARKER_SIZE = 0.22  # cube edge length -- a visibly different
+# glyph (cube vs. the drone-position sphere) so the two event-marker sets
+# stay distinguishable without doubling the legend.
 
 
 def add_event_markers_pv(plotter, df, fov_half_angle_deg, d_fov_m,
                           lost_contact_occlusion_pct=90.0):
-    """Static markers at the drone's position wherever contact_events marks
-    the target lost -- out-of-FOV-cone (red) vs. occluded (orange),
-    scripts/contact_events.py's split of Table 1's single merged "Reacq."
-    count. Drawn once over the whole run, like the trajectory lines, not
-    per-frame, so an event is visible throughout playback."""
+    """Static markers wherever contact_events marks the target lost --
+    out-of-FOV-cone (purple) vs. occluded (teal), scripts/contact_events.py's
+    split of Table 1's single merged "Reacq." count. Colors are deliberately
+    far from TARGET_COLOR/TARGET_PATH_COLOR (both red) so an event marker is
+    never mistaken for the target itself. Drawn at both the drone's position
+    (sphere) and the target's own position (cube) at the same timesteps, so
+    the event is visible on both paths, not just the drone's -- drawn once
+    over the whole run, like the trajectory lines, not per-frame, so an
+    event stays visible throughout playback."""
     m = contact_events.compute_contact_masks(df, fov_half_angle_deg, d_fov_m,
                                                lost_contact_occlusion_pct)
     occ_only = m["occlusion_lost"] & ~m["out_of_fov"]
-    pos = df[["x", "y", "z"]].to_numpy()
+    drone_pos = df[["x", "y", "z"]].to_numpy()
+    target_pos = df[["fx", "fy", "fz"]].to_numpy()
     actors = []
-    for mask, color, label in ((m["out_of_fov"], FOV_LOST_COLOR, "Target lost (FOV)"),
-                                (occ_only, OCC_LOST_COLOR, "Target lost (occluded)")):
-        pts = pos[mask]
-        if len(pts) == 0:
+    for mask, color, label in ((m["out_of_fov"], FOV_LOST_COLOR, "Contact lost: out of FOV cone"),
+                                (occ_only, OCC_LOST_COLOR, "Contact lost: occluded")):
+        if not mask.any():
             continue
-        cloud = pv.PolyData(pts)
-        glyphs = cloud.glyph(geom=pv.Sphere(radius=EVENT_MARKER_R), scale=False, orient=False)
-        actors.append((plotter.add_mesh(glyphs, color=color, opacity=0.9), label, color))
+        drone_cloud = pv.PolyData(drone_pos[mask])
+        drone_glyphs = drone_cloud.glyph(geom=pv.Sphere(radius=EVENT_MARKER_R),
+                                          scale=False, orient=False)
+        actor = plotter.add_mesh(drone_glyphs, color=color, opacity=0.9)
+        target_cloud = pv.PolyData(target_pos[mask])
+        target_cube = pv.Cube(x_length=EVENT_TARGET_MARKER_SIZE, y_length=EVENT_TARGET_MARKER_SIZE,
+                               z_length=EVENT_TARGET_MARKER_SIZE)
+        target_glyphs = target_cloud.glyph(geom=target_cube, scale=False, orient=False)
+        plotter.add_mesh(target_glyphs, color=color, opacity=0.9,
+                          show_edges=True, edge_color="white", line_width=0.75)
+        actors.append((actor, label, color))
     return actors
 
 
