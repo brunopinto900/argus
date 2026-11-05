@@ -6,7 +6,7 @@ Model Predictive Control for a quadrotor tracking a circular trajectory with yaw
 
 ![Occlusion-aware cost: technical-view comparison with the occlusion cost off vs. on](docs/occlusion_comparison.gif)
 
-*Same forest, same leader — occlusion cost OFF (left) vs. ON (right): own_map's real occupied voxels, the camera frustum, the full drone/target paths, and the orange stretch marking where contact with the target was actually lost (occluded past threshold — shorter with the cost on). Generated with `scripts/render_technical_comparison.py --label-events` — see [TOOLING.md](TOOLING.md#technical-scene-view-validation).*
+*Same forest, same leader — occlusion cost OFF (left) vs. ON (right): own_map's real occupied voxels, the camera frustum, the full drone/target paths, and the teal stretch marking where contact with the target was actually lost (occluded past threshold, shown on both the drone's and the target's own path — shorter with the cost on). Generated with `scripts/render_technical_comparison.py --label-events` — see [TOOLING.md](TOOLING.md#technical-scene-view-validation).*
 
 ---
 
