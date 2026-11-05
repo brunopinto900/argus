@@ -120,7 +120,7 @@ r_{\text{azimuth}} = 1-\cos(\varphi_{\text{rel}}-\varphi_{\text{target}}).
 \subsection{Field-of-View Cost}
 \label{sec:cost-fov}
 
-Let $V$ be the vector from drone to target and $\hat{u}_t$ the camera boresight unit vector. The target is inside the cone of half-angle $\alpha$ when
+Let $V$ be the vector from drone to target and $\hat{u}_t$ the camera boresight unit vector, and let $\gamma$ be the bearing angle between them, $\cos\gamma = V^\top\hat{u}_t/\lVert V\rVert$. The target is inside the cone of half-angle $\alpha$ exactly when $\gamma\le\alpha$, written as the hinge argument
 \begin{equation}
 s_{\text{fov}} = V^\top \hat{u}_t - \lVert V \rVert \cos \alpha \; \ge 0,
 \end{equation}
@@ -132,11 +132,15 @@ r_{\text{fov}} = \frac{1}{\beta} \log\!\left(1 + e^{\beta s_{\text{fov}}}\right)
 \begin{figure}[t]
 \centering
 \includegraphics[width=0.85\columnwidth]{figures/thesis_fov_cone.png}
-\caption{FOV cone geometry, reproduced from \cite{pinto_thesis} (its own half-angle label, $\gamma$, is this paper's $\alpha$). $s_{\text{fov}}\ge0$ exactly when the bearing to the target, $V$, sits inside the cone.}
+\caption{FOV cone geometry, reproduced from \cite{pinto_thesis}. Its own half-angle label, drawn as $\gamma$ inside the source figure, is this paper's $\alpha$, not this paper's own $\gamma$ (the bearing angle, defined above). $s_{\text{fov}}\ge0$ exactly when the bearing to the target, $V$, sits inside the cone.}
 \label{fig:fovcone}
 \end{figure}
 
-\emph{Issue:} squaring the raw hinge already makes it continuously differentiable at $s_{\text{fov}}=0$, but its second derivative still jumps from 0 to 2 there; since the solver's Gauss--Newton Hessian (Section~\ref{sec:arch}) depends on curvature, not just gradient, a shallow $\beta$ leaves this jump active near the operating point and causes command chatter: sharpening $\beta$ from 5 to 20 drops peak yaw jerk from 42.16 to 6.34~rad/s$^2$ and eliminates all 40 command sign changes (Appendix, Table~\ref{tab:beta}). Separately, this cost only keeps the target inside the cone; it does not pull it toward the center, which an added centering term, $r_{\text{center}} = 1-\cos\gamma$, was needed to fix once the tracking band (Section~\ref{sec:cost-track}) stopped doing so implicitly.
+\emph{Issue:} squaring the raw hinge already makes it continuously differentiable at $s_{\text{fov}}=0$, but its second derivative still jumps from 0 to 2 there; since the solver's Gauss--Newton Hessian (Section~\ref{sec:arch}) depends on curvature, not just gradient, a shallow $\beta$ leaves this jump active near the operating point and causes command chatter: sharpening $\beta$ from 5 to 20 drops peak yaw jerk from 42.16 to 6.34~rad/s$^2$ and eliminates all 40 command sign changes (Appendix, Table~\ref{tab:beta}). Separately, this cost only keeps the target inside the cone, $\gamma\le\alpha$; it does not pull $\gamma$ toward zero. A centering term, pulling the bearing itself toward dead-center rather than merely keeping it legal, was added once the tracking band (Section~\ref{sec:cost-track}) stopped doing so implicitly:
+\begin{equation}
+r_{\text{center}} = 1-\cos\gamma.
+\label{eq:rcenter}
+\end{equation}
 
 \subsection{Collision Avoidance}
 \label{sec:cost-collision}
@@ -309,7 +313,7 @@ Band follower + centering term & 0.38 & 61.8 & 65.8 / 100.0 & 1 \\
 
 Table~\ref{tab:results} summarizes the configurations introduced in Sections~\ref{sec:cost-track}--\ref{sec:cost-occ}. The scenario's obstacle layout and target trajectory are deterministic, so each row is a single run of its configuration, not an average over repeats; the numbers below should be read as one realization each, not as means with an implied variance. Turning the occlusion cost on alone barely moves mean occlusion (63.8\% to 62.6\%), consistent with Section~\ref{sec:occlusion-vanish}: it only has real effect while the obstruction sits closer to the drone than to the target, and the gap is small enough on a single run that it should be treated as indicative, not conclusive, without repeated trials.
 
-The band follower's reacquisition count (4 events, against 0 for the baseline) is the table's largest regression, and it traces directly to Section~\ref{sec:cost-track}: the Baseline pins $(x,y,z)$ to the trailer point, so framing is fixed by construction, while the Band follower opens a dead zone on distance, elevation, and azimuth to buy the clearance gain above, and nothing then re-centers the target once the drone uses that freedom to dodge an obstacle, since the field-of-view cost (Section~\ref{sec:cost-fov}) only penalizes leaving the cone, not drifting toward its edge. The centering term, $r_{\text{center}}=1-\cos\gamma$, recovers most of this (4 to 1) by rewarding boresight alignment directly, but not all of it: it does nothing for the occlusion cost's own weakness (Section~\ref{sec:occlusion-vanish}), and the lost-contact metric counts both failure modes as one event.
+The band follower's reacquisition count (4 events, against 0 for the baseline) is the table's largest regression, and it traces directly to Section~\ref{sec:cost-track}: the Baseline pins $(x,y,z)$ to the trailer point, so framing is fixed by construction, while the Band follower opens a dead zone on distance, elevation, and azimuth to buy the clearance gain above, and nothing then re-centers the target once the drone uses that freedom to dodge an obstacle, since the field-of-view cost (Section~\ref{sec:cost-fov}) only penalizes leaving the cone, not drifting toward its edge. The centering term \eqref{eq:rcenter} recovers most of this (4 to 1) by rewarding boresight alignment directly, but not all of it: it does nothing for the occlusion cost's own weakness (Section~\ref{sec:occlusion-vanish}), and the lost-contact metric counts both failure modes as one event.
 
 \begin{figure*}[t]
 \centering
@@ -357,6 +361,10 @@ A related tuning result is worth recording here since it generalizes beyond this
 \subsection{Evaluation Scope}
 
 Every comparison in Section~\ref{sec:results} and the Appendix is internal: configurations of this same controller against each other, on logged scenarios with no repeated trials (Section~\ref{sec:results}). There is no comparison against an external tracking method -- a potential-field or sampling-based planner, or a learned policy -- so the numbers here establish what the occlusion cost changes relative to this architecture's own baseline, not where this architecture sits relative to the field.
+
+\subsection{Simulation-Only Evaluation}
+
+Every number in this paper comes from simulation: the sensor, the dynamics, and the state estimator (``sim ground truth'' in Fig.~\ref{fig:architecture}) are all simulated, with no sensor noise, wind or aerodynamic disturbance, or communication/actuation latency modeled. The real-time budget of Section~\ref{sec:arch} is measured as wall-clock compute only, not as a margin against what a physical vehicle would need once state-estimation error and actuation delay are added on top. None of this architecture has been run on hardware.
 
 \section{Conclusion}
 
