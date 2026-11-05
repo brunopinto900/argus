@@ -550,6 +550,10 @@ def plot_results(s):
             a.axhline(FOV_HALF_ANGLE_DEG, color="tab:red", linestyle=":", linewidth=1,
                        label=f"FOV edge ({FOV_HALF_ANGLE_DEG:.0f}°)")
             a.axhline(-FOV_HALF_ANGLE_DEG, color="tab:red", linestyle=":", linewidth=1)
+            out_of_fov = gamma > FOV_HALF_ANGLE_DEG
+            for i, (b, e) in enumerate(contiguous_true_runs(out_of_fov)):
+                a.axvspan(df["t"].iloc[b], df["t"].iloc[e], color="red", alpha=0.15,
+                           label="out of FOV cone" if i == 0 else None)
         a.set_xlabel("t [s]"); a.set_ylabel("angle [deg]")
         a.set_title("Bearing offset from boresight")
         a.legend(fontsize=6.5)
