@@ -3,7 +3,7 @@
 \usepackage{amsmath}
 \usepackage{cite}
 \usepackage{tikz}
-\usetikzlibrary{arrows.meta,positioning,fit,backgrounds}
+\usetikzlibrary{arrows.meta,positioning,fit,backgrounds,angles,quotes,calc}
 
 \begin{document}
 
@@ -129,7 +129,14 @@ penalized by a squared softplus hinge,
 r_{\text{fov}} = \frac{1}{\beta} \log\!\left(1 + e^{\beta s_{\text{fov}}}\right).
 \end{equation}
 
-\emph{Issue:} squaring the raw hinge already makes it continuously differentiable at $s_{\text{fov}}=0$, but its second derivative still jumps from 0 to 2 there; since the solver's Gauss--Newton Hessian (Section~\ref{sec:arch}) depends on curvature, not just gradient, a shallow $\beta$ leaves this jump active near the operating point and causes command chatter, resolved by a sharper $\beta$ (Appendix, Table~\ref{tab:beta}). Separately, this cost only keeps the target inside the cone; it does not pull it toward the center, which an added centering term, $r_{\text{center}} = 1-\cos\gamma$, was needed to fix once the tracking band (Section~\ref{sec:cost-track}) stopped doing so implicitly.
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.85\columnwidth]{figures/thesis_fov_cone.png}
+\caption{FOV cone geometry, reproduced from \cite{pinto_thesis} (its own half-angle label, $\gamma$, is this paper's $\alpha$). $s_{\text{fov}}\ge0$ exactly when the bearing to the target, $V$, sits inside the cone.}
+\label{fig:fovcone}
+\end{figure}
+
+\emph{Issue:} squaring the raw hinge already makes it continuously differentiable at $s_{\text{fov}}=0$, but its second derivative still jumps from 0 to 2 there; since the solver's Gauss--Newton Hessian (Section~\ref{sec:arch}) depends on curvature, not just gradient, a shallow $\beta$ leaves this jump active near the operating point and causes command chatter: sharpening $\beta$ from 5 to 20 drops peak yaw jerk from 42.16 to 6.34~rad/s$^2$ and eliminates all 40 command sign changes (Appendix, Table~\ref{tab:beta}). Separately, this cost only keeps the target inside the cone; it does not pull it toward the center, which an added centering term, $r_{\text{center}} = 1-\cos\gamma$, was needed to fix once the tracking band (Section~\ref{sec:cost-track}) stopped doing so implicitly.
 
 \subsection{Collision Avoidance}
 \label{sec:cost-collision}
@@ -155,6 +162,31 @@ with $d(s)$ the ESDF linearized at $\text{occ}_{p_0}(s)$ and $\tau$ an activatio
 \frac{\partial\, r_{\text{occ}}}{\partial p} = -(1-s)\,\nabla d.
 \label{eq:chainrule}
 \end{equation}
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[>={Stealth[length=2mm]}, thick, scale=0.72, every node/.style={transform shape}]
+\coordinate (D) at (0,0);
+\coordinate (T) at (7,0.4);
+\coordinate (P0) at (4.55,0.26);
+\coordinate (Obs) at (4.7,-0.9);
+\draw[gray] (D) -- (T);
+\filldraw[black] (D) circle (2pt) node[below left, font=\scriptsize] {$p$ (drone, $s{=}0$)};
+\filldraw[black] (T) circle (2pt) node[above right, font=\scriptsize] {$p_{\text{target}}$ ($s{=}1$)};
+\filldraw[orange!90!black] (P0) circle (2.2pt);
+\node[above, font=\scriptsize] at (P0) {$\text{occ}_{p_0}(s)$};
+\foreach \dx/\dy in {-0.18/0.16, 0.04/0.23, 0.22/0.11, -0.23/-0.04, -0.01/-0.02,
+                     0.21/-0.19, -0.09/-0.23, 0.13/-0.01, -0.26/0.23, 0.02/0.02}{
+  \filldraw[fill=gray!55, draw=white, line width=0.3pt] ($(Obs)+(\dx,\dy)$) rectangle ++(0.17,0.17);
+}
+\node[font=\scriptsize] at ($(Obs)+(0,-0.8)$) {obstacle (voxels)};
+\draw[->, color=orange!90!black] (P0) -- ($(Obs)!0.55cm!(P0)$) node[midway, right, font=\scriptsize] {$d(s)$};
+\draw[dashed, gray] (P0) circle (1.0);
+\node[font=\scriptsize, gray] at ($(P0)+(0,1.2)$) {$\tau$ activation margin};
+\end{tikzpicture}
+\caption{Occlusion cost geometry. $\text{occ}_{p_0}(s)$ linearizes the ESDF at a point on the drone-to-target sightline; $r_{\text{occ}}$ activates once $d(s)<\tau$.}
+\label{fig:occgeom}
+\end{figure}
 
 \emph{Issue:} this gradient vanishes structurally as $s\to1$ (obstruction near the target), independent of weight. Section~\ref{sec:occanalysis} derives why and tests two fixes, neither of which resolves it.
 
@@ -189,14 +221,14 @@ rate regularization & 15 & carried from initial tuning \\
 
 In \eqref{eq:chainrule}, $(1-s)$ is the entire sensitivity of the occlusion cost to the drone's own position. As the real obstruction approaches the target end of the sightline, $s\to1$, this factor, and the gradient the drone feels, go to zero regardless of weight. This is exactly the case collision avoidance (Section~\ref{sec:cost-collision}), which only sees obstacles near the drone, cannot substitute for: the occlusion term is weakest exactly where it is the only term that could help.
 
-\begin{figure}[t]
-\centering
-\includegraphics[width=\columnwidth]{figures/esdf_sightline.png}
-\caption{Signed distance field, zoomed on the occluded region, occlusion cost off (left) and on (right), same scenario tick. The camera frustum (white) is drawn from the drone's pose; the sightline (black) and a generic point $p(s)$ on it, from \eqref{eq:occpoint}, are overlaid.}
-\label{fig:esdf}
-\end{figure}
+Fig.~\ref{fig:esdf} shows this geometry on a real evaluation-suite run: the sightline runs from the drone to the target inside the camera frustum, with own\_map's occupied voxels standing in for the ESDF obstacle, occlusion cost off (left) and on (right), same tick.
 
-Fig.~\ref{fig:esdf} shows this geometry on a real evaluation-suite distance field: the sightline runs from the drone to the target inside the camera frustum, with the linearization point somewhere along it.
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/esdf_sightline.png}
+\caption{Third-person technical view, zoomed on the occluded region, occlusion cost off (left) and on (right), same scenario tick as Fig.~\ref{fig:footage}. own\_map's real occupied voxels (grey) are drawn in 3-D, not the ESDF's scalar field directly; the camera frustum, drone/target paths, and the sightline $\text{occ}_{p_0}(s)$ from \eqref{eq:occpoint} are overlaid.}
+\label{fig:esdf}
+\end{figure*}
 
 \subsection{Candidate Fix: Hard-Min vs. Soft-Min Combination}
 \label{sec:occlusion-hardsoft}
@@ -279,6 +311,24 @@ Table~\ref{tab:results} summarizes the configurations introduced in Sections~\re
 
 The band follower's reacquisition count (4 events, against 0 for the baseline) is the table's largest regression, and it traces directly to Section~\ref{sec:cost-track}: the Baseline pins $(x,y,z)$ to the trailer point, so framing is fixed by construction, while the Band follower opens a dead zone on distance, elevation, and azimuth to buy the clearance gain above, and nothing then re-centers the target once the drone uses that freedom to dodge an obstacle, since the field-of-view cost (Section~\ref{sec:cost-fov}) only penalizes leaving the cone, not drifting toward its edge. The centering term, $r_{\text{center}}=1-\cos\gamma$, recovers most of this (4 to 1) by rewarding boresight alignment directly, but not all of it: it does nothing for the occlusion cost's own weakness (Section~\ref{sec:occlusion-vanish}), and the lost-contact metric counts both failure modes as one event.
 
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/fov_results.png}
+\caption{Combined bearing angle $\gamma$ against the FOV half-angle threshold, for each row of Table~\ref{tab:results}, with Table~\ref{tab:results}'s merged Reacq.\ count split into its two causes: out of the FOV cone (red) vs.\ occluded past the lost-contact threshold (orange).}
+\label{fig:fovresults}
+\end{figure*}
+
+Fig.~\ref{fig:fovresults} splits that merged count open. The Baseline's occlusion-off row never exceeds the cone; turning its occlusion cost on introduces one brief FOV excursion, not an occlusion-caused loss, at $t\approx2$~s. The Band follower's four events are three FOV-cone exits plus one occlusion loss, confirming the mechanism above: the centering term's fix (4 to 1) is visible directly as the three red spans disappearing from the bottom panel, with the one orange occlusion span -- the failure mode centering does not touch -- left unchanged.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/fov_event_comparison.png}
+\caption{Same tick ($t=3.75$~s) and scenario, Band follower (left) vs.\ Band follower + centering (right) -- the first of the three FOV-cone-exit events Fig.~\ref{fig:fovresults} shows disappearing. The target marker sits outside the frustum wireframe on the left, inside it on the right; the red path markers are the out-of-FOV mask drawn on the drone's position throughout the run, not just at this tick.}
+\label{fig:fovevent}
+\end{figure*}
+
+Fig.~\ref{fig:fovevent} shows one of those three events directly: the same scenario tick, the Band follower's target has drifted past the cone edge while the centering variant, at that same instant, has already pulled it back inside.
+
 No row resolves Section~\ref{sec:occanalysis}'s structural problem; each trades a different combination of its symptoms.
 
 \begin{figure*}[t]
@@ -301,6 +351,12 @@ The direction in Section~\ref{sec:occlusion-implication}, costing angular sensit
 \subsection{Remaining Approximation}
 
 Even a working angular or frustum formulation would still rely on a local point-or-sphere approximation of the obstacle's surface, from the ESDF's value and gradient at one query location, not a true volumetric intersection. That would require the live occupancy grid inside the differentiable symbolic model the solver is generated from, unavailable at code-generation time in this architecture; an acknowledged limitation of the direction above, not a problem it is expected to resolve.
+
+A related tuning result is worth recording here since it generalizes beyond this one residual: pinning the elevation residual $r_{\text{elev}}$ with a nonzero weight bought a narrower altitude band only by raising vertical acceleration, not lowering it, across the evaluation suite, so a tighter constraint was not a smoother one.
+
+\subsection{Evaluation Scope}
+
+Every comparison in Section~\ref{sec:results} and the Appendix is internal: configurations of this same controller against each other, on logged scenarios with no repeated trials (Section~\ref{sec:results}). There is no comparison against an external tracking method -- a potential-field or sampling-based planner, or a learned policy -- so the numbers here establish what the occlusion cost changes relative to this architecture's own baseline, not where this architecture sits relative to the field.
 
 \section{Conclusion}
 
@@ -371,14 +427,14 @@ Two tools produced the numbers and tables above. A per-run metrics dashboard (Fi
 \begin{figure*}[p]
 \centering
 \includegraphics[width=0.85\textwidth]{figures/metrics_dashboard.png}
-\caption{Per-run metrics dashboard, generated by \texttt{scripts/compute\_metrics.py} from one logged trajectory. Twelve panels covering clearance, occlusion, bearing, tracking error, solver and pipeline timing, and smoothness, with a numeric pass/fail summary below.}
+\caption{Per-run metrics dashboard, generated from one logged trajectory. Twelve panels covering clearance, occlusion, bearing, tracking error, solver and pipeline timing, and smoothness, with a numeric pass/fail summary below.}
 \label{fig:dashboard}
 \end{figure*}
 
 \begin{figure*}[p]
 \centering
 \includegraphics[width=0.85\textwidth]{figures/scenario_contact_sheet.png}
-\caption{Suite overview grid across the 16-scenario evaluation suite, generated by \texttt{scripts/plot\_scenario\_contact\_sheet.py}. Each panel is one scenario's top-down path; the border reports that scenario's own hard-gate result.}
+\caption{Suite overview grid across the 16-scenario evaluation suite. Each panel is one scenario's top-down path; the border reports that scenario's own hard-gate result.}
 \label{fig:contactsheet}
 \end{figure*}
 
