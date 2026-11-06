@@ -14,7 +14,9 @@
 \maketitle
 
 \begin{abstract}
-This paper reports a C++, real-time port of a perception-aware model predictive controller for aerial target tracking, originally implemented in Python with CasADi/IPOPT and known analytical obstacle shapes \cite{pinto_thesis}, together with four extensions to its cost and constraint formulation, each evaluated on a common scenario: tracking is moved from a fixed goal point to a band-and-centering formulation that trades reduced obstacle clearance pressure for more frequent loss of visual contact; the field-of-view cost's softplus sharpness is shown to trade a seven-fold drop in peak yaw jerk against command chatter; collision avoidance is moved from a soft cost term to a slacked nonlinear constraint; and an occlusion-aware cost term penalizes obstacles blocking the line of sight to the target, built from an ESDF rebuilt online from simulated onboard sensing instead of known shapes. The deepest result concerns this last term: a derivation showing that the occlusion cost, in its natural point-linearization form, has a gradient that structurally vanishes as the occluding obstacle approaches the target, independent of cost weight. Two candidate fixes, hard-min versus soft-min aggregation of multiple fixed sightline samples, and a steeper penalty function, are derived and tested, and both are shown to leave the underlying vanishing-gradient problem untouched. The root cause is identified as a geometric property of the point-interpolation parametrization itself, not a tuning or sampling artifact, pointing toward an angular or frustum-based formulation as the direction with different sensitivity near the target. The evaluation further splits a single merged reacquisition metric into its two distinct causes, cone exit versus occlusion, showing that the tracking formulation's centering fix resolves the former but leaves the latter, the occlusion cost's own weakness, untouched.
+This paper describes a C++, real-time port of a perception-aware model predictive controller for aerial target tracking, extending earlier Python thesis work \cite{pinto_thesis}. Obstacles there were known analytical shapes; the map is now a Euclidean signed distance field computed live from simulated onboard sensing instead. Four further changes were made to the cost and constraint formulation. The tracking objective is reworked from chasing a fixed point behind the target to a looser band-and-centering scheme, giving the controller room to maneuver around obstacles without losing the target from view. The field-of-view cost is retuned to remove a mismatch with how the solver approximates curvature, which was producing visible command chatter. Collision avoidance moves from a soft penalty to a hard constraint with slack variables. And an occlusion-aware cost is introduced, penalizing the controller whenever an obstacle blocks the camera's line of sight to the target.
+
+A derivation shows that the occlusion cost's gradient vanishes as the obstacle approaches the target and is strongest when the obstacle sits near the drone, where collision avoidance is already pushing on the same obstacle, and that no amount of reweighting changes this. Two candidate fixes were analyzed and both fail, because the cause is geometric rather than a matter of tuning or sampling. Resolving it requires a different representation of occlusion, not another variation on this one.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -23,9 +25,9 @@ Trajectory Optimization, Model Predictive Control, Occlusion Avoidance, Aerial T
 
 \section{Introduction}
 
-Autonomous aerial tracking of a moving target through cluttered environments requires a controller that keeps the target in view, avoids collisions, and produces a trajectory the vehicle can actually fly. A first version of this controller was built in Python \cite{pinto_thesis}, using CasADi and IPOPT as the solver, with obstacles represented as known analytical shapes rather than sensed online.
+Autonomous aerial tracking of a moving target through cluttered environments requires a controller that keeps the target in view, avoids collisions, and generates a trajectory that respects the dynamics of the system. A first version of this controller was built in Python \cite{pinto_thesis}, using CasADi and IPOPT as the solver, with obstacles represented as known analytical shapes.
 
-This paper reports on four extensions made since, each measured on a common evaluation scenario (Section~\ref{sec:results}). I ported the controller to C++, solved in real time with acados \cite{acados}, and replaced the known analytical obstacle shapes with an ESDF built from simulated onboard sensing. The tracking cost is reformulated from a fixed goal point to a band-and-centering scheme (Section~\ref{sec:cost-track}); the field-of-view cost's softplus sharpness is retuned and its effect on command chatter measured (Section~\ref{sec:cost-fov}); collision avoidance is moved from a soft cost term to a slacked nonlinear constraint (Section~\ref{sec:cost-collision}); and an occlusion-aware cost term, absent from the original formulation, is added to penalize obstacles blocking the line of sight to the target (Section~\ref{sec:cost-occ}). The occlusion cost receives the deepest treatment of the four: its gradient is shown to vanish structurally in a specific, common geometric case, and two plausible fixes are tested and shown not to resolve it (Section~\ref{sec:occanalysis}). Section~\ref{sec:future} states plainly what remains open.
+This paper reports on four extensions made since, each measured on a common evaluation scenario (Section~\ref{sec:results}). I ported the controller to C++, solved in real time with acados \cite{acados}, and replaced the known analytical obstacle shapes with an ESDF built from simulated onboard sensing. The tracking cost is reformulated from a fixed goal point to a band-and-centering scheme (Section~\ref{sec:cost-track}); the field-of-view cost's softplus sharpness is retuned and its effect on command chatter measured (Section~\ref{sec:cost-fov}); collision avoidance is moved from a soft cost term to a slacked nonlinear constraint (Section~\ref{sec:cost-collision}); and an occlusion-aware cost term, absent from the original formulation, is added to penalize obstacles blocking the line of sight to the target (Section~\ref{sec:cost-occ}). Its gradient is shown to vanish structurally in a specific, common geometric case, and two plausible fixes are tested and shown not to resolve it (Section~\ref{sec:occanalysis}). Section~\ref{sec:future} identifies the limitations of the present work, proposes directions for future work, and concludes.
 
 \section{System Architecture}
 \label{sec:arch}
@@ -74,13 +76,13 @@ This paper reports on four extensions made since, each measured on a common eval
 \label{fig:architecture}
 \end{figure}
 
-The system is implemented in C++, generating the MPC solver through acados \cite{acados} from a symbolic CasADi model (Fig.~\ref{fig:architecture}). The target's trajectory is a known cubic spline, removing target-estimation error as a confound. Each occupancy voxel holds one of three states, free, occupied, or unknown: a tri-state classification, not a probabilistic occupancy grid, since the system does not model sensor or measurement uncertainty.
+The system is implemented in C++, generating the MPC solver through acados \cite{acados} from a symbolic CasADi model (Fig.~\ref{fig:architecture}). The target's trajectory is a known cubic spline. Each occupancy voxel holds one of three states, free, occupied, or unknown: a tri-state classification, not a probabilistic occupancy grid, since the system does not model sensor or measurement uncertainty.
 
 The sensor and the control loop run on independent clocks: the sensor sweeps at 60 Hz (16.6 ms), the MPC solves at 20 Hz (50 ms), three sweeps per control tick. The occupancy grid is updated every sweep, but the ESDF, the distance transform over that grid, is rebuilt only once per control tick: one build serves all three sweeps inside it. This is a compute-budget decision, since the transform is the expensive step and the MPC's costs only ever read the ESDF, never raw occupancy directly.
 
-The cost is a nonlinear least-squares (NLS) problem: each residual $r_i$ is weighted and squared automatically, $\text{cost} = \sum_i W_i r_i^2$. acados approximates the cost Hessian with the Gauss--Newton approximation, $H \approx J^\top W J$, $J = \partial r/\partial p$, built only from each residual's first derivative; the residual's own second-derivative term is dropped entirely. The solver runs in real-time iteration (RTI) mode, one SQP step per control tick, no inner iterations, no line search: a poor local quadratic model is never corrected within the same tick.
+The cost is a nonlinear least-squares (NLS) problem: each residual $r_i$ is weighted and squared automatically, $\text{cost} = \sum_i W_i r_i^2$. acados approximates the cost Hessian with the Gauss--Newton approximation, $H \approx J^\top W J$, $J = \partial r/\partial p$, built only from each residual's first derivative; the residual's own second-derivative term is dropped entirely. The solver runs in real-time iteration (RTI) mode, one SQP step per control tick.
 
-The controller extends the perception-aware MPC line of work introduced by Falanga et al.\ \cite{falanga_pampc}, which couples a bearing-centering cost directly into the MPC rather than treating perception as a separate stage. The prior version of this controller \cite{pinto_thesis} already builds on this approach with its own field-of-view cost (Section~\ref{sec:mpcform}); the extensions here, collision avoidance as a constraint and an occlusion-aware cost, go beyond both.
+The controller extends the perception-aware MPC line of work introduced by Falanga et al.\ \cite{falanga_pampc}, which couples a bearing-centering cost directly into the MPC rather than treating perception as a separate stage. The prior version of this controller \cite{pinto_thesis} already builds on this approach with its own field-of-view cost (Section~\ref{sec:mpcform}); the extensions here are collision avoidance as a constraint and a reworked occlusion-aware cost.
 
 \section{MPC Formulation}
 \label{sec:mpcform}
@@ -95,7 +97,7 @@ The back-end solves, at every control tick,
 \end{aligned}
 \label{eq:mpc}
 \end{equation}
-where $r$ stacks the per-term residuals defined below, $f$ is the quadrotor dynamics, $c$ is normalized thrust, $\Omega_B$ is body rate, and $s$ is the collision slack (Section~\ref{sec:cost-collision}). Each subsection below gives one residual's cost, its gradient with respect to the drone's own position (the quantity that matters for how the solver actually behaves under the one-step RTI scheme of Section~\ref{sec:arch}), and the issue found with it.
+where $r$ stacks the per-term residuals defined below, $f$ is the quadrotor dynamics, $c$ is normalized thrust, $\Omega_B$ is body rate, and $s$ is the collision slack (Section~\ref{sec:cost-collision}). Each subsection gives one residual's cost, its gradient with respect to the drone's own position, and the issue found with it.
 
 \subsection{Tracking Cost}
 \label{sec:cost-track}
@@ -117,6 +119,8 @@ r_{\text{azimuth}} = 1-\cos(\varphi_{\text{rel}}-\varphi_{\text{target}}).
 
 \emph{Issue:} the Baseline's single fixed point couples tracking error directly to collision and occlusion risk, since nothing in the cost distinguishes a tracking-error point that happens to sit near an obstacle from any other. The Band follower removes that coupling, but then relies on the field-of-view and occlusion terms (Sections~\ref{sec:cost-fov}--\ref{sec:cost-occ}) to keep the target framed, which they only partially do: Table~\ref{tab:results} shows it trading a larger clearance for more lost-contact events, discussed in full in Section~\ref{sec:results}.
 
+Worth noting that the trailer point carries memory, as it is propagated continuously from the leader's own trajectory, so it (and the reference the drone chases) moves smoothly tick to tick. The Band follower is the opposite, as its residuals are recomputed fresh from the current relative geometry at every tick, a greedy choice with no continuity constraint across ticks.
+
 \subsection{Field-of-View Cost}
 \label{sec:cost-fov}
 
@@ -136,7 +140,7 @@ r_{\text{fov}} = \frac{1}{\beta} \log\!\left(1 + e^{\beta s_{\text{fov}}}\right)
 \label{fig:fovcone}
 \end{figure}
 
-\emph{Issue:} squaring the raw hinge already makes it continuously differentiable at $s_{\text{fov}}=0$, but its second derivative still jumps from 0 to 2 there; since the solver's Gauss--Newton Hessian (Section~\ref{sec:arch}) depends on curvature, not just gradient, a shallow $\beta$ leaves this jump active near the operating point and causes command chatter: sharpening $\beta$ from 5 to 20 drops peak yaw jerk from 42.16 to 6.34~rad/s$^2$ and eliminates all 40 command sign changes (Appendix, Table~\ref{tab:beta}). Separately, this cost only keeps the target inside the cone, $\gamma\le\alpha$; it does not pull $\gamma$ toward zero. A centering term, pulling the bearing itself toward dead-center rather than merely keeping it legal, was added once the tracking band (Section~\ref{sec:cost-track}) stopped doing so implicitly:
+\emph{Issue:} squaring the raw hinge already makes it continuously differentiable at $s_{\text{fov}}=0$, but its second derivative still jumps from 0 to 2 there; since the solver's Gauss--Newton Hessian (Section~\ref{sec:arch}) depends on curvature, not just gradient, a shallow $\beta$ leaves this jump active near the operating point and causes command (body rate) chatter: sharpening $\beta$ from 5 to 20 drops peak yaw jerk from 42.16 to 6.34~rad/s$^2$ and eliminates all 40 command sign changes (Appendix, Table~\ref{tab:beta}). Separately, this cost only keeps the target inside the cone, $\gamma\le\alpha$; it does not pull $\gamma$ toward zero. A centering term, pulling the bearing itself toward dead-center rather than merely keeping it inside the cone, was added:
 \begin{equation}
 r_{\text{center}} = 1-\cos\gamma.
 \label{eq:rcenter}
@@ -151,7 +155,7 @@ d_{\text{safe}} = \underbrace{0.15}_{\text{radius}} + \underbrace{0.05}_{\text{v
 \end{equation}
 Collision avoidance enters \eqref{eq:mpc} as a slacked constraint, $d_{\text{lin}}(p) \ge d_{\text{safe}} - s$, penalized $z_l s + \tfrac12 Z_l s^2$.
 
-\emph{Issue:} as a squared-hinge \emph{cost} (the initial formulation), $r_{\text{obs}}=\max(0,d_{\text{safe}}-d_{\text{lin}})$, the gradient $2W(d_{\text{safe}}-d_{\text{lin}})$ vanishes at the boundary, so no finite weight achieves exact clearance (Appendix, Table~\ref{tab:weightsweep}). Reformulating as a constraint fixes this: the slack's linear term has gradient $z_l$, a constant that does not vanish at $s=0$, the classical exact-penalty property a quadratic cost never has.
+\emph{Issue:} as a squared-hinge \emph{cost} (the initial formulation), $r_{\text{obs}}=\max(0,d_{\text{safe}}-d_{\text{lin}})$, the gradient $2W(d_{\text{safe}}-d_{\text{lin}})$ vanishes at the boundary, so no finite weight achieves exact clearance (Appendix, Table~\ref{tab:weightsweep}). Reformulating as a constraint fixes this: the slack's linear term has gradient $z_l$, a constant that does not vanish at $s=0$.
 
 \subsection{Occlusion Cost}
 \label{sec:cost-occ}
@@ -192,12 +196,12 @@ with $d(s)$ the ESDF linearized at $\text{occ}_{p_0}(s)$ and $\tau$ an activatio
 \label{fig:occgeom}
 \end{figure}
 
-\emph{Issue:} this gradient vanishes structurally as $s\to1$ (obstruction near the target), independent of weight. Section~\ref{sec:occanalysis} derives why and tests two fixes, neither of which resolves it.
+\emph{Issue:} this gradient vanishes structurally as $s\to1$ (obstruction near the target), independent of weight. Section~\ref{sec:occanalysis} derives why and tests two candidate fixes, neither of which resolves it.
 
 \subsection{Weights}
 \label{sec:weights}
 
-Table~\ref{tab:weights} summarizes the operating weights and their source. None were derived analytically; each was set by a sweep (Section~\ref{sec:cost-fov}, \ref{sec:cost-collision}, Appendix) or carried over unchanged once an earlier sweep had already validated it.
+Table~\ref{tab:weights} summarizes the operating weights and their source. None were derived analytically; each was set by sweeping it against the scenario suite and comparing the resulting metrics (Section~\ref{sec:cost-fov}, \ref{sec:cost-collision}, Appendix), or carried over unchanged once an earlier sweep had already validated it.
 
 \begin{table}[t]
 \centering
@@ -322,7 +326,7 @@ The band follower's reacquisition count (4 events, against 0 for the baseline) i
 \label{fig:fovresults}
 \end{figure*}
 
-Fig.~\ref{fig:fovresults} splits that merged count open. The Baseline's occlusion-off row never exceeds the cone; turning its occlusion cost on introduces one brief FOV excursion, not an occlusion-caused loss, at $t\approx2$~s. The Band follower's four events are three FOV-cone exits plus one occlusion loss, confirming the mechanism above: the centering term's fix (4 to 1) is visible directly as the three red spans disappearing from the bottom panel, with the one orange occlusion span -- the failure mode centering does not touch -- left unchanged.
+Table~\ref{tab:results}'s Reacq.\ column counts two different failures as one number: the target leaving the FOV cone, and the target being occluded past the lost-contact threshold. Fig.~\ref{fig:fovresults} tells them apart, plotting the bearing angle against the FOV threshold over time for each row and marking every lost-contact span by its actual cause. The Baseline's occlusion-off row never exceeds the FOV cone. Turning its occlusion cost on shifts the trajectory slightly, and that shift happens to push the bearing past the FOV threshold once, briefly, at $t\approx2$~s, an incidental FOV exit, not something the occlusion cost caused directly. The Band follower's four events break down into three FOV-cone exits and one occlusion loss. This confirms the mechanism above: adding the centering term removes exactly the three red spans from the bottom panel. The one orange occlusion span stays exactly where it was, since centering was never meant to fix that failure mode.
 
 \begin{figure*}[t]
 \centering
@@ -344,31 +348,14 @@ No row resolves Section~\ref{sec:occanalysis}'s structural problem; each trades 
 
 Fig.~\ref{fig:footage} shows the rendered view at the same tick as Fig.~\ref{fig:esdf}: obstacle clearance rises from 0.67~m (off) to 1.47~m (on), the same effect Table~\ref{tab:results} reports numerically, without the target leaving the frame in either case at this tick.
 
-\section{Limitations and Future Work}
+\section{Limitations, Future Work, and Conclusion}
 \label{sec:future}
 
-\subsection{Toward an Angular/Frustum Formulation}
-\label{sec:future-angular}
+This paper reported four extensions to a perception-aware MPC for aerial target tracking, ported from Python to C++ with a real-time ESDF replacing known obstacle shapes: a band-and-centering tracking formulation, a retuned field-of-view cost, collision avoidance moved from a cost to a slacked constraint, and an occlusion-aware cost. The first three are measured improvements (Sections~\ref{sec:cost-track}--\ref{sec:cost-collision}, \ref{sec:results}): the band-and-centering fix eliminates all three of the evaluation run's FOV-cone-exit events, and a steeper field-of-view penalty, closer to a hard cutoff at the cone edge instead of a soft one, removes the body rate command chatter. The occlusion cost's point-linearized gradient vanishes as the obstruction nears the target, a geometric property of the parametrization itself rather than a tuning or sampling artifact. The goal throughout was to isolate and explain one specific failure mode precisely enough to rule out two plausible fixes, both analytically and empirically.
 
-The direction in Section~\ref{sec:occlusion-implication}, costing angular sensitivity or an approximate frustum-obstacle intersection instead of a linearized point, is not implemented here. It is scoped as the next step: a closed-form cost and gradient well-conditioned under the one-step SQP\_RTI solver of Section~\ref{sec:arch}, tested against the scenario used throughout Sections~\ref{sec:occanalysis}--\ref{sec:results}.
+The natural next step is an angular formulation, or an approximate frustum-obstacle intersection in place of a linearized point. Even that would still rely on a local point-or-sphere approximation of the obstacle's surface: a true volumetric intersection would require the live occupancy grid inside the differentiable model the solver is generated from, which is unavailable at code-generation time in this architecture.
 
-\subsection{Remaining Approximation}
-
-Even a working angular or frustum formulation would still rely on a local point-or-sphere approximation of the obstacle's surface, from the ESDF's value and gradient at one query location, not a true volumetric intersection. That would require the live occupancy grid inside the differentiable symbolic model the solver is generated from, unavailable at code-generation time in this architecture; an acknowledged limitation of the direction above, not a problem it is expected to resolve.
-
-A related tuning result is worth recording here since it generalizes beyond this one residual: pinning the elevation residual $r_{\text{elev}}$ with a nonzero weight bought a narrower altitude band only by raising vertical acceleration, not lowering it, across the evaluation suite, so a tighter constraint was not a smoother one.
-
-\subsection{Evaluation Scope}
-
-Every comparison in Section~\ref{sec:results} and the Appendix is internal: configurations of this same controller against each other, on logged scenarios with no repeated trials (Section~\ref{sec:results}). There is no comparison against an external tracking method -- a potential-field or sampling-based planner, or a learned policy -- so the numbers here establish what the occlusion cost changes relative to this architecture's own baseline, not where this architecture sits relative to the field.
-
-\subsection{Simulation-Only Evaluation}
-
-Every number in this paper comes from simulation: the sensor, the dynamics, and the state estimator (``sim ground truth'' in Fig.~\ref{fig:architecture}) are all simulated, with no sensor noise, wind or aerodynamic disturbance, or communication/actuation latency modeled. The real-time budget of Section~\ref{sec:arch} is measured as wall-clock compute only, not as a margin against what a physical vehicle would need once state-estimation error and actuation delay are added on top. None of this architecture has been run on hardware.
-
-\section{Conclusion}
-
-This paper reported four extensions to a perception-aware MPC for aerial target tracking, ported from Python to C++ with a real-time ESDF replacing known obstacle shapes: a band-and-centering tracking formulation, a retuned field-of-view cost, collision avoidance moved from a cost to a slacked constraint, and an occlusion-aware cost. The first three are measured improvements (Sections~\ref{sec:cost-track}--\ref{sec:cost-collision}, \ref{sec:results}): the band-and-centering fix eliminates all three of the evaluation run's FOV-cone-exit events, and sharpening the field-of-view penalty's softplus removes the command chatter a shallow setting leaves behind. The occlusion cost, in its point-linearized form, remains ineffective whenever the obstruction sits near the target rather than the drone, regardless of weight or sightline sampling. Two independent fixes were tested against this failure and both left it unchanged; the cause traces to the geometry of the point-on-segment parametrization itself, not to either candidate's own shortcomings. An angular or frustum-based reformulation, outlined in Section~\ref{sec:future}, has not yet been implemented or tested.
+Every comparison here is internal by design, a controlled study of what each formulation change does to one controller's own behavior rather than a benchmark against the field. There is no comparison against an external tracking method, whether a potential-field or sampling-based planner or a learned policy. Every result comes from simulation: the sensor, the dynamics, and the state estimator are all simulated, with no noise, wind, or communication and actuation latency modeled. The architecture has not been run on hardware, and validating the formulation on a physical platform is left as future work.
 
 \appendix
 
